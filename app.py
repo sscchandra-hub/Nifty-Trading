@@ -1203,17 +1203,31 @@ def send_telegram_alert(message):
         print(f"Telegram exception: {str(e)}")
         return False
 
-def add_alert(message, alert_type="info"):
-    """Add alert to alert queue and send to Telegram"""
+def add_alert(message, alert_type="info", cooldown_minutes=10):
+    """Add alert to alert queue and send to Telegram with cooldown"""
     timestamp = datetime.now().strftime("%H:%M:%S")
     alerts.appendleft({
         "time": timestamp,
         "message": message,
         "type": alert_type
     })
-    
+
+    # Add cooldown for alerts to prevent spam
+    # Use message hash as key to track unique alerts
+    import hashlib
+    message_hash = hashlib.md5(message.encode()).hexdigest()[:8]
+
+    now = datetime.now()
+    if message_hash in engine.last_stock_alert:
+        last_time = engine.last_stock_alert[message_hash]
+        minutes_passed = (now - last_time).total_seconds() / 60
+        if minutes_passed < cooldown_minutes:
+            # Skip telegram alert if within cooldown
+            return
+
     telegram_message = f"<b>🚨 ALERT - {timestamp}</b>\n\n{message}"
     send_telegram_alert(telegram_message)
+    engine.last_stock_alert[message_hash] = now
 
 
 def send_stock_alert(stock_name, alert_type, price, change_pct, net_flow, volume_ratio=None):
