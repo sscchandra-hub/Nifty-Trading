@@ -1,0 +1,46 @@
+{
+  "sample_quote": {
+    "256265": {
+      "instrument_token": 256265,
+      "last_price": 19250.50,
+      "volume": 125000,
+      "oi": 2500000,
+      "net_change": 125.50,
+      "change": 0.65,
+      "depth": {
+        "buy": [{"price": 19250.00, "quantity": 100}],
+        "sell": [{"price": 19251.00, "quantity": 100}]
+      }
+    }
+  },
+  "sample_instruments": [
+    {
+      "instrument_token": 256265,
+      "exchange_token": 1001,
+      "tradingsymbol": "NIFTY23DEC19250CE",
+      "name": "NIFTY",
+      "last_price": 0.0,
+      "expiry": "2023-12-28",
+      "strike": 19250.0,
+      "tick_size": 0.05,
+      "lot_size": 50,
+      "instrument_type": "CE",
+      "segment": "NFO-OPT",
+      "exchange": "NFO"
+    },
+    {
+      "instrument_token": 256266,
+      "exchange_token": 1002,
+      "tradingsymbol": "NIFTY23DEC19250PE",
+      "name": "NIFTY",
+      "last_price": 0.0,
+      "expiry": "2023-12-28",
+      "strike": 19250.0,
+      "tick_size": 0.05,
+      "lot_size": 50,
+      "instrument_type": "PE",
+      "segment": "NFO-OPT",
+      "exchange": "NFO"
+    }
+  ]
+}
