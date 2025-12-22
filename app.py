@@ -4472,9 +4472,9 @@ with st.expander("📈 View Top 10 Stocks (Live Rankings)", expanded=False):
                 with col2:
                     # Net flow
                     if net_flow > 0:
-                        st.metric("Net", f"+{net_flow:,.0f}", delta="Bullish", delta_color="normal")
+                        st.metric("Net", f"+{format_number(net_flow)}", delta="Bullish", delta_color="normal")
                     else:
-                        st.metric("Net", f"{net_flow:,.0f}", delta="Bearish", delta_color="inverse")
+                        st.metric("Net", f"{format_number(net_flow)}", delta="Bearish", delta_color="inverse")
                 
                 st.markdown("---")
 
