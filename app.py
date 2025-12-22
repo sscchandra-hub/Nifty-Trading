@@ -2338,6 +2338,10 @@ def polling_loop():
                         "pe_flow": pe_flow,
                         "net_flow": ce_flow - pe_flow
                     }
+
+                # Log stock data collection
+                if stocks_data:
+                    print(f"✅ Collected data for {len(stocks_data)} stocks")
                 
                 total_indices_ce = sum(d["ce_flow"] for d in indices_data.values())
                 total_indices_pe = sum(d["pe_flow"] for d in indices_data.values())
@@ -2417,6 +2421,11 @@ def polling_loop():
                         }
                     except Exception as e:
                         pass
+
+                # Log top stocks by net flow
+                if stocks_data and len(stocks_data) > 0:
+                    top_5 = sorted(stocks_data.items(), key=lambda x: abs(x[1].get("net_flow", 0)), reverse=True)[:5]
+                    print(f"📊 Top 5 stocks by net flow: {', '.join([s[0] for s in top_5])}")
                 
                 
                 flow_snapshot = {
@@ -2537,8 +2546,8 @@ def polling_loop():
                     "stocks_ce_cod": total_stocks_ce,
                     "stocks_pe_cod": total_stocks_pe,
                     "indices_data": indices_data,
-                    # MEMORY FIX: Don't cache stocks_data (200+ stocks = huge!)
-                    # "stocks_data": stocks_data,
+                    # MEMORY FIX: Cache only top 20 stocks by net flow (not all 210!)
+                    "stocks_data": dict(sorted(stocks_data.items(), key=lambda x: abs(x[1].get("net_flow", 0)), reverse=True)[:20]) if stocks_data else {},
                     "deltas": deltas,
                     "nifty_futures_data": nifty_futures_data,
                     "last_update": datetime.now().isoformat()
@@ -4298,48 +4307,13 @@ with st.expander("📈 View Top 10 Stocks (Live Rankings)", expanded=False):
         except:
             pass
     
-    # Priority 3: Show tracked stocks and get quotes
-    if not stocks_data and hasattr(engine, 'stocks_with_fo') and engine.stocks_with_fo:
-        st.warning("⚠️ No cached data - showing live quotes for top stocks...")
-        
-        # Try to fetch current quotes for top 10 stocks
-        if engine.kite and engine.ins_df is not None and not engine.ins_df.empty:
-            try:
-                top_stocks = sorted(engine.stocks_with_fo)[:10]
-                temp_stocks_data = {}
-                
-                for stock in top_stocks:
-                    try:
-                        # Get futures token
-                        fut_df = engine.ins_df[
-                            (engine.ins_df['name'] == stock) &
-                            (engine.ins_df['instrument_type'] == 'FUT')
-                        ]
-                        
-                        if not fut_df.empty:
-                            fut_token = int(fut_df.iloc[0]['instrument_token'])
-                            quote = engine.kite.quote([fut_token])
-                            
-                            if quote and str(fut_token) in quote:
-                                q = quote[str(fut_token)]
-                                price = q.get('last_price')
-                                change_pct = q.get('change', 0)
-                                
-                                temp_stocks_data[stock] = {
-                                    'price': price,
-                                    'change_pct': change_pct,
-                                    'ce_flow': 0,
-                                    'pe_flow': 0,
-                                    'net_flow': 0
-                                }
-                    except:
-                        continue
-                
-                if temp_stocks_data:
-                    stocks_data = temp_stocks_data
-                    st.success(f"✅ Fetched quotes for {len(stocks_data)} stocks")
-            except Exception as e:
-                st.error(f"Could not fetch quotes: {e}")
+    # Priority 3: Show message about waiting for data
+    if not stocks_data:
+        if hasattr(engine, 'stocks_with_fo') and engine.stocks_with_fo:
+            st.info(f"⏳ Tracking {len(engine.stocks_with_fo)} F&O stocks. Top 10 will appear after first data collection cycle (~10-20 seconds)")
+            st.caption("💡 The polling system is collecting live options flow data. Refresh page in a few moments.")
+        else:
+            st.warning("⚠️ No stocks configured for tracking. Check fno_master.json file.")
     
     # Display stocks data
     if stocks_data:
