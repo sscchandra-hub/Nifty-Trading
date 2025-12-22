@@ -2640,8 +2640,9 @@ def polling_loop():
                             telegram_message += f"📊 Rank #{rank} | {flow_direction} momentum"
 
                             try:
-                                send_telegram_alert(telegram_message)
-                                print(f"📱 NEW Top 10 Entry: #{rank} {stock_name} (Net Flow: {format_number(net_flow)})")
+                                # DISABLED: Stock alerts temporarily disabled
+                                # send_telegram_alert(telegram_message)
+                                print(f"🔕 ALERT DISABLED - NEW Top 10 Entry: #{rank} {stock_name} (Net Flow: {format_number(net_flow)})")
                             except Exception as e:
                                 print(f"Error sending Top 10 alert: {e}")
 
@@ -2751,8 +2752,9 @@ def polling_loop():
                                             idx_data['change_pct']
                                         )
                                         if alert_msg:
-                                            add_alert(alert_msg, "warning")
-                                
+                                            pass  # DISABLED: Stock alerts temporarily disabled
+                                            # add_alert(alert_msg, "warning")
+
                                 if detect_spike(pe_delta, avg_pe / 5, threshold=2.0):
                                     if idx_data.get('price') and idx_data.get('change_pct') is not None:
                                         alert_msg = create_actionable_alert_index(
@@ -2763,8 +2765,9 @@ def polling_loop():
                                             idx_data['change_pct']
                                         )
                                         if alert_msg:
-                                            add_alert(alert_msg, "warning")
-                    
+                                            pass  # DISABLED: Stock alerts temporarily disabled
+                                            # add_alert(alert_msg, "warning")
+
                     stock_items = sorted(stocks_data.items(), key=lambda x: abs(x[1]["net_flow"]), reverse=True)[:20]
                     sector_mapping = load_sector_mapping()
                     
@@ -2793,18 +2796,20 @@ def polling_loop():
                                     sector
                                 )
                                 if alert_msg:
-                                    add_alert(alert_msg, "warning")
-                            
+                                    pass  # DISABLED: Stock alerts temporarily disabled
+                                    # add_alert(alert_msg, "warning")
+
                             if detect_spike(pe_delta, avg_pe / 5, threshold=2.5):
                                 alert_msg = create_actionable_alert_stock(
                                     stock_name, 
                                     "PE", 
-                                    pe_delta, 
+                                    pe_delta,
                                     sector
                                 )
                                 if alert_msg:
-                                    add_alert(alert_msg, "warning")
-                
+                                    pass  # DISABLED: Stock alerts temporarily disabled
+                                    # add_alert(alert_msg, "warning")
+
                 # ============================================
                 # HYBRID PATTERN MATCHING (REQUIREMENT 3)
                 # Pattern Detection + OI Filtering
