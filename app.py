@@ -4582,7 +4582,112 @@ if cached_data and "stocks_data" in cached_data:
         st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         st.markdown("### 📊 MARKET-WIDE PERFORMANCE (All 209 F&O Stocks)")
         st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        
+
+        # Calculate market-wide statistics
+        total_stocks = len(stocks_data)
+        bullish_count = sum(1 for s in stocks_data.values() if s.get('net_flow', 0) > 0)
+        bearish_count = sum(1 for s in stocks_data.values() if s.get('net_flow', 0) < 0)
+        neutral_count = total_stocks - bullish_count - bearish_count
+
+        total_net_flow = sum(s.get('net_flow', 0) for s in stocks_data.values())
+        avg_net_flow = total_net_flow / total_stocks if total_stocks > 0 else 0
+
+        # Count stocks with price data
+        stocks_with_price = [s for s in stocks_data.values() if s.get('change_pct') is not None]
+        gainers = [s for s in stocks_with_price if s.get('change_pct', 0) > 0]
+        losers = [s for s in stocks_with_price if s.get('change_pct', 0) < 0]
+
+        # Display metrics
+        col1, col2, col3, col4 = st.columns(4)
+
+        with col1:
+            st.metric("Total Stocks", total_stocks)
+            market_sentiment = "🟢 BULLISH" if bullish_count > bearish_count else ("🔴 BEARISH" if bearish_count > bullish_count else "🟡 NEUTRAL")
+            st.caption(f"**Market Sentiment:** {market_sentiment}")
+
+        with col2:
+            bullish_pct = (bullish_count / total_stocks * 100) if total_stocks > 0 else 0
+            st.metric("🟢 Bullish Stocks", bullish_count, delta=f"{bullish_pct:.1f}%")
+            st.caption("Positive net flow")
+
+        with col3:
+            bearish_pct = (bearish_count / total_stocks * 100) if total_stocks > 0 else 0
+            st.metric("🔴 Bearish Stocks", bearish_count, delta=f"{bearish_pct:.1f}%", delta_color="inverse")
+            st.caption("Negative net flow")
+
+        with col4:
+            flow_emoji = "🟢" if avg_net_flow > 0 else "🔴"
+            st.metric(f"{flow_emoji} Avg Net Flow", format_number(avg_net_flow))
+            st.caption(f"Across {total_stocks} stocks")
+
+        st.markdown("")
+
+        # Top Gainers and Losers
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.markdown("#### 📈 Top 5 Gainers (Price)")
+            if gainers:
+                top_gainers = sorted([(name, data) for name, data in stocks_data.items() if data.get('change_pct') and data.get('change_pct') > 0],
+                                   key=lambda x: x[1].get('change_pct', 0), reverse=True)[:5]
+
+                for i, (stock_name, data) in enumerate(top_gainers, 1):
+                    price = data.get('price')
+                    change_pct = data.get('change_pct', 0)
+                    net_flow = data.get('net_flow', 0)
+
+                    flow_emoji = "🟢" if net_flow > 0 else "🔴"
+                    price_str = f"₹{price:,.2f}" if price else "N/A"
+
+                    st.markdown(f"**{i}. {stock_name}** - {price_str} 🟢+{change_pct:.2f}%")
+                    st.caption(f"{flow_emoji} Flow: {format_number(net_flow)}")
+                    if i < len(top_gainers):
+                        st.markdown("")
+            else:
+                st.info("No gainers data available yet")
+
+        with col2:
+            st.markdown("#### 📉 Top 5 Losers (Price)")
+            if losers:
+                top_losers = sorted([(name, data) for name, data in stocks_data.items() if data.get('change_pct') and data.get('change_pct') < 0],
+                                  key=lambda x: x[1].get('change_pct', 0))[:5]
+
+                for i, (stock_name, data) in enumerate(top_losers, 1):
+                    price = data.get('price')
+                    change_pct = data.get('change_pct', 0)
+                    net_flow = data.get('net_flow', 0)
+
+                    flow_emoji = "🟢" if net_flow > 0 else "🔴"
+                    price_str = f"₹{price:,.2f}" if price else "N/A"
+
+                    st.markdown(f"**{i}. {stock_name}** - {price_str} 🔴{change_pct:.2f}%")
+                    st.caption(f"{flow_emoji} Flow: {format_number(net_flow)}")
+                    if i < len(top_losers):
+                        st.markdown("")
+            else:
+                st.info("No losers data available yet")
+
+        st.markdown("")
+
+        # Most Active Stocks by Net Flow
+        st.markdown("#### 🔥 Top 5 Most Active (By Net Flow)")
+        most_active = sorted(stocks_data.items(), key=lambda x: abs(x[1].get('net_flow', 0)), reverse=True)[:5]
+
+        cols = st.columns(5)
+        for i, (stock_name, data) in enumerate(most_active):
+            with cols[i]:
+                net_flow = data.get('net_flow', 0)
+                price = data.get('price')
+                change_pct = data.get('change_pct')
+
+                flow_emoji = "🟢" if net_flow > 0 else "🔴"
+                flow_str = format_number(abs(net_flow))
+
+                st.markdown(f"**{i+1}. {stock_name}**")
+                st.metric(f"{flow_emoji} Flow", flow_str)
+                if change_pct is not None:
+                    change_emoji = "🟢" if change_pct > 0 else "🔴"
+                    st.caption(f"{change_emoji} {change_pct:+.2f}%")
 
 st.markdown("---")
 
