@@ -3042,6 +3042,27 @@ st.markdown("""
     -webkit-text-fill-color: transparent;
     background-clip: text;
 }
+.part-container {
+    border: 4px solid #000000;
+    border-radius: 10px;
+    padding: 1.5rem;
+    margin: 1.5rem 0;
+    background-color: #fafafa;
+}
+.section-box-green {
+    border: 2px solid #28a745;
+    border-radius: 8px;
+    padding: 1rem;
+    margin: 1rem 0;
+    background-color: #ffffff;
+}
+.section-box-blue {
+    border: 2px solid #1f77b4;
+    border-radius: 8px;
+    padding: 1rem;
+    margin: 1rem 0;
+    background-color: #ffffff;
+}
 .alert-box {padding: 0.5rem; border-radius: 0.3rem; margin-bottom: 0.3rem; font-size: 0.9rem;}
 .alert-warning {background-color: #fff3cd; border-left: 4px solid #ffc107;}
 .alert-success {background-color: #d4edda; border-left: 4px solid #28a745;}
@@ -3245,10 +3266,13 @@ if len(nifty_chart_data) <= 1:
 if len(nifty_chart_data) > 1:
     st.markdown("---")
     st.markdown("")
+    st.markdown('<div class="part-container">', unsafe_allow_html=True)
     st.markdown("# 📊 PART 1: INDICES ANALYSIS")
     st.markdown("*Comprehensive analysis of all tracked indices (NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, SENSEX)*")
     st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     st.markdown("")
+
+    st.markdown('<div class="section-box-green">', unsafe_allow_html=True)
     st.subheader("📊 NIFTY Flow Analysis Charts")
     
     # Prepare data
@@ -3386,12 +3410,13 @@ else:
     st.markdown("<h3 style='text-align: center; color: #808080;'>⏳ Waiting for data...</h3>", unsafe_allow_html=True)
     st.caption("📊 Charts will populate after 5 minutes of polling | Start polling to begin data collection")
 
+st.markdown('</div>', unsafe_allow_html=True)  # Close NIFTY Flow Analysis section
 st.markdown("---")
 
 # =========================
 # NIFTY OPTIONS VOLUME ANALYSIS CHARTS (REQUIREMENT 4)
 # =========================
-
+st.markdown('<div class="section-box-green">', unsafe_allow_html=True)  # Open section box
 st.subheader("🔥 NIFTY Options Volume Analysis")
 
 # Automatic diagnostic logging for volume charts when empty
@@ -3724,8 +3749,10 @@ else:
     st.caption("📊 Tracking: ATM strike + any spike >3.0x across all strikes")
     st.caption("⚡ Far OTM/ITM (distance >150) will be marked with lightning bolt")
 
+st.markdown('</div>', unsafe_allow_html=True)  # Close NIFTY Options Volume section
 st.markdown("---")
 
+st.markdown('<div class="section-box-green">', unsafe_allow_html=True)  # Open Control Panel section
 st.subheader("⚙️ Control Panel")
 col_info, col_toggle = st.columns([3, 1])
 with col_info:
@@ -3852,8 +3879,10 @@ with col3:
 if latest_score:
     st.progress((latest_score + 100) / 200)
 
+st.markdown('</div>', unsafe_allow_html=True)  # Close Control Panel section
 st.markdown("---")
 
+st.markdown('<div class="section-box-green">', unsafe_allow_html=True)  # Open Live Momentum Tracker section
 st.subheader("🔥 Live Momentum Tracker")
 
 if cached_data and cached_data.get("deltas"):
@@ -4307,7 +4336,10 @@ if cached_data and cached_data.get("deltas"):
 
         st.markdown("---")
 
+    st.markdown('</div>', unsafe_allow_html=True)  # Close Live Momentum Tracker section
+
     # Get indices data for INDICES-WIDE PERFORMANCE section
+    st.markdown('<div class="section-box-green">', unsafe_allow_html=True)  # Open INDICES-WIDE PERFORMANCE section
     indices_data_perf = st.session_state.get('indices_data', {})
     if not indices_data_perf:
         cached_perf = load_dashboard_cache()
@@ -4639,9 +4671,12 @@ if cached_data and cached_data.get("deltas"):
 
         st.markdown("")
 
+    st.markdown('</div>', unsafe_allow_html=True)  # Close INDICES-WIDE PERFORMANCE section
+
 # ====================
 # NIFTY FUTURES CARD
 # ====================
+st.markdown('<div class="section-box-green">', unsafe_allow_html=True)  # Open NIFTY Futures section
 st.markdown("---")
 st.subheader("📊 NIFTY Current Month Futures")
 
@@ -4729,7 +4764,9 @@ else:
     st.info("⏳ Waiting for NIFTY Futures data...")
     st.caption("Data will appear once polling starts")
 
+st.markdown('</div>', unsafe_allow_html=True)  # Close NIFTY Futures section
 
+st.markdown('<div class="section-box-green">', unsafe_allow_html=True)  # Open Combined CE/PE Summary section
 st.subheader("💹 Combined CE/PE Summary")
 
 if cached_data:
@@ -4772,8 +4809,13 @@ if cached_data:
 else:
     st.info("Start polling to see data")
 
+st.markdown('</div>', unsafe_allow_html=True)  # Close Combined CE/PE Summary section
+
+st.markdown('</div>', unsafe_allow_html=True)  # Close PART 1 container
+
 st.markdown("---")
 st.markdown("")
+st.markdown('<div class="part-container">', unsafe_allow_html=True)  # Open PART 2 container
 st.markdown("# 📈 PART 2: STOCKS ANALYSIS")
 st.markdown("*Market-wide performance analysis of all 209 F&O stocks*")
 st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
@@ -4782,6 +4824,7 @@ st.markdown("")
 # ============================================
 # STOCKS MOMENTUM
 # ============================================
+st.markdown('<div class="section-box-blue">', unsafe_allow_html=True)  # Open Stocks Momentum section
 if cached_data:
     st.markdown("### 📈 Stocks Momentum")
 
@@ -4836,11 +4879,13 @@ if cached_data:
 else:
     st.info("⏳ Start polling to see live momentum data")
 
+st.markdown('</div>', unsafe_allow_html=True)  # Close Stocks Momentum section
 st.markdown("---")
 
 # ============================================
 # TOP 10 STOCKS (Live Rankings)
 # ============================================
+st.markdown('<div class="section-box-blue">', unsafe_allow_html=True)  # Open Top 10 Stocks section
 with st.expander("📈 View Top 10 Stocks (Live Rankings)", expanded=False):
     # Try to get live data first, then cached data, then show available stocks
     stocks_data = {}
@@ -4918,12 +4963,14 @@ with st.expander("📈 View Top 10 Stocks (Live Rankings)", expanded=False):
 
                 st.markdown("---")
 
+st.markdown('</div>', unsafe_allow_html=True)  # Close Top 10 Stocks section
 st.markdown("---")
 st.markdown("")
 
 # ============================================
 # MARKET-WIDE PERFORMANCE (Outside Expander)
 # ============================================
+st.markdown('<div class="section-box-blue">', unsafe_allow_html=True)  # Open Market-Wide Performance section
 # Get stocks_data from cache
 if cached_data and "stocks_data" in cached_data:
     stocks_data = cached_data.get("stocks_data", {})
@@ -5041,9 +5088,12 @@ if cached_data and "stocks_data" in cached_data:
 
 st.markdown("---")
 
+st.markdown('</div>', unsafe_allow_html=True)  # Close Market-Wide Performance section
+
 # ============================================
 # VOLUME SPIKE DETECTION (Unusual Activity)
 # ============================================
+st.markdown('<div class="section-box-blue">', unsafe_allow_html=True)  # Open Volume Spike Detection section
 if cached_data and "stocks_data" in cached_data:
     stocks_data_vol = cached_data.get("stocks_data", {})
 
@@ -5203,6 +5253,10 @@ if cached_data and "stocks_data" in cached_data:
         else:
             st.info("No significant volume spikes detected yet. Spikes appear when net flow ≥ 200M")
 
+st.markdown('</div>', unsafe_allow_html=True)  # Close Volume Spike Detection section
+
 st.markdown("---")
+
+st.markdown('</div>', unsafe_allow_html=True)  # Close PART 2 container
 
 st.caption("🔥 Live Momentum Trading System - Actionable Alerts with Strike Prices! 🚀")
