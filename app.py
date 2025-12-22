@@ -3170,17 +3170,6 @@ if DASHBOARD_CACHE_FILE.exists():
     except:
         pass
 
-if alerts:
-    st.subheader("🚨 Live Alerts")
-    for alert in list(alerts)[:5]:
-        alert_class = "alert-warning" if alert["type"] == "warning" else "alert-success"
-        st.markdown(f"""
-        <div class="alert-box {alert_class}">
-            <strong>{alert['time']}</strong> - {alert['message']}
-        </div>
-        """, unsafe_allow_html=True)
-    st.markdown("---")
-
 # ============================================
 # PHASE 1: NIFTY FLOW ANALYSIS CHARTS
 # ============================================
