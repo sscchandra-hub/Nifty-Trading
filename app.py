@@ -2934,7 +2934,7 @@ st.set_page_config(page_title="Live Momentum Trading System", layout="wide", ini
 
 if AUTOREFRESH_AVAILABLE and st.session_state.get("auto_refresh_toggle", True) and st.session_state.get("polling_running", False):
     st.session_state.refresh_count += 1
-    count = st_autorefresh(interval=10 * 1000, key="auto_refresh_counter")
+    count = st_autorefresh(interval=30 * 1000, key="auto_refresh_counter")  # Changed from 10s to 30s to reduce memory usage
 
 st.markdown("""
 <style>
