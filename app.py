@@ -5041,14 +5041,14 @@ if cached_data and "indices_data" in cached_data:
         st.markdown("")
         
         # ============================================
-        # TOP & BOTTOM PERFORMERS
+        # SECTOR PERFORMANCE - SMART SORTING
         # ============================================
         st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         st.markdown("### 🎯 SECTOR PERFORMANCE")
         st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        
-        # Prepare sorted list
-        all_idx_with_change = []
+
+        # Prepare data with CE percentage calculation
+        all_idx_with_data = []
         for idx_name, idx_data in indices_data_perf.items():
             change_pct = 0
             if "change_pct" in idx_data:
@@ -5056,51 +5056,130 @@ if cached_data and "indices_data" in cached_data:
             elif "price" in idx_data and "prev_close" in idx_data:
                 if idx_data["prev_close"] and idx_data["prev_close"] > 0:
                     change_pct = ((idx_data["price"] - idx_data["prev_close"]) / idx_data["prev_close"]) * 100
-            
+
             ce_flow = idx_data.get("ce_flow", 0)
             pe_flow = idx_data.get("pe_flow", 0)
-            all_idx_with_change.append((idx_name, change_pct, ce_flow, pe_flow))
-        
-        sorted_indices = sorted(all_idx_with_change, key=lambda x: x[1], reverse=True)
-        
-        col1, col2 = st.columns(2)
-        
+            total = ce_flow + pe_flow
+            ce_pct = (ce_flow / total * 100) if total > 0 else 50
+
+            all_idx_with_data.append({
+                'name': idx_name,
+                'change_pct': change_pct,
+                'ce_flow': ce_flow,
+                'pe_flow': pe_flow,
+                'ce_pct': ce_pct
+            })
+
+        # Create three columns for different perspectives
+        col1, col2, col3 = st.columns(3)
+
+        # Column 1: Top 5 by Price Change (Biggest Movers)
         with col1:
-            st.markdown("#### 🥇 TOP 5 PERFORMERS")
+            st.markdown("#### 📈 Biggest Movers (Price)")
+            sorted_by_price = sorted(all_idx_with_data, key=lambda x: abs(x['change_pct']), reverse=True)[:5]
+
             medals = ["🥇", "🥈", "🥉", "🏅", "🏅"]
-            for i, (name, change, ce, pe) in enumerate(sorted_indices[:5]):
-                total = ce + pe
-                ce_pct_sector = (ce / total * 100) if total > 0 else 50
-                
-                # CE/PE bar
-                ce_blocks_s = int(round(ce_pct_sector / 10))
-                pe_blocks_s = 10 - ce_blocks_s
-                mini_bar = f"[🟢{'▓' * ce_blocks_s}🔴{'▓' * pe_blocks_s}]"
-                
-                # Signal
-                signal_icon = "🚀" if ce_pct_sector >= 70 else "✅" if ce_pct_sector >= 60 else "⚖️"
-                
-                medal = medals[i] if i < 5 else "📊"
-                st.markdown(f"{medal} **{name}**: {change:+.2f}%")
-                st.caption(f"{mini_bar} {ce_pct_sector:.0f}% CE {signal_icon}")
-        
+            for i, idx_data in enumerate(sorted_by_price):
+                name = idx_data['name']
+                change = idx_data['change_pct']
+                ce_pct = idx_data['ce_pct']
+
+                # Color based on direction
+                change_emoji = "🟢" if change > 0 else "🔴" if change < 0 else "⚪"
+
+                # Signal based on CE%
+                if ce_pct >= 70:
+                    signal = "🚀"
+                elif ce_pct >= 60:
+                    signal = "✅"
+                elif ce_pct >= 40:
+                    signal = "⚖️"
+                else:
+                    signal = "⚠️"
+
+                medal = medals[i]
+                st.markdown(f"{medal} **{name}**: {change_emoji}{change:+.2f}%")
+                st.caption(f"CE: {ce_pct:.0f}% {signal}")
+
+        # Column 2: Top 5 by Bullish Flow (Most Bullish Sentiment)
         with col2:
-            st.markdown("#### 📉 BOTTOM 5 PERFORMERS")
-            for i, (name, change, ce, pe) in enumerate(sorted_indices[-5:][::-1]):
-                total = ce + pe
-                ce_pct_sector = (ce / total * 100) if total > 0 else 50
-                
-                # CE/PE bar
-                ce_blocks_s = int(round(ce_pct_sector / 10))
-                pe_blocks_s = 10 - ce_blocks_s
-                mini_bar = f"[🟢{'▓' * ce_blocks_s}🔴{'▓' * pe_blocks_s}]"
-                
+            st.markdown("#### 🟢 Most Bullish Flow")
+            sorted_by_flow = sorted(all_idx_with_data, key=lambda x: x['ce_pct'], reverse=True)[:5]
+
+            for i, idx_data in enumerate(sorted_by_flow):
+                name = idx_data['name']
+                change = idx_data['change_pct']
+                ce_pct = idx_data['ce_pct']
+
                 # Signal
-                signal_icon = "⚠️" if ce_pct_sector < 40 else "📉" if ce_pct_sector < 50 else "⚖️"
-                
-                st.markdown(f"**{name}**: {change:+.2f}%")
-                st.caption(f"{mini_bar} {ce_pct_sector:.0f}% CE {signal_icon}")
-        
+                if ce_pct >= 80:
+                    signal = "🔥 Extreme"
+                elif ce_pct >= 70:
+                    signal = "🚀 Strong"
+                else:
+                    signal = "✅ Bullish"
+
+                # Show price for context
+                change_emoji = "🟢" if change > 0 else "🔴" if change < 0 else "⚪"
+
+                st.markdown(f"**{i+1}. {name}**: {ce_pct:.0f}% CE {signal}")
+                st.caption(f"Price: {change_emoji}{change:+.2f}%")
+
+        # Column 3: Divergence Alerts (Reversal Opportunities)
+        with col3:
+            st.markdown("#### ⚠️ Divergence Alerts")
+
+            # Find divergences
+            divergences = []
+            for idx_data in all_idx_with_data:
+                name = idx_data['name']
+                change = idx_data['change_pct']
+                ce_pct = idx_data['ce_pct']
+
+                # Bullish divergence: Price down but flow bullish
+                if change < -0.3 and ce_pct > 65:
+                    divergences.append({
+                        'name': name,
+                        'change': change,
+                        'ce_pct': ce_pct,
+                        'type': 'BULLISH',
+                        'strength': ce_pct - 50  # How strong the divergence
+                    })
+
+                # Bearish divergence: Price up but flow bearish
+                elif change > 0.3 and ce_pct < 35:
+                    divergences.append({
+                        'name': name,
+                        'change': change,
+                        'ce_pct': ce_pct,
+                        'type': 'BEARISH',
+                        'strength': 50 - ce_pct
+                    })
+
+            # Sort by strength
+            divergences_sorted = sorted(divergences, key=lambda x: x['strength'], reverse=True)[:5]
+
+            if divergences_sorted:
+                for i, div in enumerate(divergences_sorted):
+                    name = div['name']
+                    change = div['change']
+                    ce_pct = div['ce_pct']
+                    div_type = div['type']
+
+                    if div_type == 'BULLISH':
+                        icon = "🎯"
+                        signal = "Dip Buy?"
+                        interpretation = f"Price {change:.2f}% but {ce_pct:.0f}% CE"
+                    else:
+                        icon = "⚠️"
+                        signal = "Top?"
+                        interpretation = f"Price +{change:.2f}% but {ce_pct:.0f}% CE"
+
+                    st.markdown(f"{icon} **{name}** {signal}")
+                    st.caption(interpretation)
+            else:
+                st.info("No strong divergences detected")
+
         st.markdown("")
 
 st.caption("🔥 Live Momentum Trading System - Actionable Alerts with Strike Prices! 🚀")
