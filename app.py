@@ -2006,6 +2006,92 @@ def build_subscriptions(kite: KiteConnect, ins_df: pd.DataFrame):
     print("="*50 + "\n")
     return result
 
+def auto_backup_after_market_close():
+    """
+    Automatically create backup after market closes
+    - Runs once per day after 3:30 PM
+    - Only on weekdays (Monday-Friday)
+    - Checks if backup already exists for today
+    """
+    now = datetime.now()
+
+    # Only on weekdays (0=Monday, 4=Friday)
+    if now.weekday() > 4:
+        return False
+
+    # Only after 3:30 PM (market closes at 3:30 PM)
+    if now.hour < 15 or (now.hour == 15 and now.minute < 30):
+        return False
+
+    # Check if backup already exists for today
+    backup_dir = Path.home() / "trading_backups"
+    today_str = now.strftime("%Y-%m-%d")
+
+    if backup_dir.exists():
+        # Check if any backup exists for today
+        existing_backups = list(backup_dir.glob(f"trading_backup_{today_str}_*.tar.gz"))
+        if existing_backups:
+            # Backup already done today
+            return False
+
+    # Create backup
+    try:
+        print("\n" + "="*50)
+        print("🤖 AUTO-BACKUP: Market closed, creating backup...")
+        print("="*50)
+
+        # Create backup directory
+        backup_dir.mkdir(parents=True, exist_ok=True)
+
+        # Timestamp for filename
+        timestamp = now.strftime("%Y-%m-%d_%H-%M-%S")
+        backup_file = backup_dir / f"trading_backup_{timestamp}.tar.gz"
+
+        # Items to backup
+        backup_items = []
+        data_dir = Path("data")
+        cache_dir = Path(".cache")
+
+        if data_dir.exists():
+            backup_items.append("data")
+        if cache_dir.exists():
+            backup_items.append(".cache")
+
+        if not backup_items:
+            print("⚠️ No data to backup yet")
+            return False
+
+        # Create backup using tar
+        import subprocess
+        cmd = ["tar", "-czf", str(backup_file)] + backup_items
+        result = subprocess.run(cmd, capture_output=True, text=True)
+
+        if result.returncode == 0:
+            backup_size = backup_file.stat().st_size / (1024 * 1024)  # MB
+            print(f"✅ Backup created successfully!")
+            print(f"   Location: {backup_file}")
+            print(f"   Size: {backup_size:.1f} MB")
+
+            # Clean up old backups (keep last 30)
+            all_backups = sorted(backup_dir.glob("trading_backup_*.tar.gz"), key=lambda p: p.stat().st_mtime, reverse=True)
+            if len(all_backups) > 30:
+                for old_backup in all_backups[30:]:
+                    old_backup.unlink()
+                    print(f"🗑️ Removed old backup: {old_backup.name}")
+
+            print(f"📊 Total backups: {min(len(all_backups), 30)}")
+            print("="*50 + "\n")
+            return True
+        else:
+            print(f"❌ Backup failed: {result.stderr}")
+            return False
+
+    except Exception as e:
+        print(f"❌ Auto-backup error: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
 def polling_loop():
     print("\n" + "="*50)
     print("STARTING LIVE MOMENTUM TRACKER")
@@ -2843,9 +2929,15 @@ def polling_loop():
                     poll_msg += f" | Î”1m: Collecting baseline..."
                 
                 print(poll_msg)
-            
+
+            # AUTO-BACKUP: Check if we need to backup after market close
+            try:
+                auto_backup_after_market_close()
+            except Exception as e:
+                print(f"Auto-backup check failed: {e}")
+
             time.sleep(10)
-            
+
             # MEMORY FIX: Periodic garbage collection
             import gc
             gc.collect()
