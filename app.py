@@ -3267,14 +3267,18 @@ if len(nifty_chart_data) <= 1:
 if len(nifty_chart_data) > 1:
     st.markdown("---")
     st.markdown("")
-    st.markdown('<div class="part-container">', unsafe_allow_html=True)
-    st.markdown("# 📊 PART 1: INDICES ANALYSIS")
-    st.markdown("*Comprehensive analysis of all tracked indices (NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, SENSEX)*")
-    st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    st.markdown("")
 
-    st.markdown('<div class="section-box-green">', unsafe_allow_html=True)
-    st.subheader("📊 NIFTY Flow Analysis Charts")
+    # PART 1 Header with border
+    st.markdown("""
+    <div style="border: 4px solid #000000; border-radius: 10px; padding: 1.5rem; margin: 1.5rem 0; background-color: #fafafa;">
+        <h1 style="text-align: center; margin: 0;">📊 PART 1: INDICES ANALYSIS</h1>
+        <p style="text-align: center; font-style: italic; margin: 0.5rem 0;">Comprehensive analysis of all tracked indices (NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, SENSEX)</p>
+        <hr style="border: 1px solid #ddd; margin: 1rem 0;">
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Section box for NIFTY Flow Analysis
+    st.markdown('<div style="border: 2px solid #28a745; border-radius: 8px; padding: 1rem; margin: 1rem 0; background-color: #ffffff;"><h3>📊 NIFTY Flow Analysis Charts</h3></div>', unsafe_allow_html=True)
     
     # Prepare data
     chart_list = list(nifty_chart_data)
