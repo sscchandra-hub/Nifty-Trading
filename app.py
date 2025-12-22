@@ -3031,16 +3031,17 @@ if AUTOREFRESH_AVAILABLE and st.session_state.get("auto_refresh_toggle", True) a
 st.markdown("""
 <style>
 .main-header {
-    font-size: 3rem;
+    font-size: 4.5rem;
     font-weight: bold;
     color: #1f77b4;
     text-align: center;
-    padding: 1rem 0;
-    margin-bottom: 1rem;
+    padding: 1.5rem 0;
+    margin-bottom: 1.5rem;
     background: linear-gradient(90deg, #1f77b4, #2ca02c);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
+    text-shadow: 2px 2px 4px rgba(0,0,0,0.1);
 }
 .part-container {
     border: 4px solid #000000;
