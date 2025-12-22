@@ -2306,13 +2306,28 @@ def polling_loop():
                         if fut_token_str in all_quotes:
                             fut_quote = all_quotes[fut_token_str]
                             stock_price = fut_quote.get("last_price", None)
-                            
-                            # Calculate change %
-                            net_change = fut_quote.get("net_change", None)
-                            if net_change is not None and stock_price:
+
+                            # Calculate change % - Try multiple methods
+                            stock_change_pct = None
+
+                            # Method 1: Direct change percentage from Kite (most reliable)
+                            if fut_quote.get("change") is not None:
+                                stock_change_pct = fut_quote.get("change")
+
+                            # Method 2: Calculate from net_change
+                            elif fut_quote.get("net_change") is not None and stock_price:
+                                net_change = fut_quote.get("net_change")
                                 prev_close = stock_price - net_change
                                 if prev_close > 0:
                                     stock_change_pct = (net_change / prev_close) * 100
+
+                            # Method 3: Use ohlc.close (previous day close)
+                            elif stock_price:
+                                ohlc = fut_quote.get("ohlc", {})
+                                if isinstance(ohlc, dict):
+                                    prev_close = ohlc.get("close") or ohlc.get("previous_close")
+                                    if prev_close and prev_close > 0:
+                                        stock_change_pct = ((stock_price - prev_close) / prev_close) * 100
                     
                     # Calculate CE/PE flows from options
                     for _, row in stock_meta.iterrows():
@@ -2339,9 +2354,17 @@ def polling_loop():
                         "net_flow": ce_flow - pe_flow
                     }
 
-                # Log stock data collection
+                # Log stock data collection with sample
                 if stocks_data:
                     print(f"✅ Collected data for {len(stocks_data)} stocks")
+                    # Show sample with change % to verify it's working
+                    sample_stocks = list(stocks_data.items())[:3]
+                    for name, data in sample_stocks:
+                        chg = data.get('change_pct')
+                        if chg is not None:
+                            print(f"   {name}: {data.get('price'):.2f} ({chg:+.2f}%)")
+                        else:
+                            print(f"   {name}: {data.get('price'):.2f} (change% unavailable)")
                 
                 total_indices_ce = sum(d["ce_flow"] for d in indices_data.values())
                 total_indices_pe = sum(d["pe_flow"] for d in indices_data.values())
@@ -2391,13 +2414,28 @@ def polling_loop():
                             if fut_token_str in all_quotes:
                                 fut_quote = all_quotes[fut_token_str]
                                 stock_price = fut_quote.get("last_price", None)
-                                
-                                # Get change %
-                                net_change = fut_quote.get("net_change", None)
-                                if net_change is not None and stock_price:
+
+                                # Calculate change % - Try multiple methods
+                                stock_change_pct = None
+
+                                # Method 1: Direct change percentage from Kite (most reliable)
+                                if fut_quote.get("change") is not None:
+                                    stock_change_pct = fut_quote.get("change")
+
+                                # Method 2: Calculate from net_change
+                                elif fut_quote.get("net_change") is not None and stock_price:
+                                    net_change = fut_quote.get("net_change")
                                     prev_close = stock_price - net_change
                                     if prev_close > 0:
                                         stock_change_pct = (net_change / prev_close) * 100
+
+                                # Method 3: Use ohlc.close (previous day close)
+                                elif stock_price:
+                                    ohlc = fut_quote.get("ohlc", {})
+                                    if isinstance(ohlc, dict):
+                                        prev_close = ohlc.get("close") or ohlc.get("previous_close")
+                                        if prev_close and prev_close > 0:
+                                            stock_change_pct = ((stock_price - prev_close) / prev_close) * 100
                         
                         # Calculate CE/PE flows
                         for _, row in stock_meta.iterrows():
