@@ -4293,64 +4293,340 @@ if cached_data and cached_data.get("deltas"):
                     st.success("🎯 BUY")
                 else:
                     st.error("🎯 SELL")
-        
+
         st.markdown("---")
-    
-    st.markdown("### 📈 Stocks Momentum")
-    
-    stocks_ce = cached_data.get("stocks_ce_cod", 0.0)
-    stocks_pe = cached_data.get("stocks_pe_cod", 0.0)
-    stocks_net = stocks_ce - stocks_pe
-    
-    stocks_ce_1min = deltas.get("stocks_ce_1min", 0)
-    stocks_pe_1min = deltas.get("stocks_pe_1min", 0)
-    stocks_net_1min = stocks_ce_1min - stocks_pe_1min
-    
-    stocks_ce_5min = deltas.get("stocks_ce_5min", 0)
-    stocks_pe_5min = deltas.get("stocks_pe_5min", 0)
-    stocks_net_5min = stocks_ce_5min - stocks_pe_5min
-    
-    momentum_signal_stocks, momentum_color_stocks = get_momentum_signal(stocks_net_1min, stocks_net_5min)
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.markdown("**Cumulative**")
-        st.metric("CE Flow", format_number(stocks_ce))
-        st.metric("PE Flow", format_number(stocks_pe))
-        net_emoji = "🟢" if stocks_net > 0 else ("🔴" if stocks_net < 0 else "⚪")
-        st.metric(f"{net_emoji} Net", format_number(stocks_net))
-    
-    with col2:
-        st.markdown("**Δ 1 Minute**")
-        st.metric("CE Δ", format_number(stocks_ce_1min))
-        st.metric("PE Δ", format_number(stocks_pe_1min))
-        net_emoji = "🟢" if stocks_net_1min > 0 else ("🔴" if stocks_net_1min < 0 else "⚪")
-        st.metric(f"{net_emoji} Net Δ", format_number(stocks_net_1min))
-    
-    with col3:
-        st.markdown("**Δ 5 Minutes**")
-        if stocks_ce_5min is not None:
-            st.metric("CE Δ", format_number(stocks_ce_5min))
-            st.metric("PE Δ", format_number(stocks_pe_5min))
-            net_emoji = "🟢" if stocks_net_5min > 0 else ("🔴" if stocks_net_5min < 0 else "⚪")
-            st.metric(f"{net_emoji} Net Δ", format_number(stocks_net_5min))
-        else:
-            st.info("Collecting...")
-    
-    with col4:
-        st.markdown("**Momentum**")
-        st.markdown(f"""
-        <div class="momentum-gauge" style="background-color: {momentum_color_stocks}; color: white;">
-            {momentum_signal_stocks}
-        </div>
-        """, unsafe_allow_html=True)
 
-else:
-    st.info("⏳ Start polling to see live momentum data")
+    # Get indices data for INDICES-WIDE PERFORMANCE section
+    indices_data_perf = st.session_state.get('indices_data', {})
+    if not indices_data_perf:
+        cached_perf = load_dashboard_cache()
+        if cached_perf and 'indices_data' in cached_perf:
+            indices_data_perf = cached_perf['indices_data']
 
-st.markdown("---")
+    if indices_data_perf and len(indices_data_perf) > 0:
+        st.markdown("")
+        st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        st.markdown(f"### 📊 INDICES-WIDE PERFORMANCE ({len(indices_data_perf)} Indices Tracked)")
+        st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
+        # Calculate performance stats
+        total_indices = len(indices_data_perf)
+        positive_indices = []
+        negative_indices = []
+        neutral_indices = []
+
+        for idx_name, idx_data in indices_data_perf.items():
+            # Get price change - try different keys
+            change_pct = 0
+            if "change_pct" in idx_data:
+                change_pct = idx_data["change_pct"]
+            elif "price" in idx_data and "prev_close" in idx_data:
+                if idx_data["prev_close"] and idx_data["prev_close"] > 0:
+                    change_pct = ((idx_data["price"] - idx_data["prev_close"]) / idx_data["prev_close"]) * 100
+
+            if change_pct > 0:
+                positive_indices.append((idx_name, change_pct))
+            elif change_pct < 0:
+                negative_indices.append((idx_name, change_pct))
+            else:
+                neutral_indices.append(idx_name)
+
+        pos_count = len(positive_indices)
+        neg_count = len(negative_indices)
+        neutral_count = len(neutral_indices)
+
+        pos_pct = (pos_count / total_indices * 100) if total_indices > 0 else 0
+        neg_pct = (neg_count / total_indices * 100) if total_indices > 0 else 0
+
+        # Breakdown by strength
+        very_strong_up = len([i for i in positive_indices if i[1] > 2])
+        strong_up = len([i for i in positive_indices if 1 <= i[1] <= 2])
+        weak_up = len([i for i in positive_indices if 0 < i[1] < 1])
+
+        weak_down = len([i for i in negative_indices if -1 < i[1] < 0])
+        strong_down = len([i for i in negative_indices if -2 <= i[1] <= -1])
+        very_strong_down = len([i for i in negative_indices if i[1] < -2])
+
+        # Display performance distribution - Compact vertical cards
+        st.markdown("**Index Performance Distribution:**")
+
+        # Use equal-width columns instead of proportional
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            st.metric(
+                label="🟢 POSITIVE",
+                value=f"{pos_count} indices",
+                delta=f"{pos_pct:.0f}% of market",
+                delta_color="normal"
+            )
+
+        with col2:
+            st.metric(
+                label="🔴 NEGATIVE",
+                value=f"{neg_count} indices",
+                delta=f"{neg_pct:.0f}% of market",
+                delta_color="inverse"
+            )
+
+        with col3:
+            # Market breadth indicator
+            if pos_pct >= 60:
+                st.metric("Market Breadth", "🚀 Strong", delta="Bullish")
+            elif neg_pct >= 60:
+                st.metric("Market Breadth", "📉 Weak", delta="Bearish", delta_color="inverse")
+            else:
+                st.metric("Market Breadth", "⚖️ Mixed", delta="Neutral", delta_color="off")
+
+        st.markdown("")
+
+        # Detailed breakdown
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.markdown("#### 🟢 Advancing Indices")
+            st.metric("Very Strong (> +2%)", f"{very_strong_up} indices")
+            st.metric("Strong (+1% to +2%)", f"{strong_up} indices")
+            st.metric("Weak (0% to +1%)", f"{weak_up} indices")
+
+        with col2:
+            st.markdown("#### 🔴 Declining Indices")
+            st.metric("Weak (0% to -1%)", f"{weak_down} indices")
+            st.metric("Strong (-1% to -2%)", f"{strong_down} indices")
+            st.metric("Very Strong (< -2%)", f"{very_strong_down} indices")
+
+        st.markdown("")
+
+        # ============================================
+        # AGGREGATE CE vs PE RACE (All Indices)
+        # ============================================
+        st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        st.markdown("### 🏁 ALL INDICES CE vs PE RACE (Aggregate Flow)")
+        st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        st.markdown("**Total Options Flow Across All Tracked Indices:**")
+
+        # Calculate aggregate
+        total_ce_flow_idx = sum(d.get("ce_flow", 0) for n, d in indices_data_perf.items())
+        total_pe_flow_idx = sum(d.get("pe_flow", 0) for n, d in indices_data_perf.items())
+        total_flow_idx = total_ce_flow_idx + total_pe_flow_idx
+
+        if total_flow_idx > 0:
+            ce_pct_idx = (total_ce_flow_idx / total_flow_idx) * 100
+            pe_pct_idx = 100 - ce_pct_idx
+
+            avg_ce_idx = total_ce_flow_idx / total_indices if total_indices > 0 else 0
+            avg_pe_idx = total_pe_flow_idx / total_indices if total_indices > 0 else 0
+
+            # Visual race bar
+            ce_blocks_idx = int(round(ce_pct_idx / 10))
+            pe_blocks_idx = 10 - ce_blocks_idx
+            race_bar_idx = f"[🟢{'▓' * ce_blocks_idx}🔴{'▓' * pe_blocks_idx}]"
+
+            st.markdown(f"**CE vs PE Race:**")
+            st.markdown(f"## {race_bar_idx} {ce_pct_idx:.0f}% CE | {pe_pct_idx:.0f}% PE")
+
+            st.markdown("")
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.markdown("#### 🟢 CE Flow (Calls)")
+                st.metric("Total CE Flow", format_number(total_ce_flow_idx))
+                st.metric("Average per Index", format_number(avg_ce_idx))
+                if ce_pct_idx >= 60:
+                    st.success("🚀 CE DOMINATING")
+                elif ce_pct_idx >= 55:
+                    st.info("🟢 CE Leading")
+                else:
+                    st.warning("⚖️ Balanced")
+
+            with col2:
+                st.markdown("#### 🔴 PE Flow (Puts)")
+                st.metric("Total PE Flow", format_number(total_pe_flow_idx))
+                st.metric("Average per Index", format_number(avg_pe_idx))
+                if pe_pct_idx >= 60:
+                    st.error("📉 PE DOMINATING")
+                elif pe_pct_idx >= 55:
+                    st.info("🔴 PE Leading")
+                else:
+                    st.warning("⚖️ Balanced")
+
+            st.markdown("")
+
+            # Signal
+            st.markdown("**Indices Options Signal:**")
+
+            if ce_pct_idx >= 65:
+                signal = "🚀 BULLS VERY AGGRESSIVE"
+                interpretation = "Smart money heavily buying calls across indices - strong bullish conviction"
+                st.success(f"**{signal}**")
+                st.caption(interpretation)
+            elif ce_pct_idx >= 55:
+                signal = "🟢 BULLS AGGRESSIVE"
+                interpretation = "More call buying than put buying - moderate bullish sentiment"
+                st.success(f"**{signal}**")
+                st.caption(interpretation)
+            elif pe_pct_idx >= 65:
+                signal = "📉 BEARS VERY AGGRESSIVE"
+                interpretation = "Smart money heavily buying puts across indices - strong bearish conviction"
+                st.error(f"**{signal}**")
+                st.caption(interpretation)
+            elif pe_pct_idx >= 55:
+                signal = "🔴 BEARS AGGRESSIVE"
+                interpretation = "More put buying than call buying - moderate bearish sentiment"
+                st.error(f"**{signal}**")
+                st.caption(interpretation)
+            else:
+                signal = "⚖️ BALANCED FLOW"
+                interpretation = "Call and put buying roughly equal - no clear directional bias"
+                st.info(f"**{signal}**")
+                st.caption(interpretation)
+
+            st.caption(f"📊 CE/PE Ratio: {(total_ce_flow_idx/total_pe_flow_idx):.2f}" if total_pe_flow_idx > 0 else "📊 CE/PE Ratio: N/A")
+
+        st.markdown("")
+
+        # ============================================
+        # SECTOR PERFORMANCE - SMART SORTING
+        # ============================================
+        st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        st.markdown("### 🎯 SECTOR PERFORMANCE")
+        st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+        # Prepare data with CE percentage calculation
+        all_idx_with_data = []
+        for idx_name, idx_data in indices_data_perf.items():
+            change_pct = 0
+            if "change_pct" in idx_data:
+                change_pct = idx_data["change_pct"]
+            elif "price" in idx_data and "prev_close" in idx_data:
+                if idx_data["prev_close"] and idx_data["prev_close"] > 0:
+                    change_pct = ((idx_data["price"] - idx_data["prev_close"]) / idx_data["prev_close"]) * 100
+
+            ce_flow = idx_data.get("ce_flow", 0)
+            pe_flow = idx_data.get("pe_flow", 0)
+            total = ce_flow + pe_flow
+            ce_pct = (ce_flow / total * 100) if total > 0 else 50
+
+            all_idx_with_data.append({
+                'name': idx_name,
+                'change_pct': change_pct,
+                'ce_flow': ce_flow,
+                'pe_flow': pe_flow,
+                'ce_pct': ce_pct
+            })
+
+        # Create three columns for different perspectives
+        col1, col2, col3 = st.columns(3)
+
+        # Column 1: Top 5 by Price Change (Biggest Movers)
+        with col1:
+            st.markdown("#### 📈 Biggest Movers (Price)")
+            sorted_by_price = sorted(all_idx_with_data, key=lambda x: abs(x['change_pct']), reverse=True)[:5]
+
+            medals = ["🥇", "🥈", "🥉", "🏅", "🏅"]
+            for i, idx_data in enumerate(sorted_by_price):
+                name = idx_data['name']
+                change = idx_data['change_pct']
+                ce_pct = idx_data['ce_pct']
+
+                # Color based on direction
+                change_emoji = "🟢" if change > 0 else "🔴" if change < 0 else "⚪"
+
+                # Signal based on CE%
+                if ce_pct >= 70:
+                    signal = "🚀"
+                elif ce_pct >= 60:
+                    signal = "✅"
+                elif ce_pct >= 40:
+                    signal = "⚖️"
+                else:
+                    signal = "⚠️"
+
+                medal = medals[i]
+                st.markdown(f"{medal} **{name}**: {change_emoji}{change:+.2f}%")
+                st.caption(f"CE: {ce_pct:.0f}% {signal}")
+
+        # Column 2: Top 5 by Bullish Flow (Most Bullish Sentiment)
+        with col2:
+            st.markdown("#### 🟢 Most Bullish Flow")
+            sorted_by_flow = sorted(all_idx_with_data, key=lambda x: x['ce_pct'], reverse=True)[:5]
+
+            for i, idx_data in enumerate(sorted_by_flow):
+                name = idx_data['name']
+                change = idx_data['change_pct']
+                ce_pct = idx_data['ce_pct']
+
+                # Signal
+                if ce_pct >= 80:
+                    signal = "🔥 Extreme"
+                elif ce_pct >= 70:
+                    signal = "🚀 Strong"
+                else:
+                    signal = "✅ Bullish"
+
+                # Show price for context
+                change_emoji = "🟢" if change > 0 else "🔴" if change < 0 else "⚪"
+
+                st.markdown(f"**{i+1}. {name}**: {ce_pct:.0f}% CE {signal}")
+                st.caption(f"Price: {change_emoji}{change:+.2f}%")
+
+        # Column 3: Divergence Alerts (Reversal Opportunities)
+        with col3:
+            st.markdown("#### ⚠️ Divergence Alerts")
+
+            # Find divergences
+            divergences = []
+            for idx_data in all_idx_with_data:
+                name = idx_data['name']
+                change = idx_data['change_pct']
+                ce_pct = idx_data['ce_pct']
+
+                # Bullish divergence: Price down but flow bullish
+                if change < -0.3 and ce_pct > 65:
+                    divergences.append({
+                        'name': name,
+                        'change': change,
+                        'ce_pct': ce_pct,
+                        'type': 'BULLISH',
+                        'strength': ce_pct - 50  # How strong the divergence
+                    })
+
+                # Bearish divergence: Price up but flow bearish
+                elif change > 0.3 and ce_pct < 35:
+                    divergences.append({
+                        'name': name,
+                        'change': change,
+                        'ce_pct': ce_pct,
+                        'type': 'BEARISH',
+                        'strength': 50 - ce_pct
+                    })
+
+            # Sort by strength
+            divergences_sorted = sorted(divergences, key=lambda x: x['strength'], reverse=True)[:5]
+
+            if divergences_sorted:
+                for i, div in enumerate(divergences_sorted):
+                    name = div['name']
+                    change = div['change']
+                    ce_pct = div['ce_pct']
+                    div_type = div['type']
+
+                    if div_type == 'BULLISH':
+                        icon = "🎯"
+                        signal = "Dip Buy?"
+                        interpretation = f"Price {change:.2f}% but {ce_pct:.0f}% CE"
+                    else:
+                        icon = "⚠️"
+                        signal = "Top?"
+                        interpretation = f"Price +{change:.2f}% but {ce_pct:.0f}% CE"
+
+                    st.markdown(f"{icon} **{name}** {signal}")
+                    st.caption(interpretation)
+            else:
+                st.info("No strong divergences detected")
+
+        st.markdown("")
 
 # ====================
 # NIFTY FUTURES CARD
@@ -4486,16 +4762,83 @@ else:
     st.info("Start polling to see data")
 
 st.markdown("---")
+st.markdown("")
+st.markdown("# 📈 PART 2: STOCKS ANALYSIS")
+st.markdown("*Market-wide performance analysis of all 209 F&O stocks*")
+st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+st.markdown("")
 
+# ============================================
+# STOCKS MOMENTUM
+# ============================================
+if cached_data:
+    st.markdown("### 📈 Stocks Momentum")
+
+    stocks_ce = cached_data.get("stocks_ce_cod", 0.0)
+    stocks_pe = cached_data.get("stocks_pe_cod", 0.0)
+    stocks_net = stocks_ce - stocks_pe
+
+    stocks_ce_1min = deltas.get("stocks_ce_1min", 0)
+    stocks_pe_1min = deltas.get("stocks_pe_1min", 0)
+    stocks_net_1min = stocks_ce_1min - stocks_pe_1min
+
+    stocks_ce_5min = deltas.get("stocks_ce_5min", 0)
+    stocks_pe_5min = deltas.get("stocks_pe_5min", 0)
+    stocks_net_5min = stocks_ce_5min - stocks_pe_5min
+
+    momentum_signal_stocks, momentum_color_stocks = get_momentum_signal(stocks_net_1min, stocks_net_5min)
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        st.markdown("**Cumulative**")
+        st.metric("CE Flow", format_number(stocks_ce))
+        st.metric("PE Flow", format_number(stocks_pe))
+        net_emoji = "🟢" if stocks_net > 0 else ("🔴" if stocks_net < 0 else "⚪")
+        st.metric(f"{net_emoji} Net", format_number(stocks_net))
+
+    with col2:
+        st.markdown("**Δ 1 Minute**")
+        st.metric("CE Δ", format_number(stocks_ce_1min))
+        st.metric("PE Δ", format_number(stocks_pe_1min))
+        net_emoji = "🟢" if stocks_net_1min > 0 else ("🔴" if stocks_net_1min < 0 else "⚪")
+        st.metric(f"{net_emoji} Net Δ", format_number(stocks_net_1min))
+
+    with col3:
+        st.markdown("**Δ 5 Minutes**")
+        if stocks_ce_5min is not None:
+            st.metric("CE Δ", format_number(stocks_ce_5min))
+            st.metric("PE Δ", format_number(stocks_pe_5min))
+            net_emoji = "🟢" if stocks_net_5min > 0 else ("🔴" if stocks_net_5min < 0 else "⚪")
+            st.metric(f"{net_emoji} Net Δ", format_number(stocks_net_5min))
+        else:
+            st.info("Collecting...")
+
+    with col4:
+        st.markdown("**Momentum**")
+        st.markdown(f"""
+        <div class="momentum-gauge" style="background-color: {momentum_color_stocks}; color: white;">
+            {momentum_signal_stocks}
+        </div>
+        """, unsafe_allow_html=True)
+
+else:
+    st.info("⏳ Start polling to see live momentum data")
+
+st.markdown("---")
+
+# ============================================
+# TOP 10 STOCKS (Live Rankings)
+# ============================================
 with st.expander("📈 View Top 10 Stocks (Live Rankings)", expanded=False):
     # Try to get live data first, then cached data, then show available stocks
     stocks_data = {}
-    
+
     # Priority 1: Live polling data
     if cached_data and "stocks_data" in cached_data and cached_data["stocks_data"]:
         stocks_data = cached_data["stocks_data"]
         st.success("🟢 Live Data")
-    
+
     # Priority 2: Cached data from file (last session)
     elif DASHBOARD_CACHE_FILE.exists():
         try:
@@ -4507,7 +4850,7 @@ with st.expander("📈 View Top 10 Stocks (Live Rankings)", expanded=False):
                 st.info(f"📊 Cached Data (Last: {cache_time})")
         except:
             pass
-    
+
     # Priority 3: Show message about waiting for data
     if not stocks_data:
         if hasattr(engine, 'stocks_with_fo') and engine.stocks_with_fo:
@@ -4515,24 +4858,24 @@ with st.expander("📈 View Top 10 Stocks (Live Rankings)", expanded=False):
             st.caption("💡 The polling system is collecting live options flow data. Refresh page in a few moments.")
         else:
             st.warning("⚠️ No stocks configured for tracking. Check fno_master.json file.")
-    
+
     # Display stocks data
     if stocks_data:
         # Show live rankings
         sorted_stocks = sorted(stocks_data.items(), key=lambda x: abs(x[1].get("net_flow", 0)), reverse=True)[:10]
-        
+
         if sorted_stocks:
             st.markdown("### 🔥 Top 10 by Net Flow")
-            
+
             for rank, (stock_name, data) in enumerate(sorted_stocks, 1):
                 ce_flow = data.get("ce_flow", 0)
                 pe_flow = data.get("pe_flow", 0)
                 net_flow = data.get("net_flow", 0)
                 stock_price = data.get("price")
                 change_pct = data.get("change_pct")
-                
+
                 sector = sector_mapping.get(stock_name.upper(), "N/A")
-                
+
                 # Calculate CE vs PE percentage
                 total_flow = ce_flow + pe_flow
                 if total_flow > 0:
@@ -4541,34 +4884,30 @@ with st.expander("📈 View Top 10 Stocks (Live Rankings)", expanded=False):
                 else:
                     ce_pct = 50
                     pe_pct = 50
-                
+
                 # Display
                 col1, col2 = st.columns([3, 1])
-                
+
                 with col1:
                     # Stock name and sector
                     price_str = f"₹{stock_price:,.2f}" if stock_price else "N/A"
                     change_str = f"({change_pct:+.2f}%)" if change_pct is not None else ""
                     st.markdown(f"**{rank}. {stock_name}** {price_str} {change_str}")
                     st.caption(f"_{sector}_")
-                    
+
                     # CE/PE race bar
                     st.progress(ce_pct / 100, text=f"CE: {ce_pct:.1f}% | PE: {pe_pct:.1f}%")
-                
+
                 with col2:
                     # Net flow
                     if net_flow > 0:
                         st.metric("Net", f"+{format_number(net_flow)}", delta="Bullish", delta_color="normal")
                     else:
                         st.metric("Net", f"{format_number(net_flow)}", delta="Bearish", delta_color="inverse")
-                
+
                 st.markdown("---")
 
 st.markdown("---")
-st.markdown("")
-st.markdown("# 📈 PART 2: STOCKS ANALYSIS")
-st.markdown("*Market-wide performance analysis of all 209 F&O stocks*")
-st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 st.markdown("")
 
 # ============================================
@@ -4854,336 +5193,5 @@ if cached_data and "stocks_data" in cached_data:
             st.info("No significant volume spikes detected yet. Spikes appear when net flow ≥ 200M")
 
 st.markdown("---")
-
-# ============================================
-# INDICES-WIDE PERFORMANCE (All Tracked Indices)
-# ============================================
-if cached_data and "indices_data" in cached_data:
-    indices_data_perf = cached_data.get("indices_data", {})
-    
-    if indices_data_perf and len(indices_data_perf) > 0:
-        st.markdown("")
-        st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        st.markdown(f"### 📊 INDICES-WIDE PERFORMANCE ({len(indices_data_perf)} Indices Tracked)")
-        st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        
-        # Calculate performance stats
-        total_indices = len(indices_data_perf)
-        positive_indices = []
-        negative_indices = []
-        neutral_indices = []
-        
-        for idx_name, idx_data in indices_data_perf.items():
-            # Get price change - try different keys
-            change_pct = 0
-            if "change_pct" in idx_data:
-                change_pct = idx_data["change_pct"]
-            elif "price" in idx_data and "prev_close" in idx_data:
-                if idx_data["prev_close"] and idx_data["prev_close"] > 0:
-                    change_pct = ((idx_data["price"] - idx_data["prev_close"]) / idx_data["prev_close"]) * 100
-            
-            if change_pct > 0:
-                positive_indices.append((idx_name, change_pct))
-            elif change_pct < 0:
-                negative_indices.append((idx_name, change_pct))
-            else:
-                neutral_indices.append(idx_name)
-        
-        pos_count = len(positive_indices)
-        neg_count = len(negative_indices)
-        neutral_count = len(neutral_indices)
-        
-        pos_pct = (pos_count / total_indices * 100) if total_indices > 0 else 0
-        neg_pct = (neg_count / total_indices * 100) if total_indices > 0 else 0
-        
-        # Breakdown by strength
-        very_strong_up = len([i for i in positive_indices if i[1] > 2])
-        strong_up = len([i for i in positive_indices if 1 <= i[1] <= 2])
-        weak_up = len([i for i in positive_indices if 0 < i[1] < 1])
-        
-        weak_down = len([i for i in negative_indices if -1 < i[1] < 0])
-        strong_down = len([i for i in negative_indices if -2 <= i[1] <= -1])
-        very_strong_down = len([i for i in negative_indices if i[1] < -2])
-        
-        # Display performance distribution - Compact vertical cards
-        st.markdown("**Index Performance Distribution:**")
-
-        # Use equal-width columns instead of proportional
-        col1, col2, col3 = st.columns(3)
-
-        with col1:
-            st.metric(
-                label="🟢 POSITIVE",
-                value=f"{pos_count} indices",
-                delta=f"{pos_pct:.0f}% of market",
-                delta_color="normal"
-            )
-
-        with col2:
-            st.metric(
-                label="🔴 NEGATIVE",
-                value=f"{neg_count} indices",
-                delta=f"{neg_pct:.0f}% of market",
-                delta_color="inverse"
-            )
-
-        with col3:
-            # Market breadth indicator
-            if pos_pct >= 60:
-                st.metric("Market Breadth", "🚀 Strong", delta="Bullish")
-            elif neg_pct >= 60:
-                st.metric("Market Breadth", "📉 Weak", delta="Bearish", delta_color="inverse")
-            else:
-                st.metric("Market Breadth", "⚖️ Mixed", delta="Neutral", delta_color="off")
-
-        st.markdown("")
-        
-        # Detailed breakdown
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown("#### 🟢 Advancing Indices")
-            st.metric("Very Strong (> +2%)", f"{very_strong_up} indices")
-            st.metric("Strong (+1% to +2%)", f"{strong_up} indices")
-            st.metric("Weak (0% to +1%)", f"{weak_up} indices")
-        
-        with col2:
-            st.markdown("#### 🔴 Declining Indices")
-            st.metric("Weak (0% to -1%)", f"{weak_down} indices")
-            st.metric("Strong (-1% to -2%)", f"{strong_down} indices")
-            st.metric("Very Strong (< -2%)", f"{very_strong_down} indices")
-
-        st.markdown("")
-        
-        # ============================================
-        # AGGREGATE CE vs PE RACE (All Indices)
-        # ============================================
-        st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        st.markdown("### 🏁 ALL INDICES CE vs PE RACE (Aggregate Flow)")
-        st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        st.markdown("**Total Options Flow Across All Tracked Indices:**")
-        
-        # Calculate aggregate
-        total_ce_flow_idx = sum(d.get("ce_flow", 0) for n, d in indices_data_perf.items())
-        total_pe_flow_idx = sum(d.get("pe_flow", 0) for n, d in indices_data_perf.items())
-        total_flow_idx = total_ce_flow_idx + total_pe_flow_idx
-        
-        if total_flow_idx > 0:
-            ce_pct_idx = (total_ce_flow_idx / total_flow_idx) * 100
-            pe_pct_idx = 100 - ce_pct_idx
-            
-            avg_ce_idx = total_ce_flow_idx / total_indices if total_indices > 0 else 0
-            avg_pe_idx = total_pe_flow_idx / total_indices if total_indices > 0 else 0
-            
-            # Visual race bar
-            ce_blocks_idx = int(round(ce_pct_idx / 10))
-            pe_blocks_idx = 10 - ce_blocks_idx
-            race_bar_idx = f"[🟢{'▓' * ce_blocks_idx}🔴{'▓' * pe_blocks_idx}]"
-            
-            st.markdown(f"**CE vs PE Race:**")
-            st.markdown(f"## {race_bar_idx} {ce_pct_idx:.0f}% CE | {pe_pct_idx:.0f}% PE")
-            
-            st.markdown("")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.markdown("#### 🟢 CE Flow (Calls)")
-                st.metric("Total CE Flow", format_number(total_ce_flow_idx))
-                st.metric("Average per Index", format_number(avg_ce_idx))
-                if ce_pct_idx >= 60:
-                    st.success("🚀 CE DOMINATING")
-                elif ce_pct_idx >= 55:
-                    st.info("🟢 CE Leading")
-                else:
-                    st.warning("⚖️ Balanced")
-            
-            with col2:
-                st.markdown("#### 🔴 PE Flow (Puts)")
-                st.metric("Total PE Flow", format_number(total_pe_flow_idx))
-                st.metric("Average per Index", format_number(avg_pe_idx))
-                if pe_pct_idx >= 60:
-                    st.error("📉 PE DOMINATING")
-                elif pe_pct_idx >= 55:
-                    st.info("🔴 PE Leading")
-                else:
-                    st.warning("⚖️ Balanced")
-            
-            st.markdown("")
-            
-            # Signal
-            st.markdown("**Indices Options Signal:**")
-            
-            if ce_pct_idx >= 65:
-                signal = "🚀 BULLS VERY AGGRESSIVE"
-                interpretation = "Smart money heavily buying calls across indices - strong bullish conviction"
-                st.success(f"**{signal}**")
-                st.caption(interpretation)
-            elif ce_pct_idx >= 55:
-                signal = "🟢 BULLS AGGRESSIVE"
-                interpretation = "More call buying than put buying - moderate bullish sentiment"
-                st.success(f"**{signal}**")
-                st.caption(interpretation)
-            elif pe_pct_idx >= 65:
-                signal = "📉 BEARS VERY AGGRESSIVE"
-                interpretation = "Smart money heavily buying puts across indices - strong bearish conviction"
-                st.error(f"**{signal}**")
-                st.caption(interpretation)
-            elif pe_pct_idx >= 55:
-                signal = "🔴 BEARS AGGRESSIVE"
-                interpretation = "More put buying than call buying - moderate bearish sentiment"
-                st.error(f"**{signal}**")
-                st.caption(interpretation)
-            else:
-                signal = "⚖️ BALANCED FLOW"
-                interpretation = "Call and put buying roughly equal - no clear directional bias"
-                st.info(f"**{signal}**")
-                st.caption(interpretation)
-            
-            st.caption(f"📊 CE/PE Ratio: {(total_ce_flow_idx/total_pe_flow_idx):.2f}" if total_pe_flow_idx > 0 else "📊 CE/PE Ratio: N/A")
-        
-        st.markdown("")
-        
-        # ============================================
-        # SECTOR PERFORMANCE - SMART SORTING
-        # ============================================
-        st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        st.markdown("### 🎯 SECTOR PERFORMANCE")
-        st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-
-        # Prepare data with CE percentage calculation
-        all_idx_with_data = []
-        for idx_name, idx_data in indices_data_perf.items():
-            change_pct = 0
-            if "change_pct" in idx_data:
-                change_pct = idx_data["change_pct"]
-            elif "price" in idx_data and "prev_close" in idx_data:
-                if idx_data["prev_close"] and idx_data["prev_close"] > 0:
-                    change_pct = ((idx_data["price"] - idx_data["prev_close"]) / idx_data["prev_close"]) * 100
-
-            ce_flow = idx_data.get("ce_flow", 0)
-            pe_flow = idx_data.get("pe_flow", 0)
-            total = ce_flow + pe_flow
-            ce_pct = (ce_flow / total * 100) if total > 0 else 50
-
-            all_idx_with_data.append({
-                'name': idx_name,
-                'change_pct': change_pct,
-                'ce_flow': ce_flow,
-                'pe_flow': pe_flow,
-                'ce_pct': ce_pct
-            })
-
-        # Create three columns for different perspectives
-        col1, col2, col3 = st.columns(3)
-
-        # Column 1: Top 5 by Price Change (Biggest Movers)
-        with col1:
-            st.markdown("#### 📈 Biggest Movers (Price)")
-            sorted_by_price = sorted(all_idx_with_data, key=lambda x: abs(x['change_pct']), reverse=True)[:5]
-
-            medals = ["🥇", "🥈", "🥉", "🏅", "🏅"]
-            for i, idx_data in enumerate(sorted_by_price):
-                name = idx_data['name']
-                change = idx_data['change_pct']
-                ce_pct = idx_data['ce_pct']
-
-                # Color based on direction
-                change_emoji = "🟢" if change > 0 else "🔴" if change < 0 else "⚪"
-
-                # Signal based on CE%
-                if ce_pct >= 70:
-                    signal = "🚀"
-                elif ce_pct >= 60:
-                    signal = "✅"
-                elif ce_pct >= 40:
-                    signal = "⚖️"
-                else:
-                    signal = "⚠️"
-
-                medal = medals[i]
-                st.markdown(f"{medal} **{name}**: {change_emoji}{change:+.2f}%")
-                st.caption(f"CE: {ce_pct:.0f}% {signal}")
-
-        # Column 2: Top 5 by Bullish Flow (Most Bullish Sentiment)
-        with col2:
-            st.markdown("#### 🟢 Most Bullish Flow")
-            sorted_by_flow = sorted(all_idx_with_data, key=lambda x: x['ce_pct'], reverse=True)[:5]
-
-            for i, idx_data in enumerate(sorted_by_flow):
-                name = idx_data['name']
-                change = idx_data['change_pct']
-                ce_pct = idx_data['ce_pct']
-
-                # Signal
-                if ce_pct >= 80:
-                    signal = "🔥 Extreme"
-                elif ce_pct >= 70:
-                    signal = "🚀 Strong"
-                else:
-                    signal = "✅ Bullish"
-
-                # Show price for context
-                change_emoji = "🟢" if change > 0 else "🔴" if change < 0 else "⚪"
-
-                st.markdown(f"**{i+1}. {name}**: {ce_pct:.0f}% CE {signal}")
-                st.caption(f"Price: {change_emoji}{change:+.2f}%")
-
-        # Column 3: Divergence Alerts (Reversal Opportunities)
-        with col3:
-            st.markdown("#### ⚠️ Divergence Alerts")
-
-            # Find divergences
-            divergences = []
-            for idx_data in all_idx_with_data:
-                name = idx_data['name']
-                change = idx_data['change_pct']
-                ce_pct = idx_data['ce_pct']
-
-                # Bullish divergence: Price down but flow bullish
-                if change < -0.3 and ce_pct > 65:
-                    divergences.append({
-                        'name': name,
-                        'change': change,
-                        'ce_pct': ce_pct,
-                        'type': 'BULLISH',
-                        'strength': ce_pct - 50  # How strong the divergence
-                    })
-
-                # Bearish divergence: Price up but flow bearish
-                elif change > 0.3 and ce_pct < 35:
-                    divergences.append({
-                        'name': name,
-                        'change': change,
-                        'ce_pct': ce_pct,
-                        'type': 'BEARISH',
-                        'strength': 50 - ce_pct
-                    })
-
-            # Sort by strength
-            divergences_sorted = sorted(divergences, key=lambda x: x['strength'], reverse=True)[:5]
-
-            if divergences_sorted:
-                for i, div in enumerate(divergences_sorted):
-                    name = div['name']
-                    change = div['change']
-                    ce_pct = div['ce_pct']
-                    div_type = div['type']
-
-                    if div_type == 'BULLISH':
-                        icon = "🎯"
-                        signal = "Dip Buy?"
-                        interpretation = f"Price {change:.2f}% but {ce_pct:.0f}% CE"
-                    else:
-                        icon = "⚠️"
-                        signal = "Top?"
-                        interpretation = f"Price +{change:.2f}% but {ce_pct:.0f}% CE"
-
-                    st.markdown(f"{icon} **{name}** {signal}")
-                    st.caption(interpretation)
-            else:
-                st.info("No strong divergences detected")
-
-        st.markdown("")
 
 st.caption("🔥 Live Momentum Trading System - Actionable Alerts with Strike Prices! 🚀")
