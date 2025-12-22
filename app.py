@@ -3233,6 +3233,11 @@ if len(nifty_chart_data) <= 1:
 
 if len(nifty_chart_data) > 1:
     st.markdown("---")
+    st.markdown("")
+    st.markdown("# 📊 PART 1: INDICES ANALYSIS")
+    st.markdown("*Comprehensive analysis of all tracked indices (NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, SENSEX)*")
+    st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    st.markdown("")
     st.subheader("📊 NIFTY Flow Analysis Charts")
     
     # Prepare data
@@ -4559,15 +4564,21 @@ with st.expander("📈 View Top 10 Stocks (Live Rankings)", expanded=False):
                 
                 st.markdown("---")
 
+st.markdown("---")
+st.markdown("")
+st.markdown("# 📈 PART 2: STOCKS ANALYSIS")
+st.markdown("*Market-wide performance analysis of all 209 F&O stocks*")
+st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+st.markdown("")
+
 # ============================================
 # MARKET-WIDE PERFORMANCE (Outside Expander)
 # ============================================
 # Get stocks_data from cache
 if cached_data and "stocks_data" in cached_data:
     stocks_data = cached_data.get("stocks_data", {})
-    
+
     if stocks_data and len(stocks_data) > 0:
-        st.markdown("")
         st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         st.markdown("### 📊 MARKET-WIDE PERFORMANCE (All 209 F&O Stocks)")
         st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
