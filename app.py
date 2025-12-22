@@ -2311,23 +2311,40 @@ def polling_loop():
                             stock_change_pct = None
 
                             # Method 1: Direct change percentage from Kite (most reliable)
-                            if fut_quote.get("change") is not None:
-                                stock_change_pct = fut_quote.get("change")
+                            # BUT: Skip if it's exactly 0 (likely market closed or no data)
+                            change_value = fut_quote.get("change")
+                            if change_value is not None and change_value != 0:
+                                stock_change_pct = change_value
 
                             # Method 2: Calculate from net_change
-                            elif fut_quote.get("net_change") is not None and stock_price:
+                            if stock_change_pct is None and stock_price:
                                 net_change = fut_quote.get("net_change")
-                                prev_close = stock_price - net_change
-                                if prev_close > 0:
-                                    stock_change_pct = (net_change / prev_close) * 100
+                                if net_change is not None and net_change != 0:
+                                    prev_close = stock_price - net_change
+                                    if prev_close > 0:
+                                        stock_change_pct = (net_change / prev_close) * 100
 
-                            # Method 3: Use ohlc.close (previous day close)
-                            elif stock_price:
+                            # Method 3: Use OHLC data (works even when market closed)
+                            if stock_change_pct is None and stock_price:
                                 ohlc = fut_quote.get("ohlc", {})
                                 if isinstance(ohlc, dict):
-                                    prev_close = ohlc.get("close") or ohlc.get("previous_close")
+                                    # Try different previous close fields
+                                    prev_close = (ohlc.get("previous_close") or
+                                                 ohlc.get("prev_close") or
+                                                 ohlc.get("close"))
+
+                                    # If prev_close is same as current price, it's likely today's close
+                                    # So check if there's an open price different from close
                                     if prev_close and prev_close > 0:
-                                        stock_change_pct = ((stock_price - prev_close) / prev_close) * 100
+                                        # If close == last_price, use open as reference (intraday change)
+                                        open_price = ohlc.get("open")
+                                        if abs(prev_close - stock_price) < 0.01 and open_price:
+                                            # Market might be closed, calculate from open
+                                            if abs(open_price - stock_price) > 0.01:
+                                                stock_change_pct = ((stock_price - open_price) / open_price) * 100
+                                        else:
+                                            # Normal case: calculate from previous close
+                                            stock_change_pct = ((stock_price - prev_close) / prev_close) * 100
                     
                     # Calculate CE/PE flows from options
                     for _, row in stock_meta.iterrows():
@@ -2362,9 +2379,25 @@ def polling_loop():
                     for name, data in sample_stocks:
                         chg = data.get('change_pct')
                         if chg is not None:
-                            print(f"   {name}: {data.get('price'):.2f} ({chg:+.2f}%)")
+                            print(f"   {name}: ₹{data.get('price'):.2f} ({chg:+.2f}%)")
                         else:
-                            print(f"   {name}: {data.get('price'):.2f} (change% unavailable)")
+                            print(f"   {name}: ₹{data.get('price'):.2f} (change% = None)")
+
+                    # DEBUG: Show what raw data looks like for first stock
+                    if len(stocks_data) > 0:
+                        first_stock = list(stocks_data.keys())[0]
+                        fut_rows_debug = engine.token_meta[
+                            (engine.token_meta["name"] == first_stock) &
+                            (engine.token_meta.get("type") == "FUT")
+                        ]
+                        if not fut_rows_debug.empty:
+                            fut_token_debug = str(int(fut_rows_debug.iloc[0]["instrument_token"]))
+                            if fut_token_debug in all_quotes:
+                                quote_debug = all_quotes[fut_token_debug]
+                                print(f"   DEBUG {first_stock} quote: change={quote_debug.get('change')}, net_change={quote_debug.get('net_change')}")
+                                ohlc_debug = quote_debug.get('ohlc', {})
+                                if ohlc_debug:
+                                    print(f"   DEBUG {first_stock} OHLC: open={ohlc_debug.get('open')}, close={ohlc_debug.get('close')}, prev_close={ohlc_debug.get('previous_close')}")
                 
                 total_indices_ce = sum(d["ce_flow"] for d in indices_data.values())
                 total_indices_pe = sum(d["pe_flow"] for d in indices_data.values())
@@ -2419,23 +2452,40 @@ def polling_loop():
                                 stock_change_pct = None
 
                                 # Method 1: Direct change percentage from Kite (most reliable)
-                                if fut_quote.get("change") is not None:
-                                    stock_change_pct = fut_quote.get("change")
+                                # BUT: Skip if it's exactly 0 (likely market closed or no data)
+                                change_value = fut_quote.get("change")
+                                if change_value is not None and change_value != 0:
+                                    stock_change_pct = change_value
 
                                 # Method 2: Calculate from net_change
-                                elif fut_quote.get("net_change") is not None and stock_price:
+                                if stock_change_pct is None and stock_price:
                                     net_change = fut_quote.get("net_change")
-                                    prev_close = stock_price - net_change
-                                    if prev_close > 0:
-                                        stock_change_pct = (net_change / prev_close) * 100
+                                    if net_change is not None and net_change != 0:
+                                        prev_close = stock_price - net_change
+                                        if prev_close > 0:
+                                            stock_change_pct = (net_change / prev_close) * 100
 
-                                # Method 3: Use ohlc.close (previous day close)
-                                elif stock_price:
+                                # Method 3: Use OHLC data (works even when market closed)
+                                if stock_change_pct is None and stock_price:
                                     ohlc = fut_quote.get("ohlc", {})
                                     if isinstance(ohlc, dict):
-                                        prev_close = ohlc.get("close") or ohlc.get("previous_close")
+                                        # Try different previous close fields
+                                        prev_close = (ohlc.get("previous_close") or
+                                                     ohlc.get("prev_close") or
+                                                     ohlc.get("close"))
+
+                                        # If prev_close is same as current price, it's likely today's close
+                                        # So check if there's an open price different from close
                                         if prev_close and prev_close > 0:
-                                            stock_change_pct = ((stock_price - prev_close) / prev_close) * 100
+                                            # If close == last_price, use open as reference (intraday change)
+                                            open_price = ohlc.get("open")
+                                            if abs(prev_close - stock_price) < 0.01 and open_price:
+                                                # Market might be closed, calculate from open
+                                                if abs(open_price - stock_price) > 0.01:
+                                                    stock_change_pct = ((stock_price - open_price) / open_price) * 100
+                                            else:
+                                                # Normal case: calculate from previous close
+                                                stock_change_pct = ((stock_price - prev_close) / prev_close) * 100
                         
                         # Calculate CE/PE flows
                         for _, row in stock_meta.iterrows():
