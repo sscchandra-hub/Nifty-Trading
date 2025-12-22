@@ -4692,6 +4692,170 @@ if cached_data and "stocks_data" in cached_data:
 st.markdown("---")
 
 # ============================================
+# VOLUME SPIKE DETECTION (Unusual Activity)
+# ============================================
+if cached_data and "stocks_data" in cached_data:
+    stocks_data_vol = cached_data.get("stocks_data", {})
+
+    if stocks_data_vol and len(stocks_data_vol) > 0:
+        st.markdown("")
+        st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        st.markdown("### 🔥 VOLUME SPIKE DETECTION (Unusual Activity)")
+        st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+        # Calculate volume spikes (based on net flow magnitude)
+        # A "volume spike" is when absolute net flow is significantly high
+        volume_threshold = 200  # Minimum 200M net flow to be considered
+
+        volume_spikes = []
+        for stock_name, data in stocks_data_vol.items():
+            net_flow = data.get('net_flow', 0)
+            ce_flow = data.get('ce_flow', 0)
+            pe_flow = data.get('pe_flow', 0)
+
+            # Calculate total volume (absolute sum of CE + PE)
+            total_volume = abs(ce_flow) + abs(pe_flow)
+
+            if abs(net_flow) >= volume_threshold or total_volume >= 500:
+                # Calculate volume intensity (how one-sided the flow is)
+                if total_volume > 0:
+                    intensity = abs(net_flow) / total_volume
+                else:
+                    intensity = 0
+
+                volume_spikes.append({
+                    'name': stock_name,
+                    'net_flow': net_flow,
+                    'ce_flow': ce_flow,
+                    'pe_flow': pe_flow,
+                    'total_volume': total_volume,
+                    'intensity': intensity,
+                    'price': data.get('price'),
+                    'change_pct': data.get('change_pct')
+                })
+
+        # Sort by total volume (most active)
+        volume_spikes_sorted = sorted(volume_spikes, key=lambda x: x['total_volume'], reverse=True)
+
+        # Display summary metrics
+        col1, col2, col3, col4 = st.columns(4)
+
+        with col1:
+            st.metric("🔥 Volume Spikes", len(volume_spikes))
+            st.caption(f"Net flow ≥ {volume_threshold}M")
+
+        with col2:
+            high_intensity = sum(1 for s in volume_spikes if s['intensity'] > 0.7)
+            st.metric("⚡ High Intensity", high_intensity)
+            st.caption("One-sided flow > 70%")
+
+        with col3:
+            bullish_spikes = sum(1 for s in volume_spikes if s['net_flow'] > 0)
+            st.metric("🟢 Bullish Spikes", bullish_spikes)
+            st.caption("Positive net flow")
+
+        with col4:
+            bearish_spikes = sum(1 for s in volume_spikes if s['net_flow'] < 0)
+            st.metric("🔴 Bearish Spikes", bearish_spikes)
+            st.caption("Negative net flow")
+
+        st.markdown("")
+
+        if volume_spikes_sorted:
+            # Display top volume spikes
+            st.markdown("#### 📊 Top 10 Volume Spikes (By Total Activity)")
+
+            for i, spike in enumerate(volume_spikes_sorted[:10], 1):
+                col1, col2, col3 = st.columns([2, 2, 1])
+
+                with col1:
+                    stock_name = spike['name']
+                    price = spike['price']
+                    change_pct = spike['change_pct']
+
+                    price_str = f"₹{price:,.2f}" if price else "N/A"
+                    if change_pct is not None:
+                        change_emoji = "🟢" if change_pct > 0 else "🔴"
+                        change_str = f"{change_emoji}{change_pct:+.2f}%"
+                    else:
+                        change_str = ""
+
+                    st.markdown(f"**{i}. {stock_name}**")
+                    st.caption(f"{price_str} {change_str}")
+
+                with col2:
+                    ce_flow = spike['ce_flow']
+                    pe_flow = spike['pe_flow']
+                    total_volume = spike['total_volume']
+
+                    ce_emoji = "🟢" if ce_flow > 0 else "🔴"
+                    pe_emoji = "🟢" if pe_flow > 0 else "🔴"
+
+                    st.markdown(f"**Total Volume:** {format_number(total_volume)}")
+                    st.caption(f"{ce_emoji} CE: {format_number(ce_flow)} | {pe_emoji} PE: {format_number(pe_flow)}")
+
+                with col3:
+                    net_flow = spike['net_flow']
+                    intensity = spike['intensity']
+
+                    flow_emoji = "🟢" if net_flow > 0 else "🔴"
+
+                    # Intensity indicator
+                    if intensity > 0.8:
+                        intensity_label = "🔥 Extreme"
+                        intensity_color = "red" if net_flow < 0 else "green"
+                    elif intensity > 0.6:
+                        intensity_label = "⚡ High"
+                        intensity_color = "orange"
+                    else:
+                        intensity_label = "📊 Moderate"
+                        intensity_color = "gray"
+
+                    st.metric(f"{flow_emoji} Net", format_number(net_flow))
+                    st.caption(f"{intensity_label} ({intensity*100:.0f}%)")
+
+                st.markdown("---")
+
+            # Volume Spike Interpretation Guide
+            with st.expander("📖 How to Read Volume Spikes"):
+                st.markdown("""
+                **What is a Volume Spike?**
+                - Unusual high options trading activity in a stock
+                - Indicates smart money or institutional interest
+                - Can signal upcoming price moves
+
+                **Total Volume:**
+                - Sum of CE + PE premium flows (ignores direction)
+                - Higher = More active trading
+
+                **Intensity:**
+                - How one-sided the flow is
+                - **🔥 Extreme (>80%):** Very strong directional bias
+                - **⚡ High (60-80%):** Strong directional bias
+                - **📊 Moderate (<60%):** Mixed/hedging activity
+
+                **Trading Signals:**
+                - **🟢 High Intensity + Positive Net Flow:** Strong bullish signal
+                - **🔴 High Intensity + Negative Net Flow:** Strong bearish signal
+                - **📊 Low Intensity + High Volume:** Hedging/uncertainty
+
+                **Example:**
+                ```
+                RELIANCE
+                Total Volume: 2000M (very active)
+                CE: 1800M | PE: 200M
+                Net: +1600M (bullish)
+                Intensity: 80% (extreme one-sided)
+
+                → Strong bullish signal! Traders heavily buying calls.
+                ```
+                """)
+        else:
+            st.info("No significant volume spikes detected yet. Spikes appear when net flow ≥ 200M")
+
+st.markdown("---")
+
+# ============================================
 # INDICES-WIDE PERFORMANCE (All Tracked Indices)
 # ============================================
 if cached_data and "indices_data" in cached_data:
