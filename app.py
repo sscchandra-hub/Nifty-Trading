@@ -1235,79 +1235,46 @@ def send_stock_alert(stock_name, alert_type, price, change_pct, net_flow, volume
     Send stock alerts via Telegram with cooldown logic
 
     Alert Types & Cooldowns:
-    - DIVERGENCE: No cooldown (immediate)
-    - VOLUME_SPIKE: 30-min cooldown per stock
-    - MOMENTUM: 15-min cooldown per stock
-
-    TEMPORARILY DISABLED - All stock alerts turned off
+    - BULLISH: 60-min cooldown per stock
+    - BEARISH: 60-min cooldown per stock
     """
-    return False  # DISABLED: All stock alerts temporarily disabled
-
     now = datetime.now()
-    
+
     # Check cooldown based on alert type
     cooldown_key = f"{stock_name}_{alert_type}"
-    
+
     if cooldown_key in engine.last_stock_alert:
         last_alert_time = engine.last_stock_alert[cooldown_key]
         time_diff = (now - last_alert_time).total_seconds() / 60  # minutes
-        
-        # Apply cooldown rules
-        if alert_type == "DIVERGENCE":
-            cooldown = 0  # No cooldown - always send!
-        elif alert_type == "VOLUME_SPIKE":
-            cooldown = 30  # 30 minutes
-        elif alert_type == "MOMENTUM":
-            cooldown = 15  # 15 minutes
-        else:
-            cooldown = 15  # Default
-        
-        if time_diff < cooldown:
+
+        # Apply 60-minute cooldown
+        if time_diff < 60:
             return False
-    
+
     # Format alert message (Hybrid format - 2-3 lines)
-    if alert_type == "DIVERGENCE":
-        if change_pct < 0 and net_flow > 0:
-            emoji = "⚠️"
-            signal = "BULLISH DIVERGENCE"
-            interpretation = "Smart money accumulating - watch for bounce"
-        else:
-            emoji = "⚠️"
-            signal = "BEARISH DIVERGENCE"
-            interpretation = "Smart money hedging - potential top"
-    elif alert_type == "VOLUME_SPIKE":
-        emoji = "🔥"
-        signal = "VOLUME SPIKE"
-        if volume_ratio:
-            interpretation = f"Unusual activity {volume_ratio:.1f}x normal volume"
-        else:
-            interpretation = "Unusual activity detected"
-    elif alert_type == "MOMENTUM":
-        if change_pct > 0:
-            emoji = "🚀"
-            signal = "STRONG BULLISH"
-            interpretation = "Sustained upward momentum"
-        else:
-            emoji = "📉"
-            signal = "STRONG BEARISH"
-            interpretation = "Sustained downward momentum"
+    if alert_type == "BULLISH":
+        emoji = "🟢"
+        signal = "STRONG BULLISH"
+        interpretation = "Price rising + Strong call buying"
+    elif alert_type == "BEARISH":
+        emoji = "🔴"
+        signal = "STRONG BEARISH"
+        interpretation = "Price falling + Strong put buying"
     else:
-        emoji = "📊"
-        signal = "ALERT"
-        interpretation = "Check dashboard"
-    
+        return False  # Only BULLISH/BEARISH alerts allowed
+
     # Format price and flow
     price_str = f"₹{price:,.2f}"
     change_emoji = "🟢" if change_pct > 0 else "🔴"
     change_str = f"{change_emoji}{change_pct:+.2f}%"
     flow_emoji = "🟢" if net_flow > 0 else "🔴"
     flow_str = f"{flow_emoji}{format_number(net_flow)}"
-    
+
     # Hybrid format (2-3 lines)
     telegram_message = f"{emoji} {signal} - {stock_name}\n"
     telegram_message += f"{price_str} {change_str} | Flow {flow_str}\n"
     telegram_message += f"{interpretation}"
-    
+
     # Send to Telegram
     try:
         send_telegram_alert(telegram_message)
@@ -2652,8 +2619,33 @@ def polling_loop():
 
                     # Update Top 10 tracking
                     engine.top_10_stocks = current_top_10
-                
-                
+
+                    # ============================================
+                    # BULLISH/BEARISH ALERTS FOR TOP 10 STOCKS
+                    # ============================================
+                    # Check each Top 10 stock for BULLISH or BEARISH conditions
+                    for stock_name, _ in sorted_stocks[:10]:
+                        stock_data = stocks_data.get(stock_name)
+                        if not stock_data:
+                            continue
+
+                        stock_price = stock_data.get("price")
+                        change_pct = stock_data.get("change_pct")
+                        net_flow = stock_data.get("net_flow", 0)
+
+                        # Skip if missing critical data
+                        if stock_price is None or change_pct is None:
+                            continue
+
+                        # BULLISH Alert: Price > +1% AND Net Flow > +100M
+                        if change_pct > 1.0 and net_flow > 100:
+                            send_stock_alert(stock_name, "BULLISH", stock_price, change_pct, net_flow)
+
+                        # BEARISH Alert: Price < -1% AND Net Flow < -100M
+                        elif change_pct < -1.0 and net_flow < -100:
+                            send_stock_alert(stock_name, "BEARISH", stock_price, change_pct, net_flow)
+
+
                 cache_data = {
                     "composite_score": composite_score,
                     "signal_band": signal_band,
