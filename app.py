@@ -1233,12 +1233,16 @@ def add_alert(message, alert_type="info", cooldown_minutes=10):
 def send_stock_alert(stock_name, alert_type, price, change_pct, net_flow, volume_ratio=None):
     """
     Send stock alerts via Telegram with cooldown logic
-    
+
     Alert Types & Cooldowns:
     - DIVERGENCE: No cooldown (immediate)
     - VOLUME_SPIKE: 30-min cooldown per stock
     - MOMENTUM: 15-min cooldown per stock
+
+    TEMPORARILY DISABLED - All stock alerts turned off
     """
+    return False  # DISABLED: All stock alerts temporarily disabled
+
     now = datetime.now()
     
     # Check cooldown based on alert type
