@@ -3022,7 +3022,7 @@ def stop_polling():
 # =========================
 # STREAMLIT UI
 # =========================
-st.set_page_config(page_title="Live Momentum Trading System", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="APEX AI TRADING", layout="wide", initial_sidebar_state="expanded")
 
 if AUTOREFRESH_AVAILABLE and st.session_state.get("auto_refresh_toggle", True) and st.session_state.get("polling_running", False):
     st.session_state.refresh_count += 1
@@ -3030,7 +3030,18 @@ if AUTOREFRESH_AVAILABLE and st.session_state.get("auto_refresh_toggle", True) a
 
 st.markdown("""
 <style>
-.main-header {font-size: 2.5rem; font-weight: bold; color: #1f77b4;}
+.main-header {
+    font-size: 3rem;
+    font-weight: bold;
+    color: #1f77b4;
+    text-align: center;
+    padding: 1rem 0;
+    margin-bottom: 1rem;
+    background: linear-gradient(90deg, #1f77b4, #2ca02c);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
 .alert-box {padding: 0.5rem; border-radius: 0.3rem; margin-bottom: 0.3rem; font-size: 0.9rem;}
 .alert-warning {background-color: #fff3cd; border-left: 4px solid #ffc107;}
 .alert-success {background-color: #d4edda; border-left: 4px solid #28a745;}
@@ -3100,7 +3111,7 @@ with st.sidebar:
         st.warning("⚠️ Pattern modules not loaded")
 
 
-st.markdown('<p class="main-header">🔥 Live Momentum Trading System</p>', unsafe_allow_html=True)
+st.markdown('<p class="main-header">🚀 APEX AI TRADING</p>', unsafe_allow_html=True)
 
 if not API_KEY or not API_SECRET:
     st.error("❌ Missing credentials in .env file")
