@@ -4905,17 +4905,37 @@ if cached_data and "indices_data" in cached_data:
         strong_down = len([i for i in negative_indices if -2 <= i[1] <= -1])
         very_strong_down = len([i for i in negative_indices if i[1] < -2])
         
-        # Display performance bar
+        # Display performance distribution - Compact vertical cards
         st.markdown("**Index Performance Distribution:**")
-        
-        col1, col2, col3 = st.columns([max(pos_pct, 1), max(neg_pct, 1), 0.1])
-        
+
+        # Use equal-width columns instead of proportional
+        col1, col2, col3 = st.columns(3)
+
         with col1:
-            st.markdown(f'<div style="background: linear-gradient(to right, #00ff00, #90EE90); padding: 20px; text-align: center; border-radius: 5px;"><b>🟢 POSITIVE</b><br>{pos_count} indices ({pos_pct:.0f}%)</div>', unsafe_allow_html=True)
-        
+            st.metric(
+                label="🟢 POSITIVE",
+                value=f"{pos_count} indices",
+                delta=f"{pos_pct:.0f}% of market",
+                delta_color="normal"
+            )
+
         with col2:
-            st.markdown(f'<div style="background: linear-gradient(to right, #ffcccb, #ff0000); padding: 20px; text-align: center; border-radius: 5px;"><b>🔴 NEGATIVE</b><br>{neg_count} indices ({neg_pct:.0f}%)</div>', unsafe_allow_html=True)
-        
+            st.metric(
+                label="🔴 NEGATIVE",
+                value=f"{neg_count} indices",
+                delta=f"{neg_pct:.0f}% of market",
+                delta_color="inverse"
+            )
+
+        with col3:
+            # Market breadth indicator
+            if pos_pct >= 60:
+                st.metric("Market Breadth", "🚀 Strong", delta="Bullish")
+            elif neg_pct >= 60:
+                st.metric("Market Breadth", "📉 Weak", delta="Bearish", delta_color="inverse")
+            else:
+                st.metric("Market Breadth", "⚖️ Mixed", delta="Neutral", delta_color="off")
+
         st.markdown("")
         
         # Detailed breakdown
@@ -4932,23 +4952,7 @@ if cached_data and "indices_data" in cached_data:
             st.metric("Weak (0% to -1%)", f"{weak_down} indices")
             st.metric("Strong (-1% to -2%)", f"{strong_down} indices")
             st.metric("Very Strong (< -2%)", f"{very_strong_down} indices")
-        
-        st.markdown("")
-        
-        # Market breadth signal
-        if pos_pct >= 60:
-            sentiment = "🚀 STRONG BREADTH"
-            sentiment_text = f"{pos_pct:.0f}% indices advancing - Broad-based rally"
-            st.success(f"**Market Breadth:** {sentiment} - {sentiment_text}")
-        elif neg_pct >= 60:
-            sentiment = "📉 WEAK BREADTH"
-            sentiment_text = f"{neg_pct:.0f}% indices declining - Broad-based selloff"
-            st.error(f"**Market Breadth:** {sentiment} - {sentiment_text}")
-        else:
-            sentiment = "⚖️ MIXED BREADTH"
-            sentiment_text = f"Market split - {pos_pct:.0f}% up, {neg_pct:.0f}% down"
-            st.info(f"**Market Breadth:** {sentiment} - {sentiment_text}")
-        
+
         st.markdown("")
         
         # ============================================
