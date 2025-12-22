@@ -822,6 +822,7 @@ class EngineState:
     nifty_fut_symbol: str = ""
     nifty_fut_expiry: str = ""
     last_stock_alert: dict = field(default_factory=dict)  # Track stock alerts with cooldowns
+    top_10_stocks: set = field(default_factory=set)  # Track current Top 10 stocks
 
 engine = EngineState()
 
@@ -2577,50 +2578,61 @@ def polling_loop():
                         print(f"✓ Futures: {engine.nifty_fut_symbol} Price={fut_price:.2f} Change={fut_change_pct:+.2f}% OI={fut_oi}")
 
                 # ============================================
-                # STOCK ALERTS DETECTION
+                # TOP 10 STOCKS TRACKING & NEW ENTRY ALERTS
                 # ============================================
                 if stocks_data:
                     # Sort by absolute net flow to get top stocks
                     sorted_stocks = sorted(stocks_data.items(), key=lambda x: abs(x[1].get("net_flow", 0)), reverse=True)
-                    top_20_stocks = sorted_stocks[:20]  # Only monitor top 20
-                    
-                    for stock_name, stock_data in top_20_stocks:
-                        stock_price = stock_data.get("price")
-                        change_pct = stock_data.get("change_pct")
-                        net_flow = stock_data.get("net_flow", 0)
-                        
-                        # Skip if missing critical data or flow too small
-                        if stock_price is None or change_pct is None or abs(net_flow) < 100000:
-                            continue
-                        
-                        # ===== ALERT 1: DIVERGENCE DETECTION (No cooldown) =====
-                        # Bullish Divergence: Price down but flow positive
-                        if change_pct < -0.3 and net_flow > 150000:
-                            send_stock_alert(stock_name, "DIVERGENCE", stock_price, change_pct, net_flow)
-                        
-                        # Bearish Divergence: Price up but flow negative
-                        elif change_pct > 0.3 and net_flow < -150000:
-                            send_stock_alert(stock_name, "DIVERGENCE", stock_price, change_pct, net_flow)
-                        
-                        # ===== ALERT 2: VOLUME SPIKE (30-min cooldown) =====
-                        stock_volume = stock_data.get("volume", 0)
-                        avg_volume = stock_data.get("avg_volume", 0)
-                        
-                        if stock_volume > 0 and avg_volume > 0:
-                            volume_ratio = stock_volume / avg_volume
-                            
-                            # Volume spike >= 3x with significant flow
-                            if volume_ratio >= 3.0 and abs(net_flow) > 200000:
-                                send_stock_alert(stock_name, "VOLUME_SPIKE", stock_price, change_pct, net_flow, volume_ratio)
-                        
-                        # ===== ALERT 3: STRONG MOMENTUM (15-min cooldown) =====
-                        # Bullish: Price up >1.5%, Flow positive >200K
-                        if change_pct > 1.5 and net_flow > 200000:
-                            send_stock_alert(stock_name, "MOMENTUM", stock_price, change_pct, net_flow)
-                        
-                        # Bearish: Price down >1.5%, Flow negative <-200K
-                        elif change_pct < -1.5 and net_flow < -200000:
-                            send_stock_alert(stock_name, "MOMENTUM", stock_price, change_pct, net_flow)
+
+                    # Get current Top 10 stocks
+                    current_top_10 = set([stock[0] for stock in sorted_stocks[:10]])
+
+                    # Find NEW entries (stocks that just entered Top 10)
+                    new_entries = current_top_10 - engine.top_10_stocks
+
+                    # Alert ONLY for NEW stocks entering Top 10
+                    if new_entries:
+                        for stock_name in new_entries:
+                            # Find this stock's data
+                            stock_data = stocks_data.get(stock_name)
+                            if not stock_data:
+                                continue
+
+                            stock_price = stock_data.get("price")
+                            change_pct = stock_data.get("change_pct")
+                            net_flow = stock_data.get("net_flow", 0)
+
+                            # Skip if missing critical data
+                            if stock_price is None or abs(net_flow) < 50000:
+                                continue
+
+                            # Find rank in Top 10
+                            rank = next((i+1 for i, (name, _) in enumerate(sorted_stocks[:10]) if name == stock_name), None)
+
+                            # Send "NEW TOP 10 ENTRY" alert
+                            emoji = "🔥" if rank <= 3 else "⭐"
+                            signal = f"NEW TOP {rank} ENTRY"
+
+                            flow_direction = "BULLISH" if net_flow > 0 else "BEARISH"
+                            flow_emoji = "🟢" if net_flow > 0 else "🔴"
+
+                            price_str = f"₹{stock_price:,.2f}"
+                            change_emoji = "🟢" if change_pct and change_pct > 0 else "🔴"
+                            change_str = f"{change_emoji}{change_pct:+.2f}%" if change_pct else ""
+                            flow_str = f"{flow_emoji}{format_number(net_flow)}"
+
+                            telegram_message = f"{emoji} {signal} - {stock_name}\n"
+                            telegram_message += f"{price_str} {change_str} | Flow {flow_str}\n"
+                            telegram_message += f"📊 Rank #{rank} | {flow_direction} momentum"
+
+                            try:
+                                send_telegram_alert(telegram_message)
+                                print(f"📱 NEW Top 10 Entry: #{rank} {stock_name} (Net Flow: {format_number(net_flow)})")
+                            except Exception as e:
+                                print(f"Error sending Top 10 alert: {e}")
+
+                    # Update Top 10 tracking
+                    engine.top_10_stocks = current_top_10
                 
                 
                 cache_data = {
