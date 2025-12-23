@@ -3867,17 +3867,12 @@ if volume_state.spike_queue and len(volume_state.spike_queue) > 0:
     # Race Summary
     st.markdown("")
     st.markdown("#### Race Summary")
-    
+
     total_spikes = ce_count + pe_count
     if total_spikes > 0:
         ce_pct = (ce_count / total_spikes) * 100
         pe_pct = 100 - ce_pct
-        
-        # Create visual race bar
-        ce_blocks = int(round(ce_pct / 10))
-        pe_blocks = 10 - ce_blocks
-        race_bar = f"[🟢{'▓' * ce_blocks}🔴{'▓' * pe_blocks}]"
-        
+
         # Determine signal
         if ce_pct >= 60:
             signal = "🚀 BULLS AGGRESSIVE - More CE spikes today"
@@ -3888,16 +3883,19 @@ if volume_state.spike_queue and len(volume_state.spike_queue) > 0:
         else:
             signal = "⚖️ BALANCED - CE and PE spikes roughly equal"
             signal_color = "info"
-        
-        st.markdown(f"**CE Dominance: {ce_pct:.0f}%**  {race_bar}  {ce_pct:.0f}% CE | {pe_pct:.0f}% PE")
-        
+
+        st.markdown(f"**CE Dominance: {ce_pct:.0f}%**  {ce_pct:.0f}% CE | {pe_pct:.0f}% PE")
+
+        # Add modern CE/PE progress bar
+        st.markdown(create_cepe_progress_bar(ce_count, pe_count, show_labels=True), unsafe_allow_html=True)
+
         if signal_color == "success":
             st.success(f"**Signal:** {signal}")
         elif signal_color == "error":
             st.error(f"**Signal:** {signal}")
         else:
             st.info(f"**Signal:** {signal}")
-    
+
     st.markdown("")
 
 
