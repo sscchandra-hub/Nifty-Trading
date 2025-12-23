@@ -904,6 +904,130 @@ def format_number(num):
     
     return formatted
 
+# ============================================
+# ENHANCED UI HELPER FUNCTIONS
+# ============================================
+
+def create_cepe_progress_bar(ce_value, pe_value, show_labels=True):
+    """
+    Create visual CE vs PE progress bar using HTML/CSS
+    Returns HTML string for st.markdown()
+    """
+    total = ce_value + pe_value
+    if total > 0:
+        ce_pct = (ce_value / total) * 100
+        pe_pct = 100 - ce_pct
+    else:
+        ce_pct = 50
+        pe_pct = 50
+
+    ce_label = f"{ce_pct:.1f}%" if show_labels else ""
+    pe_label = f"{pe_pct:.1f}%" if show_labels else ""
+
+    html = f"""
+    <div class="cepe-bar-container">
+        <div class="cepe-bar-ce" style="width: {ce_pct}%;">{ce_label}</div>
+        <div class="cepe-bar-pe" style="width: {pe_pct}%;">{pe_label}</div>
+    </div>
+    """
+    return html
+
+def get_status_indicator(value, threshold_high=0, threshold_low=0):
+    """
+    Return traffic light status indicator based on value
+    🟢 Green for positive/bullish
+    🟡 Yellow for neutral
+    🔴 Red for negative/bearish
+    """
+    if value > threshold_high:
+        return '<span class="status-green">🟢</span>'
+    elif value < threshold_low:
+        return '<span class="status-red">🔴</span>'
+    else:
+        return '<span class="status-yellow">🟡</span>'
+
+def create_enhanced_section_header(title, icon="📊"):
+    """
+    Create enhanced section header with icon and styling
+    """
+    html = f"""
+    <div class="section-header">
+        <h3 style="margin: 0; color: #1f77b4; font-size: 1.5rem;">
+            {icon} {title}
+        </h3>
+    </div>
+    """
+    return html
+
+def create_metric_card(label, value, card_type="neutral"):
+    """
+    Create color-coded metric card
+    card_type: 'bullish', 'bearish', or 'neutral'
+    """
+    class_name = f"metric-card-{card_type}"
+    html = f"""
+    <div class="{class_name}">
+        <div style="font-size: 0.9rem; color: #666; margin-bottom: 0.3rem;">{label}</div>
+        <div style="font-size: 1.5rem; font-weight: bold; color: #333;">{value}</div>
+    </div>
+    """
+    return html
+
+def create_market_overview_panel(indices_data, deltas):
+    """
+    Create compact Market Overview Panel showing key metrics at a glance
+    """
+    # Calculate aggregate metrics
+    total_ce = sum(idx.get('ce_flow', 0) for idx in indices_data.values())
+    total_pe = sum(idx.get('pe_flow', 0) for idx in indices_data.values())
+    net_flow = total_ce - total_pe
+
+    # Get delta metrics
+    indices_ce_1min = deltas.get('indices_ce_1min', 0)
+    indices_pe_1min = deltas.get('indices_pe_1min', 0)
+    net_1min = indices_ce_1min - indices_pe_1min
+
+    # Determine market sentiment
+    if net_flow > 0 and net_1min > 0:
+        sentiment = "🟢 BULLISH"
+        sentiment_color = "#28a745"
+    elif net_flow < 0 and net_1min < 0:
+        sentiment = "🔴 BEARISH"
+        sentiment_color = "#dc3545"
+    else:
+        sentiment = "🟡 NEUTRAL"
+        sentiment_color = "#ffc107"
+
+    # Calculate PCR (Put-Call Ratio)
+    pcr = (total_pe / total_ce) if total_ce > 0 else 0
+
+    html = f"""
+    <div class="overview-panel">
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1rem; margin-bottom: 1rem;">
+            <div style="text-align: center;">
+                <div style="font-size: 0.9rem; opacity: 0.9;">Market Sentiment</div>
+                <div style="font-size: 1.8rem; font-weight: bold; color: {sentiment_color};">{sentiment}</div>
+            </div>
+            <div style="text-align: center;">
+                <div style="font-size: 0.9rem; opacity: 0.9;">Net Flow</div>
+                <div style="font-size: 1.8rem; font-weight: bold;">{format_number(net_flow)}</div>
+            </div>
+            <div style="text-align: center;">
+                <div style="font-size: 0.9rem; opacity: 0.9;">1min Δ</div>
+                <div style="font-size: 1.8rem; font-weight: bold;">{format_number(net_1min)}</div>
+            </div>
+            <div style="text-align: center;">
+                <div style="font-size: 0.9rem; opacity: 0.9;">PCR</div>
+                <div style="font-size: 1.8rem; font-weight: bold;">{pcr:.2f}</div>
+            </div>
+        </div>
+        <div style="margin-top: 1rem;">
+            {create_cepe_progress_bar(total_ce, total_pe, show_labels=True)}
+        </div>
+    </div>
+    """
+    return html
+
 def save_historical_data(index_name, data_row):
     """
     PHASE 1: Save historical data to daily CSV file
@@ -3043,6 +3167,124 @@ st.markdown("""
     background-clip: text;
     text-shadow: 2px 2px 4px rgba(0,0,0,0.1);
 }
+
+/* Color-Coded Metric Cards */
+.metric-card-bullish {
+    background: linear-gradient(135deg, #d4edda 0%, #c3e6cb 100%);
+    border-left: 4px solid #28a745;
+    padding: 1rem;
+    border-radius: 8px;
+    margin: 0.5rem 0;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+.metric-card-bearish {
+    background: linear-gradient(135deg, #f8d7da 0%, #f5c6cb 100%);
+    border-left: 4px solid #dc3545;
+    padding: 1rem;
+    border-radius: 8px;
+    margin: 0.5rem 0;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+.metric-card-neutral {
+    background: linear-gradient(135deg, #fff3cd 0%, #ffeaa7 100%);
+    border-left: 4px solid #ffc107;
+    padding: 1rem;
+    border-radius: 8px;
+    margin: 0.5rem 0;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+/* CE/PE Progress Bars */
+.cepe-bar-container {
+    width: 100%;
+    height: 30px;
+    background-color: #f0f0f0;
+    border-radius: 15px;
+    overflow: hidden;
+    position: relative;
+    border: 2px solid #ddd;
+}
+.cepe-bar-ce {
+    height: 100%;
+    background: linear-gradient(90deg, #28a745, #20c997);
+    float: left;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    font-weight: bold;
+    font-size: 0.85rem;
+}
+.cepe-bar-pe {
+    height: 100%;
+    background: linear-gradient(90deg, #dc3545, #e74c3c);
+    float: left;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    font-weight: bold;
+    font-size: 0.85rem;
+}
+
+/* Market Overview Panel */
+.overview-panel {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    padding: 2rem;
+    border-radius: 15px;
+    margin: 1rem 0;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.2);
+}
+.overview-metric {
+    text-align: center;
+    padding: 1rem;
+}
+
+/* Sentiment Gauge */
+.sentiment-gauge {
+    width: 200px;
+    height: 100px;
+    position: relative;
+    margin: 0 auto;
+}
+.gauge-arrow {
+    width: 4px;
+    height: 80px;
+    background-color: #333;
+    position: absolute;
+    bottom: 0;
+    left: 50%;
+    transform-origin: bottom center;
+}
+
+/* Enhanced Section Headers */
+.section-header {
+    background: linear-gradient(90deg, #f8f9fa 0%, #e9ecef 100%);
+    border-left: 5px solid #1f77b4;
+    padding: 1rem 1.5rem;
+    border-radius: 8px;
+    margin: 1.5rem 0 1rem 0;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+}
+
+/* Status Indicators */
+.status-green { color: #28a745; font-size: 1.5rem; }
+.status-yellow { color: #ffc107; font-size: 1.5rem; }
+.status-red { color: #dc3545; font-size: 1.5rem; }
+
+/* Stock Cards */
+.stock-card {
+    border-radius: 10px;
+    padding: 1rem;
+    margin: 0.5rem 0;
+    transition: transform 0.2s;
+}
+.stock-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+}
+
 .part-container {
     border: 4px solid #000000;
     border-radius: 10px;
@@ -3467,7 +3709,7 @@ if len(volume_state.ce_pe_history) == 0 or len(volume_state.spike_queue) == 0:
 heatmap_df = create_volume_spike_heatmap()
 
 if heatmap_df is not None and not heatmap_df.empty:
-    st.markdown("### 🔥 Volume Spike Monitor (Last 10 Spikes)")
+    st.markdown(create_enhanced_section_header("Volume Spike Monitor (Last 10 Spikes)", "🔥"), unsafe_allow_html=True)
     st.dataframe(
         heatmap_df,
         use_container_width=True,
@@ -3476,7 +3718,7 @@ if heatmap_df is not None and not heatmap_df.empty:
     st.caption("🔥 >3x = Strong Signal | 🟡 2-3x = Moderate | 🟢 <2x = Normal")
 else:
     # Show blank heatmap table
-    st.markdown("### 🔥 Volume Spike Monitor (Last 10 Spikes)")
+    st.markdown(create_enhanced_section_header("Volume Spike Monitor (Last 10 Spikes)", "🔥"), unsafe_allow_html=True)
     blank_df = pd.DataFrame({
         'Time': ['—'] * 5,
         'Strike': ['—'] * 5,
@@ -3492,7 +3734,7 @@ else:
 if volume_state.spike_queue and len(volume_state.spike_queue) > 0:
     st.markdown("")
     st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    st.markdown("### 📊 SESSION SUMMARY (Since 9:15 AM)")
+    st.markdown(create_enhanced_section_header("SESSION SUMMARY (Since 9:15 AM)", "📊"), unsafe_allow_html=True)
     st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     
     # Calculate statistics
@@ -3586,24 +3828,27 @@ with col1:
     race_data = create_ce_pe_race_chart()
     
     if race_data:
-        st.markdown("### 📈 CE vs PE Race")
+        st.markdown(create_enhanced_section_header("CE vs PE Race", "📈"), unsafe_allow_html=True)
         st.markdown("**10-Minute Window**")
-        
-        # CE Bar
-        st.markdown(f"**CE Volume:** {format_number(race_data['ce_total'])} ({race_data['ce_pct']:.1f}%)")
-        st.progress(race_data['ce_pct'] / 100)
-        
-        # PE Bar
-        st.markdown(f"**PE Volume:** {format_number(race_data['pe_total'])} ({race_data['pe_pct']:.1f}%)")
-        st.progress(race_data['pe_pct'] / 100)
-        
-        # Net Bias
+
+        # Volume metrics
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.markdown(f"**CE:** {format_number(race_data['ce_total'])}")
+        with col_b:
+            st.markdown(f"**PE:** {format_number(race_data['pe_total'])}")
+
+        # Enhanced progress bar
+        st.markdown(create_cepe_progress_bar(race_data['ce_total'], race_data['pe_total']), unsafe_allow_html=True)
+
+        # Net Bias with status indicator
+        status_icon = get_status_indicator(race_data['net_flow'], threshold_high=1000, threshold_low=-1000)
         if race_data['bias'] == 'BULLISH':
-            st.success(f"**Net {race_data['bias']}:** +{format_number(race_data['net_flow'])}")
+            st.markdown(f"{status_icon} **Net {race_data['bias']}:** +{format_number(race_data['net_flow'])}", unsafe_allow_html=True)
         elif race_data['bias'] == 'BEARISH':
-            st.error(f"**Net {race_data['bias']}:** {format_number(race_data['net_flow'])}")
+            st.markdown(f"{status_icon} **Net {race_data['bias']}:** {format_number(race_data['net_flow'])}", unsafe_allow_html=True)
         else:
-            st.info(f"**Net {race_data['bias']}:** {format_number(race_data['net_flow'])}")
+            st.markdown(f"{status_icon} **Net {race_data['bias']}:** {format_number(race_data['net_flow'])}", unsafe_allow_html=True)
         
         # 10-Min Change
         st.markdown("**10-Min Change:**")
@@ -3886,8 +4131,17 @@ st.subheader("🔥 Live Momentum Tracker")
 
 if cached_data and cached_data.get("deltas"):
     deltas = cached_data["deltas"]
-    
-    st.markdown("### 📊 Indices Momentum")
+    indices_data = cached_data.get("indices_data", {})
+
+    # ============================================
+    # MARKET OVERVIEW PANEL
+    # ============================================
+    if indices_data:
+        st.markdown(create_market_overview_panel(indices_data, deltas), unsafe_allow_html=True)
+        st.markdown("---")
+
+    # Enhanced section header
+    st.markdown(create_enhanced_section_header("Indices Momentum", "📊"), unsafe_allow_html=True)
     
     indices_ce = cached_data.get("indices_ce_cod", 0.0)
     indices_pe = cached_data.get("indices_pe_cod", 0.0)
@@ -3904,13 +4158,18 @@ if cached_data and cached_data.get("deltas"):
     momentum_signal, momentum_color = get_momentum_signal(indices_net_1min, indices_net_5min)
     
     col1, col2, col3, col4 = st.columns(4)
-    
+
     with col1:
         st.markdown("**Cumulative**")
         st.metric("CE Flow", format_number(indices_ce))
         st.metric("PE Flow", format_number(indices_pe))
-        net_emoji = "🟢" if indices_net > 0 else ("🔴" if indices_net < 0 else "⚪")
-        st.metric(f"{net_emoji} Net", format_number(indices_net))
+
+        # Add CE/PE progress bar
+        st.markdown(create_cepe_progress_bar(indices_ce, indices_pe), unsafe_allow_html=True)
+
+        # Status indicator with net flow
+        status_icon = get_status_indicator(indices_net, threshold_high=1000, threshold_low=-1000)
+        st.markdown(f"{status_icon} **Net:** {format_number(indices_net)}", unsafe_allow_html=True)
     
     with col2:
         st.markdown("**Δ 1 Minute**")
@@ -3953,29 +4212,34 @@ if cached_data and cached_data.get("deltas"):
     
     # NIFTY Momentum Section
     if "NIFTY" in indices_data:
-        st.markdown("### 📈 NIFTY Momentum")
-        
+        st.markdown(create_enhanced_section_header("NIFTY Momentum", "📈"), unsafe_allow_html=True)
+
         nifty = indices_data["NIFTY"]
         ce_flow = nifty.get('ce_flow', 0)
         pe_flow = nifty.get('pe_flow', 0)
         net_flow = ce_flow - pe_flow
-        
+
         ce_1min = deltas.get('NIFTY_ce_1min', 0)
         pe_1min = deltas.get('NIFTY_pe_1min', 0)
         net_1min = ce_1min - pe_1min
-        
+
         ce_5min = deltas.get('NIFTY_ce_5min')
         pe_5min = deltas.get('NIFTY_pe_5min')
         net_5min = (ce_5min - pe_5min) if ce_5min is not None and pe_5min is not None else None
-        
+
         col1, col2, col3, col4 = st.columns(4)
-        
+
         with col1:
             st.markdown("**Cumulative**")
             st.metric("CE Flow", format_number(ce_flow))
             st.metric("PE Flow", format_number(pe_flow))
-            net_emoji = "🟢" if net_flow > 0 else ("🔴" if net_flow < 0 else "⚪")
-            st.metric(f"{net_emoji} Net", format_number(net_flow))
+
+            # Add CE/PE progress bar
+            st.markdown(create_cepe_progress_bar(ce_flow, pe_flow), unsafe_allow_html=True)
+
+            # Status indicator with net flow
+            status_icon = get_status_indicator(net_flow, threshold_high=500, threshold_low=-500)
+            st.markdown(f"{status_icon} **Net:** {format_number(net_flow)}", unsafe_allow_html=True)
         
         with col2:
             st.markdown("**Δ 1 Minute**")
@@ -4009,22 +4273,22 @@ if cached_data and cached_data.get("deltas"):
     
     # BANKNIFTY Momentum Section
     if "BANKNIFTY" in indices_data:
-        st.markdown("### 📈 BANKNIFTY Momentum")
-        
+        st.markdown(create_enhanced_section_header("BANKNIFTY Momentum", "📈"), unsafe_allow_html=True)
+
         banknifty = indices_data["BANKNIFTY"]
         ce_flow = banknifty.get('ce_flow', 0)
         pe_flow = banknifty.get('pe_flow', 0)
         net_flow = ce_flow - pe_flow
-        
+
         ce_1min = deltas.get('BANKNIFTY_ce_1min', 0)
         pe_1min = deltas.get('BANKNIFTY_pe_1min', 0)
         net_1min = ce_1min - pe_1min
-        
+
         ce_5min = deltas.get('BANKNIFTY_ce_5min')
         pe_5min = deltas.get('BANKNIFTY_pe_5min')
         net_5min = (ce_5min - pe_5min) if ce_5min is not None and pe_5min is not None else None
-        
-        # CE vs PE Race
+
+        # Calculate dominance
         total_flow = ce_flow + pe_flow
         if total_flow > 0:
             ce_pct = (ce_flow / total_flow) * 100
@@ -4032,12 +4296,7 @@ if cached_data and cached_data.get("deltas"):
         else:
             ce_pct = 50
             pe_pct = 50
-        
-        # Create visual race bar (10 blocks)
-        ce_blocks = int(round(ce_pct / 10))
-        pe_blocks = 10 - ce_blocks
-        race_bar = f"[🟢{'▓' * ce_blocks}🔴{'▓' * pe_blocks}] {ce_pct:.0f}%"
-        
+
         # Dominance indicator
         if ce_pct >= 75:
             dominance = "🚀 CE DOMINATING"
@@ -4045,20 +4304,22 @@ if cached_data and cached_data.get("deltas"):
             dominance = "📉 PE DOMINATING"
         else:
             dominance = "⚖️ Balanced"
-        
+
         col1, col2, col3, col4 = st.columns(4)
-        
+
         with col1:
             st.markdown("**Cumulative**")
             st.metric("CE Flow", format_number(ce_flow))
             st.metric("PE Flow", format_number(pe_flow))
-            net_emoji = "🟢" if net_flow > 0 else ("🔴" if net_flow < 0 else "⚪")
-            st.metric(f"{net_emoji} Net", format_number(net_flow))
-        
-            
+
+            # Add CE/PE progress bar
             st.markdown("**CE vs PE Race**")
-            st.markdown(race_bar)
+            st.markdown(create_cepe_progress_bar(ce_flow, pe_flow), unsafe_allow_html=True)
             st.caption(dominance)
+
+            # Status indicator with net flow
+            status_icon = get_status_indicator(net_flow, threshold_high=500, threshold_low=-500)
+            st.markdown(f"{status_icon} **Net:** {format_number(net_flow)}", unsafe_allow_html=True)
         with col2:
             st.markdown("**Δ 1 Minute**")
             st.metric("CE Δ", format_number(ce_1min))
@@ -4091,22 +4352,22 @@ if cached_data and cached_data.get("deltas"):
     
     # FINNIFTY Momentum Section
     if "FINNIFTY" in indices_data:
-        st.markdown("### 📈 FINNIFTY Momentum")
-        
+        st.markdown(create_enhanced_section_header("FINNIFTY Momentum", "📈"), unsafe_allow_html=True)
+
         finnifty = indices_data["FINNIFTY"]
         ce_flow = finnifty.get('ce_flow', 0)
         pe_flow = finnifty.get('pe_flow', 0)
         net_flow = ce_flow - pe_flow
-        
+
         ce_1min = deltas.get('FINNIFTY_ce_1min', 0)
         pe_1min = deltas.get('FINNIFTY_pe_1min', 0)
         net_1min = ce_1min - pe_1min
-        
+
         ce_5min = deltas.get('FINNIFTY_ce_5min')
         pe_5min = deltas.get('FINNIFTY_pe_5min')
         net_5min = (ce_5min - pe_5min) if ce_5min is not None and pe_5min is not None else None
-        
-        # CE vs PE Race
+
+        # Calculate dominance
         total_flow = ce_flow + pe_flow
         if total_flow > 0:
             ce_pct = (ce_flow / total_flow) * 100
@@ -4114,12 +4375,7 @@ if cached_data and cached_data.get("deltas"):
         else:
             ce_pct = 50
             pe_pct = 50
-        
-        # Create visual race bar (10 blocks)
-        ce_blocks = int(round(ce_pct / 10))
-        pe_blocks = 10 - ce_blocks
-        race_bar = f"[🟢{'▓' * ce_blocks}🔴{'▓' * pe_blocks}] {ce_pct:.0f}%"
-        
+
         # Dominance indicator
         if ce_pct >= 75:
             dominance = "🚀 CE DOMINATING"
@@ -4127,20 +4383,22 @@ if cached_data and cached_data.get("deltas"):
             dominance = "📉 PE DOMINATING"
         else:
             dominance = "⚖️ Balanced"
-        
+
         col1, col2, col3, col4 = st.columns(4)
-        
+
         with col1:
             st.markdown("**Cumulative**")
             st.metric("CE Flow", format_number(ce_flow))
             st.metric("PE Flow", format_number(pe_flow))
-            net_emoji = "🟢" if net_flow > 0 else ("🔴" if net_flow < 0 else "⚪")
-            st.metric(f"{net_emoji} Net", format_number(net_flow))
-        
-            
+
+            # Add CE/PE progress bar
             st.markdown("**CE vs PE Race**")
-            st.markdown(race_bar)
+            st.markdown(create_cepe_progress_bar(ce_flow, pe_flow), unsafe_allow_html=True)
             st.caption(dominance)
+
+            # Status indicator with net flow
+            status_icon = get_status_indicator(net_flow, threshold_high=300, threshold_low=-300)
+            st.markdown(f"{status_icon} **Net:** {format_number(net_flow)}", unsafe_allow_html=True)
         with col2:
             st.markdown("**Δ 1 Minute**")
             st.metric("CE Δ", format_number(ce_1min))
@@ -4173,22 +4431,22 @@ if cached_data and cached_data.get("deltas"):
     
     # MIDCPNIFTY Momentum Section
     if "MIDCPNIFTY" in indices_data:
-        st.markdown("### 📈 MIDCPNIFTY Momentum")
-        
+        st.markdown(create_enhanced_section_header("MIDCPNIFTY Momentum", "📈"), unsafe_allow_html=True)
+
         midcpnifty = indices_data["MIDCPNIFTY"]
         ce_flow = midcpnifty.get('ce_flow', 0)
         pe_flow = midcpnifty.get('pe_flow', 0)
         net_flow = ce_flow - pe_flow
-        
+
         ce_1min = deltas.get('MIDCPNIFTY_ce_1min', 0)
         pe_1min = deltas.get('MIDCPNIFTY_pe_1min', 0)
         net_1min = ce_1min - pe_1min
-        
+
         ce_5min = deltas.get('MIDCPNIFTY_ce_5min')
         pe_5min = deltas.get('MIDCPNIFTY_pe_5min')
         net_5min = (ce_5min - pe_5min) if ce_5min is not None and pe_5min is not None else None
-        
-        # CE vs PE Race
+
+        # Calculate dominance
         total_flow = ce_flow + pe_flow
         if total_flow > 0:
             ce_pct = (ce_flow / total_flow) * 100
@@ -4196,12 +4454,7 @@ if cached_data and cached_data.get("deltas"):
         else:
             ce_pct = 50
             pe_pct = 50
-        
-        # Create visual race bar (10 blocks)
-        ce_blocks = int(round(ce_pct / 10))
-        pe_blocks = 10 - ce_blocks
-        race_bar = f"[🟢{'▓' * ce_blocks}🔴{'▓' * pe_blocks}] {ce_pct:.0f}%"
-        
+
         # Dominance indicator
         if ce_pct >= 75:
             dominance = "🚀 CE DOMINATING"
@@ -4209,20 +4462,22 @@ if cached_data and cached_data.get("deltas"):
             dominance = "📉 PE DOMINATING"
         else:
             dominance = "⚖️ Balanced"
-        
+
         col1, col2, col3, col4 = st.columns(4)
-        
+
         with col1:
             st.markdown("**Cumulative**")
             st.metric("CE Flow", format_number(ce_flow))
             st.metric("PE Flow", format_number(pe_flow))
-            net_emoji = "🟢" if net_flow > 0 else ("🔴" if net_flow < 0 else "⚪")
-            st.metric(f"{net_emoji} Net", format_number(net_flow))
-        
-            
+
+            # Add CE/PE progress bar
             st.markdown("**CE vs PE Race**")
-            st.markdown(race_bar)
+            st.markdown(create_cepe_progress_bar(ce_flow, pe_flow), unsafe_allow_html=True)
             st.caption(dominance)
+
+            # Status indicator with net flow
+            status_icon = get_status_indicator(net_flow, threshold_high=200, threshold_low=-200)
+            st.markdown(f"{status_icon} **Net:** {format_number(net_flow)}", unsafe_allow_html=True)
         with col2:
             st.markdown("**Δ 1 Minute**")
             st.metric("CE Δ", format_number(ce_1min))
@@ -4255,22 +4510,22 @@ if cached_data and cached_data.get("deltas"):
     
     # SENSEX Momentum Section
     if "SENSEX" in indices_data:
-        st.markdown("### 📈 SENSEX Momentum")
-        
+        st.markdown(create_enhanced_section_header("SENSEX Momentum", "📈"), unsafe_allow_html=True)
+
         sensex = indices_data["SENSEX"]
         ce_flow = sensex.get('ce_flow', 0)
         pe_flow = sensex.get('pe_flow', 0)
         net_flow = ce_flow - pe_flow
-        
+
         ce_1min = deltas.get('SENSEX_ce_1min', 0)
         pe_1min = deltas.get('SENSEX_pe_1min', 0)
         net_1min = ce_1min - pe_1min
-        
+
         ce_5min = deltas.get('SENSEX_ce_5min')
         pe_5min = deltas.get('SENSEX_pe_5min')
         net_5min = (ce_5min - pe_5min) if ce_5min is not None and pe_5min is not None else None
         
-        # CE vs PE Race
+        # Calculate dominance
         total_flow = ce_flow + pe_flow
         if total_flow > 0:
             ce_pct = (ce_flow / total_flow) * 100
@@ -4278,12 +4533,7 @@ if cached_data and cached_data.get("deltas"):
         else:
             ce_pct = 50
             pe_pct = 50
-        
-        # Create visual race bar (10 blocks)
-        ce_blocks = int(round(ce_pct / 10))
-        pe_blocks = 10 - ce_blocks
-        race_bar = f"[🟢{'▓' * ce_blocks}🔴{'▓' * pe_blocks}] {ce_pct:.0f}%"
-        
+
         # Dominance indicator
         if ce_pct >= 75:
             dominance = "🚀 CE DOMINATING"
@@ -4291,20 +4541,22 @@ if cached_data and cached_data.get("deltas"):
             dominance = "📉 PE DOMINATING"
         else:
             dominance = "⚖️ Balanced"
-        
+
         col1, col2, col3, col4 = st.columns(4)
-        
+
         with col1:
             st.markdown("**Cumulative**")
             st.metric("CE Flow", format_number(ce_flow))
             st.metric("PE Flow", format_number(pe_flow))
-            net_emoji = "🟢" if net_flow > 0 else ("🔴" if net_flow < 0 else "⚪")
-            st.metric(f"{net_emoji} Net", format_number(net_flow))
-        
-            
+
+            # Add CE/PE progress bar
             st.markdown("**CE vs PE Race**")
-            st.markdown(race_bar)
+            st.markdown(create_cepe_progress_bar(ce_flow, pe_flow), unsafe_allow_html=True)
             st.caption(dominance)
+
+            # Status indicator with net flow
+            status_icon = get_status_indicator(net_flow, threshold_high=500, threshold_low=-500)
+            st.markdown(f"{status_icon} **Net:** {format_number(net_flow)}", unsafe_allow_html=True)
         with col2:
             st.markdown("**Δ 1 Minute**")
             st.metric("CE Δ", format_number(ce_1min))
@@ -4346,7 +4598,7 @@ if cached_data and cached_data.get("deltas"):
     if indices_data_perf and len(indices_data_perf) > 0:
         st.markdown("")
         st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        st.markdown(f"### 📊 INDICES-WIDE PERFORMANCE ({len(indices_data_perf)} Indices Tracked)")
+        st.markdown(create_enhanced_section_header(f"INDICES-WIDE PERFORMANCE ({len(indices_data_perf)} Indices Tracked)", "📊"), unsafe_allow_html=True)
         st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
         # Calculate performance stats
@@ -4530,7 +4782,7 @@ if cached_data and cached_data.get("deltas"):
         # SECTOR PERFORMANCE - SMART SORTING
         # ============================================
         st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        st.markdown("### 🎯 SECTOR PERFORMANCE")
+        st.markdown(create_enhanced_section_header("SECTOR PERFORMANCE", "🎯"), unsafe_allow_html=True)
         st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
         # Prepare data with CE percentage calculation
