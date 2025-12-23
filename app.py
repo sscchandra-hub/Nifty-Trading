@@ -924,12 +924,7 @@ def create_cepe_progress_bar(ce_value, pe_value, show_labels=True):
     ce_label = f"{ce_pct:.1f}%" if show_labels else ""
     pe_label = f"{pe_pct:.1f}%" if show_labels else ""
 
-    html = f"""
-    <div class="cepe-bar-container">
-        <div class="cepe-bar-ce" style="width: {ce_pct}%;">{ce_label}</div>
-        <div class="cepe-bar-pe" style="width: {pe_pct}%;">{pe_label}</div>
-    </div>
-    """
+    html = f"""<div class="cepe-bar-container"><div class="cepe-bar-ce" style="width: {ce_pct}%;">{ce_label}</div><div class="cepe-bar-pe" style="width: {pe_pct}%;">{pe_label}</div></div>"""
     return html
 
 def get_status_indicator(value, threshold_high=0, threshold_low=0):
@@ -4709,13 +4704,11 @@ if cached_data and cached_data.get("deltas"):
             avg_ce_idx = total_ce_flow_idx / total_indices if total_indices > 0 else 0
             avg_pe_idx = total_pe_flow_idx / total_indices if total_indices > 0 else 0
 
-            # Visual race bar
-            ce_blocks_idx = int(round(ce_pct_idx / 10))
-            pe_blocks_idx = 10 - ce_blocks_idx
-            race_bar_idx = f"[🟢{'▓' * ce_blocks_idx}🔴{'▓' * pe_blocks_idx}]"
-
             st.markdown(f"**CE vs PE Race:**")
-            st.markdown(f"## {race_bar_idx} {ce_pct_idx:.0f}% CE | {pe_pct_idx:.0f}% PE")
+            st.markdown(f"## {ce_pct_idx:.0f}% CE | {pe_pct_idx:.0f}% PE")
+
+            # Enhanced progress bar (Green for CE, Red for PE)
+            st.markdown(create_cepe_progress_bar(total_ce_flow_idx, total_pe_flow_idx, show_labels=True), unsafe_allow_html=True)
 
             st.markdown("")
 
