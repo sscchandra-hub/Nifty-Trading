@@ -3813,33 +3813,33 @@ else:
     st.dataframe(blank_df, use_container_width=True, hide_index=True)
     st.caption("⏳ Waiting for data - spikes will appear after 5 minutes of polling")
 
-# Volume Spike Session Summary (Option B)
+# Volume Spike Session Summary (Always Visible)
+st.markdown("")
+st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+st.markdown(create_enhanced_section_header("SESSION SUMMARY (Since 9:15 AM)", "📊"), unsafe_allow_html=True)
+st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
 if volume_state.spike_queue and len(volume_state.spike_queue) > 0:
-    st.markdown("")
-    st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    st.markdown(create_enhanced_section_header("SESSION SUMMARY (Since 9:15 AM)", "📊"), unsafe_allow_html=True)
-    st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    
     # Calculate statistics
     all_spikes = list(volume_state.spike_queue)
     ce_spikes = [s for s in all_spikes if s.option_type == "CE"]
     pe_spikes = [s for s in all_spikes if s.option_type == "PE"]
-    
+
     # CE Stats
     ce_count = len(ce_spikes)
     ce_total_volume = sum(s.volume for s in ce_spikes)
     ce_avg_volume = ce_total_volume / ce_count if ce_count > 0 else 0
     ce_largest = max(ce_spikes, key=lambda s: s.volume) if ce_spikes else None
-    
+
     # PE Stats
     pe_count = len(pe_spikes)
     pe_total_volume = sum(s.volume for s in pe_spikes)
     pe_avg_volume = pe_total_volume / pe_count if pe_count > 0 else 0
     pe_largest = max(pe_spikes, key=lambda s: s.volume) if pe_spikes else None
-    
+
     # Display in two columns
     col1, col2 = st.columns(2)
-    
+
     with col1:
         st.markdown("#### 🟢 CE Spikes")
         st.markdown("─────────────────────────────────────")
@@ -3851,7 +3851,7 @@ if volume_state.spike_queue and len(volume_state.spike_queue) > 0:
             st.metric("Largest Spike", f"{format_number(ce_largest.volume)} ({largest_time})")
         else:
             st.metric("Largest Spike", "—")
-    
+
     with col2:
         st.markdown("#### 🔴 PE Spikes")
         st.markdown("─────────────────────────────────────")
@@ -3863,7 +3863,7 @@ if volume_state.spike_queue and len(volume_state.spike_queue) > 0:
             st.metric("Largest Spike", f"{format_number(pe_largest.volume)} ({largest_time})")
         else:
             st.metric("Largest Spike", "—")
-    
+
     # Race Summary
     st.markdown("")
     st.markdown("#### Race Summary")
@@ -3895,8 +3895,13 @@ if volume_state.spike_queue and len(volume_state.spike_queue) > 0:
             st.error(f"**Signal:** {signal}")
         else:
             st.info(f"**Signal:** {signal}")
+else:
+    # Show waiting message when no spikes detected yet
+    st.info("⏳ **Waiting for volume spikes to be detected...**")
+    st.caption("💡 Volume spike detection is active. Significant options volume activity will appear here once detected.")
+    st.caption("📊 Spikes are identified when volume exceeds 2x the baseline average.")
 
-    st.markdown("")
+st.markdown("")
 
 
 st.markdown("")
