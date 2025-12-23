@@ -1023,6 +1023,94 @@ def create_market_overview_panel(indices_data, deltas):
     """
     return html
 
+def create_stock_card(stock_name, price, change_pct, net_flow, card_type="neutral"):
+    """
+    Create color-coded stock card for gainers/losers
+    card_type: 'gainer', 'loser', or 'neutral'
+    """
+    if card_type == "gainer":
+        bg_color = "linear-gradient(135deg, #d4edda 0%, #c3e6cb 100%)"
+        border_color = "#28a745"
+    elif card_type == "loser":
+        bg_color = "linear-gradient(135deg, #f8d7da 0%, #f5c6cb 100%)"
+        border_color = "#dc3545"
+    else:
+        bg_color = "linear-gradient(135deg, #fff3cd 0%, #ffeaa7 100%)"
+        border_color = "#ffc107"
+
+    flow_color = "#28a745" if net_flow > 0 else "#dc3545"
+    flow_emoji = "🟢" if net_flow > 0 else "🔴"
+    change_emoji = "🟢" if change_pct > 0 else "🔴"
+    price_str = f"₹{price:,.2f}" if price else "N/A"
+
+    html = f"""<div style="background: {bg_color}; border-left: 4px solid {border_color}; padding: 0.8rem; border-radius: 8px; margin: 0.5rem 0; box-shadow: 0 2px 4px rgba(0,0,0,0.1);"><div style="font-size: 1.1rem; font-weight: bold; color: #333; margin-bottom: 0.3rem;">{stock_name}</div><div style="font-size: 0.9rem; color: #666; margin-bottom: 0.3rem;">{price_str} <span style="color: {flow_color}; font-weight: bold;">{change_emoji} {change_pct:+.2f}%</span></div><div style="font-size: 0.85rem; color: #666;">{flow_emoji} Flow: {format_number(net_flow)}</div></div>"""
+    return html
+
+def create_stocks_market_overview_panel(stocks_data, deltas):
+    """
+    Create compact Stocks Market Overview Panel showing key metrics at a glance
+    """
+    if not stocks_data:
+        return ""
+
+    # Calculate aggregate metrics
+    total_stocks = len(stocks_data)
+    total_ce = sum(s.get('ce_flow', 0) for s in stocks_data.values())
+    total_pe = sum(s.get('pe_flow', 0) for s in stocks_data.values())
+    net_flow = total_ce - total_pe
+
+    # Get delta metrics
+    stocks_ce_1min = deltas.get('stocks_ce_1min', 0)
+    stocks_pe_1min = deltas.get('stocks_pe_1min', 0)
+    net_1min = stocks_ce_1min - stocks_pe_1min
+
+    # Count bullish/bearish stocks
+    bullish_count = sum(1 for s in stocks_data.values() if s.get('net_flow', 0) > 0)
+    bearish_count = sum(1 for s in stocks_data.values() if s.get('net_flow', 0) < 0)
+
+    # Determine market sentiment
+    if bullish_count > bearish_count:
+        sentiment = "🟢 BULLISH"
+        sentiment_color = "#28a745"
+    elif bearish_count > bullish_count:
+        sentiment = "🔴 BEARISH"
+        sentiment_color = "#dc3545"
+    else:
+        sentiment = "🟡 NEUTRAL"
+        sentiment_color = "#ffc107"
+
+    # Calculate breadth (bullish vs bearish ratio)
+    bullish_pct = (bullish_count / total_stocks * 100) if total_stocks > 0 else 50
+    bearish_pct = (bearish_count / total_stocks * 100) if total_stocks > 0 else 50
+
+    html = f"""
+    <div class="overview-panel">
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1rem; margin-bottom: 1rem;">
+            <div style="text-align: center;">
+                <div style="font-size: 0.9rem; opacity: 0.9;">Market Sentiment</div>
+                <div style="font-size: 1.8rem; font-weight: bold; color: {sentiment_color};">{sentiment}</div>
+            </div>
+            <div style="text-align: center;">
+                <div style="font-size: 0.9rem; opacity: 0.9;">Net Flow</div>
+                <div style="font-size: 1.8rem; font-weight: bold;">{format_number(net_flow)}</div>
+            </div>
+            <div style="text-align: center;">
+                <div style="font-size: 0.9rem; opacity: 0.9;">1min Δ</div>
+                <div style="font-size: 1.8rem; font-weight: bold;">{format_number(net_1min)}</div>
+            </div>
+            <div style="text-align: center;">
+                <div style="font-size: 0.9rem; opacity: 0.9;">Market Breadth</div>
+                <div style="font-size: 1.8rem; font-weight: bold;">{bullish_count}/{total_stocks}</div>
+            </div>
+        </div>
+        <div style="margin-top: 1rem;">
+            <div style="font-size: 0.85rem; margin-bottom: 0.3rem; color: #fff; opacity: 0.9;">Bullish vs Bearish Stocks</div>
+            {create_cepe_progress_bar(bullish_count, bearish_count, show_labels=True)}
+        </div>
+    </div>
+    """
+    return html
+
 def save_historical_data(index_name, data_row):
     """
     PHASE 1: Save historical data to daily CSV file
@@ -5062,9 +5150,18 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ============================================
+# STOCKS MARKET OVERVIEW PANEL
+# ============================================
+if cached_data and "stocks_data" in cached_data:
+    stocks_data_overview = cached_data.get("stocks_data", {})
+    if stocks_data_overview:
+        st.markdown(create_stocks_market_overview_panel(stocks_data_overview, deltas), unsafe_allow_html=True)
+        st.markdown("---")
+
+# ============================================
 # STOCKS MOMENTUM
 # ============================================
-st.markdown('<div style="border: 2px solid #1f77b4; border-radius: 8px; padding: 1rem; margin: 1rem 0; background-color: #ffffff;"><h3>📈 Stocks Momentum</h3></div>', unsafe_allow_html=True)
+st.markdown(create_enhanced_section_header("Stocks Momentum", "📈"), unsafe_allow_html=True)
 if cached_data:
 
     stocks_ce = cached_data.get("stocks_ce_cod", 0.0)
@@ -5087,8 +5184,13 @@ if cached_data:
         st.markdown("**Cumulative**")
         st.metric("CE Flow", format_number(stocks_ce))
         st.metric("PE Flow", format_number(stocks_pe))
-        net_emoji = "🟢" if stocks_net > 0 else ("🔴" if stocks_net < 0 else "⚪")
-        st.metric(f"{net_emoji} Net", format_number(stocks_net))
+
+        # Add CE/PE progress bar
+        st.markdown(create_cepe_progress_bar(stocks_ce, stocks_pe), unsafe_allow_html=True)
+
+        # Status indicator with net flow
+        status_icon = get_status_indicator(stocks_net, threshold_high=1000, threshold_low=-1000)
+        st.markdown(f"{status_icon} **Net:** {format_number(stocks_net)}", unsafe_allow_html=True)
 
     with col2:
         st.markdown("**Δ 1 Minute**")
@@ -5188,8 +5290,8 @@ with st.expander("📈 View Top 10 Stocks (Live Rankings)", expanded=False):
                     st.markdown(f"**{rank}. {stock_name}** {price_str} {change_str}")
                     st.caption(f"_{sector}_")
 
-                    # CE/PE race bar
-                    st.progress(ce_pct / 100, text=f"CE: {ce_pct:.1f}% | PE: {pe_pct:.1f}%")
+                    # CE/PE race bar with color-coded progress bar
+                    st.markdown(create_cepe_progress_bar(ce_flow, pe_flow, show_labels=True), unsafe_allow_html=True)
 
                 with col2:
                     # Net flow
@@ -5211,7 +5313,7 @@ if cached_data and "stocks_data" in cached_data:
     stocks_data = cached_data.get("stocks_data", {})
 
     if stocks_data and len(stocks_data) > 0:
-        st.markdown('<div style="border: 2px solid #1f77b4; border-radius: 8px; padding: 1rem; margin: 1rem 0; background-color: #ffffff;"><h3>📊 MARKET-WIDE PERFORMANCE (All 209 F&O Stocks)</h3></div>', unsafe_allow_html=True)
+        st.markdown(create_enhanced_section_header("MARKET-WIDE PERFORMANCE (All 209 F&O Stocks)", "📊"), unsafe_allow_html=True)
 
         # Calculate market-wide statistics
         total_stocks = len(stocks_data)
@@ -5266,13 +5368,9 @@ if cached_data and "stocks_data" in cached_data:
                     change_pct = data.get('change_pct', 0)
                     net_flow = data.get('net_flow', 0)
 
-                    flow_emoji = "🟢" if net_flow > 0 else "🔴"
-                    price_str = f"₹{price:,.2f}" if price else "N/A"
-
-                    st.markdown(f"**{i}. {stock_name}** - {price_str} 🟢+{change_pct:.2f}%")
-                    st.caption(f"{flow_emoji} Flow: {format_number(net_flow)}")
-                    if i < len(top_gainers):
-                        st.markdown("")
+                    # Use color-coded stock card for gainers
+                    st.markdown(f"**{i}.**", unsafe_allow_html=True)
+                    st.markdown(create_stock_card(stock_name, price, change_pct, net_flow, card_type="gainer"), unsafe_allow_html=True)
             else:
                 st.info("No gainers data available yet")
 
@@ -5287,13 +5385,9 @@ if cached_data and "stocks_data" in cached_data:
                     change_pct = data.get('change_pct', 0)
                     net_flow = data.get('net_flow', 0)
 
-                    flow_emoji = "🟢" if net_flow > 0 else "🔴"
-                    price_str = f"₹{price:,.2f}" if price else "N/A"
-
-                    st.markdown(f"**{i}. {stock_name}** - {price_str} 🔴{change_pct:.2f}%")
-                    st.caption(f"{flow_emoji} Flow: {format_number(net_flow)}")
-                    if i < len(top_losers):
-                        st.markdown("")
+                    # Use color-coded stock card for losers
+                    st.markdown(f"**{i}.**", unsafe_allow_html=True)
+                    st.markdown(create_stock_card(stock_name, price, change_pct, net_flow, card_type="loser"), unsafe_allow_html=True)
             else:
                 st.info("No losers data available yet")
 
@@ -5331,7 +5425,7 @@ if cached_data and "stocks_data" in cached_data:
     if stocks_data_vol and len(stocks_data_vol) > 0:
         st.markdown("")
         st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        st.markdown("### 🔥 VOLUME SPIKE DETECTION (Unusual Activity)")
+        st.markdown(create_enhanced_section_header("VOLUME SPIKE DETECTION (Unusual Activity)", "🔥"), unsafe_allow_html=True)
         st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
         # Calculate volume spikes (based on net flow magnitude)
@@ -5419,11 +5513,9 @@ if cached_data and "stocks_data" in cached_data:
                     pe_flow = spike['pe_flow']
                     total_volume = spike['total_volume']
 
-                    ce_emoji = "🟢" if ce_flow > 0 else "🔴"
-                    pe_emoji = "🟢" if pe_flow > 0 else "🔴"
-
                     st.markdown(f"**Total Volume:** {format_number(total_volume)}")
-                    st.caption(f"{ce_emoji} CE: {format_number(ce_flow)} | {pe_emoji} PE: {format_number(pe_flow)}")
+                    # Add CE/PE progress bar
+                    st.markdown(create_cepe_progress_bar(abs(ce_flow), abs(pe_flow), show_labels=True), unsafe_allow_html=True)
 
                 with col3:
                     net_flow = spike['net_flow']
