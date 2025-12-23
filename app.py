@@ -3820,7 +3820,7 @@ st.markdown(create_enhanced_section_header("SESSION SUMMARY (Since 9:15 AM)", "�
 st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
 if volume_state.spike_queue and len(volume_state.spike_queue) > 0:
-    # Calculate statistics
+    # Calculate statistics from actual data
     all_spikes = list(volume_state.spike_queue)
     ce_spikes = [s for s in all_spikes if s.option_type == "CE"]
     pe_spikes = [s for s in all_spikes if s.option_type == "PE"]
@@ -3836,70 +3836,80 @@ if volume_state.spike_queue and len(volume_state.spike_queue) > 0:
     pe_total_volume = sum(s.volume for s in pe_spikes)
     pe_avg_volume = pe_total_volume / pe_count if pe_count > 0 else 0
     pe_largest = max(pe_spikes, key=lambda s: s.volume) if pe_spikes else None
-
-    # Display in two columns
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.markdown("#### 🟢 CE Spikes")
-        st.markdown("─────────────────────────────────────")
-        st.metric("Total Spikes", f"{ce_count} spikes")
-        st.metric("Total Volume", format_number(ce_total_volume))
-        st.metric("Avg Volume", format_number(ce_avg_volume) + "/spike")
-        if ce_largest:
-            largest_time = ce_largest.timestamp.strftime("%I:%M %p")
-            st.metric("Largest Spike", f"{format_number(ce_largest.volume)} ({largest_time})")
-        else:
-            st.metric("Largest Spike", "—")
-
-    with col2:
-        st.markdown("#### 🔴 PE Spikes")
-        st.markdown("─────────────────────────────────────")
-        st.metric("Total Spikes", f"{pe_count} spikes")
-        st.metric("Total Volume", format_number(pe_total_volume))
-        st.metric("Avg Volume", format_number(pe_avg_volume) + "/spike")
-        if pe_largest:
-            largest_time = pe_largest.timestamp.strftime("%I:%M %p")
-            st.metric("Largest Spike", f"{format_number(pe_largest.volume)} ({largest_time})")
-        else:
-            st.metric("Largest Spike", "—")
-
-    # Race Summary
-    st.markdown("")
-    st.markdown("#### Race Summary")
-
-    total_spikes = ce_count + pe_count
-    if total_spikes > 0:
-        ce_pct = (ce_count / total_spikes) * 100
-        pe_pct = 100 - ce_pct
-
-        # Determine signal
-        if ce_pct >= 60:
-            signal = "🚀 BULLS AGGRESSIVE - More CE spikes today"
-            signal_color = "success"
-        elif pe_pct >= 60:
-            signal = "📉 BEARS AGGRESSIVE - More PE spikes today"
-            signal_color = "error"
-        else:
-            signal = "⚖️ BALANCED - CE and PE spikes roughly equal"
-            signal_color = "info"
-
-        st.markdown(f"**CE Dominance: {ce_pct:.0f}%**  {ce_pct:.0f}% CE | {pe_pct:.0f}% PE")
-
-        # Add modern CE/PE progress bar
-        st.markdown(create_cepe_progress_bar(ce_count, pe_count, show_labels=True), unsafe_allow_html=True)
-
-        if signal_color == "success":
-            st.success(f"**Signal:** {signal}")
-        elif signal_color == "error":
-            st.error(f"**Signal:** {signal}")
-        else:
-            st.info(f"**Signal:** {signal}")
 else:
-    # Show waiting message when no spikes detected yet
-    st.info("⏳ **Waiting for volume spikes to be detected...**")
-    st.caption("💡 Volume spike detection is active. Significant options volume activity will appear here once detected.")
-    st.caption("📊 Spikes are identified when volume exceeds 2x the baseline average.")
+    # Show empty structure with zero values
+    ce_count = 0
+    ce_total_volume = 0
+    ce_avg_volume = 0
+    ce_largest = None
+
+    pe_count = 0
+    pe_total_volume = 0
+    pe_avg_volume = 0
+    pe_largest = None
+
+# Always display the structure
+col1, col2 = st.columns(2)
+
+with col1:
+    st.markdown("#### 🟢 CE Spikes")
+    st.markdown("─────────────────────────────────────")
+    st.metric("Total Spikes", f"{ce_count} spikes")
+    st.metric("Total Volume", format_number(ce_total_volume))
+    st.metric("Avg Volume", format_number(ce_avg_volume) + "/spike")
+    if ce_largest:
+        largest_time = ce_largest.timestamp.strftime("%I:%M %p")
+        st.metric("Largest Spike", f"{format_number(ce_largest.volume)} ({largest_time})")
+    else:
+        st.metric("Largest Spike", "—")
+
+with col2:
+    st.markdown("#### 🔴 PE Spikes")
+    st.markdown("─────────────────────────────────────")
+    st.metric("Total Spikes", f"{pe_count} spikes")
+    st.metric("Total Volume", format_number(pe_total_volume))
+    st.metric("Avg Volume", format_number(pe_avg_volume) + "/spike")
+    if pe_largest:
+        largest_time = pe_largest.timestamp.strftime("%I:%M %p")
+        st.metric("Largest Spike", f"{format_number(pe_largest.volume)} ({largest_time})")
+    else:
+        st.metric("Largest Spike", "—")
+
+# Race Summary
+st.markdown("")
+st.markdown("#### Race Summary")
+
+total_spikes = ce_count + pe_count
+if total_spikes > 0:
+    ce_pct = (ce_count / total_spikes) * 100
+    pe_pct = 100 - ce_pct
+
+    # Determine signal
+    if ce_pct >= 60:
+        signal = "🚀 BULLS AGGRESSIVE - More CE spikes today"
+        signal_color = "success"
+    elif pe_pct >= 60:
+        signal = "📉 BEARS AGGRESSIVE - More PE spikes today"
+        signal_color = "error"
+    else:
+        signal = "⚖️ BALANCED - CE and PE spikes roughly equal"
+        signal_color = "info"
+
+    st.markdown(f"**CE Dominance: {ce_pct:.0f}%**  {ce_pct:.0f}% CE | {pe_pct:.0f}% PE")
+
+    # Add modern CE/PE progress bar
+    st.markdown(create_cepe_progress_bar(ce_count, pe_count, show_labels=True), unsafe_allow_html=True)
+
+    if signal_color == "success":
+        st.success(f"**Signal:** {signal}")
+    elif signal_color == "error":
+        st.error(f"**Signal:** {signal}")
+    else:
+        st.info(f"**Signal:** {signal}")
+else:
+    # Show waiting message for race summary
+    st.info("⏳ **BALANCED - CE and PE spikes roughly equal**")
+    st.caption("Waiting for volume spikes to be detected...")
 
 st.markdown("")
 
