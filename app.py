@@ -3017,8 +3017,8 @@ def polling_loop():
                     "stocks_ce_cod": total_stocks_ce,
                     "stocks_pe_cod": total_stocks_pe,
                     "indices_data": indices_data,
-                    # MEMORY FIX: Cache only top 20 stocks by net flow (not all 210!)
-                    "stocks_data": dict(sorted(stocks_data.items(), key=lambda x: abs(x[1].get("net_flow", 0)), reverse=True)[:20]) if stocks_data else {},
+                    # Include all 209 F&O stocks for heat bar analysis
+                    "stocks_data": stocks_data if stocks_data else {},
                     "deltas": deltas,
                     "nifty_futures_data": nifty_futures_data,
                     "last_update": datetime.now().isoformat()
