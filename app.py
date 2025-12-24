@@ -1111,6 +1111,101 @@ def create_stocks_market_overview_panel(stocks_data, deltas):
     """
     return html
 
+def create_stock_performance_heatbar(stocks_data):
+    """
+    Create stock performance heat bar showing distribution across price change ranges
+    """
+    if not stocks_data:
+        return ""
+
+    # Get stocks with price data
+    stocks_with_price = [s for s in stocks_data.values() if s.get('change_pct') is not None]
+
+    if not stocks_with_price:
+        return ""
+
+    total_stocks = len(stocks_with_price)
+
+    # Define ranges and count stocks in each
+    ranges = {
+        'dark_red': {'min': float('-inf'), 'max': -2.0, 'count': 0, 'color': '#dc3545', 'label': '< -2%'},
+        'med_red': {'min': -2.0, 'max': -1.0, 'count': 0, 'color': '#e74c3c', 'label': '-2% to -1%'},
+        'light_red': {'min': -1.0, 'max': 0.0, 'count': 0, 'color': '#f8d7da', 'label': '-1% to 0%'},
+        'light_green': {'min': 0.0, 'max': 1.0, 'count': 0, 'color': '#d4edda', 'label': '0% to 1%'},
+        'med_green': {'min': 1.0, 'max': 2.0, 'count': 0, 'color': '#28a745', 'label': '1% to 2%'},
+        'dark_green': {'min': 2.0, 'max': float('inf'), 'count': 0, 'color': '#218838', 'label': '> 2%'}
+    }
+
+    # Count stocks in each range
+    for stock in stocks_with_price:
+        change_pct = stock.get('change_pct', 0)
+
+        if change_pct < -2.0:
+            ranges['dark_red']['count'] += 1
+        elif -2.0 <= change_pct < -1.0:
+            ranges['med_red']['count'] += 1
+        elif -1.0 <= change_pct < 0.0:
+            ranges['light_red']['count'] += 1
+        elif 0.0 <= change_pct < 1.0:
+            ranges['light_green']['count'] += 1
+        elif 1.0 <= change_pct < 2.0:
+            ranges['med_green']['count'] += 1
+        else:  # >= 2.0
+            ranges['dark_green']['count'] += 1
+
+    # Calculate percentages
+    for range_data in ranges.values():
+        range_data['pct'] = (range_data['count'] / total_stocks * 100) if total_stocks > 0 else 0
+
+    # Count bearish vs bullish
+    bearish_count = ranges['dark_red']['count'] + ranges['med_red']['count'] + ranges['light_red']['count']
+    bullish_count = ranges['light_green']['count'] + ranges['med_green']['count'] + ranges['dark_green']['count']
+
+    # Build HTML heat bar
+    html = f"""
+    <div style="background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); border-radius: 10px; padding: 1.5rem; margin: 1rem 0; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+        <div style="text-align: center; font-size: 1.2rem; font-weight: bold; color: #333; margin-bottom: 1rem;">
+            📊 STOCK PERFORMANCE DISTRIBUTION ({total_stocks} Stocks)
+        </div>
+
+        <div style="display: flex; height: 60px; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 6px rgba(0,0,0,0.15); margin-bottom: 1rem;">
+    """
+
+    # Add each range as a segment
+    for key in ['dark_red', 'med_red', 'light_red', 'light_green', 'med_green', 'dark_green']:
+        range_data = ranges[key]
+        if range_data['count'] > 0:
+            text_color = '#fff' if key in ['dark_red', 'med_red', 'med_green', 'dark_green'] else '#333'
+            html += f"""
+            <div style="flex: {range_data['pct']}; background-color: {range_data['color']}; display: flex; flex-direction: column; justify-content: center; align-items: center; color: {text_color}; font-weight: bold; font-size: 0.85rem; border-right: 1px solid rgba(255,255,255,0.3);">
+                <div style="font-size: 1.1rem;">{range_data['count']}</div>
+                <div style="font-size: 0.7rem; opacity: 0.9;">{range_data['label']}</div>
+            </div>
+            """
+
+    html += """
+        </div>
+
+        <div style="display: flex; justify-content: space-between; font-size: 0.9rem; color: #666;">
+    """
+
+    # Summary stats
+    bearish_pct = (bearish_count / total_stocks * 100) if total_stocks > 0 else 0
+    bullish_pct = (bullish_count / total_stocks * 100) if total_stocks > 0 else 0
+
+    html += f"""
+            <div style="text-align: left;">
+                <span style="color: #dc3545; font-weight: bold;">◄ Bearish: {bearish_count} stocks ({bearish_pct:.1f}%)</span>
+            </div>
+            <div style="text-align: right;">
+                <span style="color: #28a745; font-weight: bold;">Bullish: {bullish_count} stocks ({bullish_pct:.1f}%) ►</span>
+            </div>
+        </div>
+    </div>
+    """
+
+    return html
+
 def save_historical_data(index_name, data_row):
     """
     PHASE 1: Save historical data to daily CSV file
@@ -5327,6 +5422,9 @@ if cached_data and "stocks_data" in cached_data:
 
     if stocks_data and len(stocks_data) > 0:
         st.markdown(create_enhanced_section_header("MARKET-WIDE PERFORMANCE (All 209 F&O Stocks)", "📊"), unsafe_allow_html=True)
+
+        # Add Stock Performance Heat Bar
+        st.markdown(create_stock_performance_heatbar(stocks_data), unsafe_allow_html=True)
 
         # Calculate market-wide statistics
         total_stocks = len(stocks_data)
