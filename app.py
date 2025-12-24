@@ -1128,12 +1128,12 @@ def create_stock_performance_heatbar(stocks_data):
 
     # Define ranges and count stocks in each
     ranges = {
-        'dark_red': {'min': float('-inf'), 'max': -2.0, 'count': 0, 'color': '#dc3545', 'label': '&lt; -2%'},
+        'dark_red': {'min': float('-inf'), 'max': -2.0, 'count': 0, 'color': '#dc3545', 'label': 'Below -2%'},
         'med_red': {'min': -2.0, 'max': -1.0, 'count': 0, 'color': '#e74c3c', 'label': '-2% to -1%'},
         'light_red': {'min': -1.0, 'max': 0.0, 'count': 0, 'color': '#f8d7da', 'label': '-1% to 0%'},
         'light_green': {'min': 0.0, 'max': 1.0, 'count': 0, 'color': '#d4edda', 'label': '0% to 1%'},
         'med_green': {'min': 1.0, 'max': 2.0, 'count': 0, 'color': '#28a745', 'label': '1% to 2%'},
-        'dark_green': {'min': 2.0, 'max': float('inf'), 'count': 0, 'color': '#218838', 'label': '&gt; 2%'}
+        'dark_green': {'min': 2.0, 'max': float('inf'), 'count': 0, 'color': '#218838', 'label': 'Above 2%'}
     }
 
     # Count stocks in each range
@@ -1161,48 +1161,20 @@ def create_stock_performance_heatbar(stocks_data):
     bearish_count = ranges['dark_red']['count'] + ranges['med_red']['count'] + ranges['light_red']['count']
     bullish_count = ranges['light_green']['count'] + ranges['med_green']['count'] + ranges['dark_green']['count']
 
-    # Build HTML heat bar
-    html = f"""
-    <div style="background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); border-radius: 10px; padding: 1.5rem; margin: 1rem 0; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
-        <div style="text-align: center; font-size: 1.2rem; font-weight: bold; color: #333; margin-bottom: 1rem;">
-            📊 STOCK PERFORMANCE DISTRIBUTION ({total_stocks} Stocks)
-        </div>
-
-        <div style="display: flex; height: 60px; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 6px rgba(0,0,0,0.15); margin-bottom: 1rem;">
-    """
-
-    # Add each range as a segment
+    # Build segments HTML first
+    segments_html = ""
     for key in ['dark_red', 'med_red', 'light_red', 'light_green', 'med_green', 'dark_green']:
         range_data = ranges[key]
         if range_data['count'] > 0:
             text_color = '#fff' if key in ['dark_red', 'med_red', 'med_green', 'dark_green'] else '#333'
-            html += f"""
-            <div style="flex: {range_data['pct']}; background-color: {range_data['color']}; display: flex; flex-direction: column; justify-content: center; align-items: center; color: {text_color}; font-weight: bold; font-size: 0.85rem; border-right: 1px solid rgba(255,255,255,0.3);">
-                <div style="font-size: 1.1rem;">{range_data['count']}</div>
-                <div style="font-size: 0.7rem; opacity: 0.9;">{range_data['label']}</div>
-            </div>
-            """
-
-    html += """
-        </div>
-
-        <div style="display: flex; justify-content: space-between; font-size: 0.9rem; color: #666;">
-    """
+            segments_html += f'<div style="flex: {range_data["pct"]}; background-color: {range_data["color"]}; display: flex; flex-direction: column; justify-content: center; align-items: center; color: {text_color}; font-weight: bold; font-size: 0.85rem; border-right: 1px solid rgba(255,255,255,0.3);"><div style="font-size: 1.1rem;">{range_data["count"]}</div><div style="font-size: 0.7rem; opacity: 0.9;">{range_data["label"]}</div></div>'
 
     # Summary stats
     bearish_pct = (bearish_count / total_stocks * 100) if total_stocks > 0 else 0
     bullish_pct = (bullish_count / total_stocks * 100) if total_stocks > 0 else 0
 
-    html += f"""
-            <div style="text-align: left;">
-                <span style="color: #dc3545; font-weight: bold;">◄ Bearish: {bearish_count} stocks ({bearish_pct:.1f}%)</span>
-            </div>
-            <div style="text-align: right;">
-                <span style="color: #28a745; font-weight: bold;">Bullish: {bullish_count} stocks ({bullish_pct:.1f}%) ►</span>
-            </div>
-        </div>
-    </div>
-    """
+    # Build complete HTML as single compact string
+    html = f'<div style="background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); border-radius: 10px; padding: 1.5rem; margin: 1rem 0; box-shadow: 0 2px 4px rgba(0,0,0,0.1);"><div style="text-align: center; font-size: 1.2rem; font-weight: bold; color: #333; margin-bottom: 1rem;">📊 STOCK PERFORMANCE DISTRIBUTION ({total_stocks} Stocks)</div><div style="display: flex; height: 60px; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 6px rgba(0,0,0,0.15); margin-bottom: 1rem;">{segments_html}</div><div style="display: flex; justify-content: space-between; font-size: 0.9rem; color: #666;"><div style="text-align: left;"><span style="color: #dc3545; font-weight: bold;">◄ Bearish: {bearish_count} stocks ({bearish_pct:.1f}%)</span></div><div style="text-align: right;"><span style="color: #28a745; font-weight: bold;">Bullish: {bullish_count} stocks ({bullish_pct:.1f}%) ►</span></div></div></div>'
 
     return html
 
