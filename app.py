@@ -1128,12 +1128,12 @@ def create_stock_performance_heatbar(stocks_data):
 
     # Define ranges and count stocks in each
     ranges = {
-        'dark_red': {'min': float('-inf'), 'max': -2.0, 'count': 0, 'color': '#dc3545', 'label': '< -2%'},
+        'dark_red': {'min': float('-inf'), 'max': -2.0, 'count': 0, 'color': '#dc3545', 'label': '&lt; -2%'},
         'med_red': {'min': -2.0, 'max': -1.0, 'count': 0, 'color': '#e74c3c', 'label': '-2% to -1%'},
         'light_red': {'min': -1.0, 'max': 0.0, 'count': 0, 'color': '#f8d7da', 'label': '-1% to 0%'},
         'light_green': {'min': 0.0, 'max': 1.0, 'count': 0, 'color': '#d4edda', 'label': '0% to 1%'},
         'med_green': {'min': 1.0, 'max': 2.0, 'count': 0, 'color': '#28a745', 'label': '1% to 2%'},
-        'dark_green': {'min': 2.0, 'max': float('inf'), 'count': 0, 'color': '#218838', 'label': '> 2%'}
+        'dark_green': {'min': 2.0, 'max': float('inf'), 'count': 0, 'color': '#218838', 'label': '&gt; 2%'}
     }
 
     # Count stocks in each range
