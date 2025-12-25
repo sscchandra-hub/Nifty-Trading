@@ -2246,7 +2246,8 @@ def load_dashboard_cache():
             cached_at = cached_at.replace(tzinfo=None)
         if now.tzinfo:
             now = now.replace(tzinfo=None)
-        if (now - cached_at).total_seconds() < 86400:
+        # Cache valid for 7 days (604800 seconds) to show historical data when markets closed
+        if (now - cached_at).total_seconds() < 604800:
             return data
     except Exception as e:
         print(f"Error loading cache: {e}")
