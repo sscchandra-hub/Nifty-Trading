@@ -1375,7 +1375,9 @@ def create_vwap_supertrend_card(vwap, supertrend_value, supertrend_trend, signal
     Create compact HTML card for VWAP & SuperTrend strategy (Option 1)
     """
     if vwap is None or supertrend_value is None:
-        return '<div style="background: #fff3cd; border-left: 4px solid #ffc107; padding: 1rem; border-radius: 5px; margin: 1rem 0;"><p style="margin: 0; color: #856404;">⏳ Calculating VWAP & SuperTrend... (requires at least 8 candles)</p></div>'
+        # Show placeholder card with structure when data is not available
+        placeholder_html = '<div style="background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); border-radius: 10px; padding: 1.5rem; margin: 1rem 0; box-shadow: 0 2px 4px rgba(0,0,0,0.1);"><div style="text-align: center; font-size: 1.3rem; font-weight: bold; color: #1f77b4; margin-bottom: 1rem;">📈 VWAP & SUPERTREND STRATEGY (15-min)</div><div style="background: #fff3cd; border-left: 4px solid #ffc107; padding: 1rem; border-radius: 5px; margin-bottom: 1rem;"><p style="margin: 0; color: #856404; font-weight: bold;">⏳ Waiting for market data... (requires at least 8 candles after 9:15 AM)</p></div><div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-bottom: 1rem;"><div style="background: linear-gradient(135deg, #fff3cd 0%, #ffeaa7 100%); border-radius: 8px; padding: 1rem; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.1); opacity: 0.6;"><div style="font-size: 0.85rem; color: #666; margin-bottom: 0.5rem;">SIGNAL</div><div style="font-size: 1.5rem; font-weight: bold; color: #ffc107;">🟡 NEUTRAL</div></div><div style="background: #fff; border-radius: 8px; padding: 1rem; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.1); opacity: 0.6;"><div style="font-size: 0.85rem; color: #666; margin-bottom: 0.5rem;">VWAP</div><div style="font-size: 1.1rem; font-weight: bold; color: #999;">Waiting...</div></div><div style="background: #fff; border-radius: 8px; padding: 1rem; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.1); opacity: 0.6;"><div style="font-size: 0.85rem; color: #666; margin-bottom: 0.5rem;">SUPERTREND</div><div style="font-size: 1.1rem; font-weight: bold; color: #999;">Waiting...</div></div></div><div style="background: #fff; border-radius: 8px; padding: 1rem; margin-bottom: 1rem; box-shadow: 0 2px 4px rgba(0,0,0,0.05); opacity: 0.6;"><div style="font-size: 0.85rem; font-weight: bold; color: #333; margin-bottom: 0.75rem;">📊 Visual Stack Preview:</div><div style="font-family: monospace; font-size: 0.8rem; line-height: 1.8;"><div style="color: #999;">🟢 Candle Close: Waiting...</div><div style="color: #999;">══ VWAP: Waiting...</div><div style="color: #999;">── SuperTrend: Waiting...</div></div></div><div style="text-align: center; font-size: 0.75rem; color: #999;">⏰ Strategy will activate once market opens and sufficient candles are available</div></div>'
+        return placeholder_html
 
     # Determine signal color and emoji
     if signal == 'BULLISH':
@@ -5514,8 +5516,9 @@ if not vwap_st_strategy_display:
         vwap_st_strategy_display = cached['vwap_st_strategy']
         st.session_state.vwap_st_strategy = vwap_st_strategy_display
 
+# Always display the strategy card (shows placeholder when no data)
 if vwap_st_strategy_display:
-    # Display the strategy card
+    # Display the strategy card with real data
     strategy_html = create_vwap_supertrend_card(
         vwap=vwap_st_strategy_display.get('vwap'),
         supertrend_value=vwap_st_strategy_display.get('supertrend_value'),
@@ -5524,10 +5527,18 @@ if vwap_st_strategy_display:
         last_candle=vwap_st_strategy_display.get('last_candle'),
         ltp=vwap_st_strategy_display.get('ltp')
     )
-    st.markdown(strategy_html, unsafe_allow_html=True)
 else:
-    # Show waiting message
-    st.markdown('<div style="background: #fff3cd; border-left: 4px solid #ffc107; padding: 1rem; border-radius: 5px; margin: 1rem 0;"><p style="margin: 0; color: #856404;">⏳ VWAP & SuperTrend strategy will appear once sufficient 15-min candles are available...</p></div>', unsafe_allow_html=True)
+    # Show placeholder card with structure
+    strategy_html = create_vwap_supertrend_card(
+        vwap=None,
+        supertrend_value=None,
+        supertrend_trend=None,
+        signal='NEUTRAL',
+        last_candle=None,
+        ltp=None
+    )
+
+st.markdown(strategy_html, unsafe_allow_html=True)
 
 
 st.subheader("💹 Combined CE/PE Summary")
