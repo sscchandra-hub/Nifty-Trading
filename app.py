@@ -2280,11 +2280,38 @@ def ensure_instruments(kite: KiteConnect) -> pd.DataFrame:
     return df
 
 def discover_indices_with_fo(ins_df: pd.DataFrame) -> list:
+    """
+    Discover all whitelisted indices from instruments data.
+    Includes indices with F&O, options only, or spot data.
+    """
+    discovered_indices = set()
+
+    # Check futures segments (for F&O indices)
     fut = ins_df[ins_df["segment"].isin(DERIV_FUT_SEGMENTS)].copy()
-    if fut.empty: 
-        return []
-    names = sorted(set(fut["name"].dropna().unique().tolist()))
-    return [n for n in names if n in INDEX_NAME_WHITELIST]
+    if not fut.empty:
+        fut_names = set(fut["name"].dropna().unique().tolist())
+        discovered_indices.update(fut_names)
+
+    # Check options segments (for indices with only options)
+    opt = ins_df[ins_df["segment"].isin(DERIV_OPT_SEGMENTS)].copy()
+    if not opt.empty:
+        # Get index names from options data
+        opt_names = set(opt["name"].dropna().unique().tolist())
+        discovered_indices.update(opt_names)
+
+    # Check spot/index segments (for indices without derivatives)
+    spot_segments = {"NSE", "BSE", "INDICES"}
+    spot = ins_df[ins_df["segment"].isin(spot_segments)].copy()
+    if not spot.empty:
+        spot_names = set(spot["name"].dropna().unique().tolist())
+        discovered_indices.update(spot_names)
+
+    # Filter to only whitelisted indices
+    whitelisted = [n for n in discovered_indices if n in INDEX_NAME_WHITELIST]
+
+    print(f"📊 Discovered {len(whitelisted)} indices from whitelist: {sorted(whitelisted)}")
+
+    return sorted(whitelisted)
 
 def discover_stocks_with_fo(ins_df: pd.DataFrame) -> list:
     """Load F&O stocks from fno_master.json file"""
