@@ -829,6 +829,8 @@ class EngineState:
     top_10_stocks: set = field(default_factory=set)  # Track current Top 10 stocks
     alert_cooldowns: dict = field(default_factory=dict)  # Track smart alert cooldowns (stock_name -> timestamp)
     daily_score_history: list = field(default_factory=list)  # Track all scores for daily summary
+    nifty_momentum_state: str = None  # Track NIFTY momentum class for reversal detection
+    nifty_momentum_last_alert: datetime = None  # Track last NIFTY momentum alert time
 
 engine = EngineState()
 
@@ -1897,6 +1899,347 @@ def generate_daily_summary(all_scores, stocks_data):
     message += f"• Triple confluence: {len([s for s in all_scores if s['num_lists'] == 3])}\n\n"
 
     message += f"#DailySummary #MarketClose #TopScorers"
+
+    return message
+
+# =========================
+# NIFTY MOMENTUM SCORING SYSTEM
+# =========================
+
+def calculate_nifty_momentum_score(indices_data, stocks_data, volume_state, vwap_st_strategy):
+    """
+    Calculate comprehensive NIFTY momentum score (0-100 scale, can be negative)
+    Combines multiple parameters for precise market momentum classification
+
+    Returns: {
+        'total_score': int (-100 to +100),
+        'breakdown': dict of individual scores,
+        'momentum_class': str (STRONG BULLISH, BULLISH, SIDEWAYS, BEARISH, STRONG BEARISH),
+        'confidence': str (HIGH, MEDIUM, LOW)
+    }
+    """
+    score_breakdown = {
+        'ce_pe_flow': 0,          # 10 points
+        'session_spikes': 0,      # 15 points
+        'ce_pe_race': 0,          # 10 points
+        'live_sentiment': 0,      # 10 points
+        'nifty_net_flow': 0,      # 10 points
+        'indices_net_flow': 0,    # 10 points
+        'indices_performance': 0, # 10 points
+        'vwap_supertrend': 0,     # 15 points
+        'stocks_performance': 0   # 10 points
+    }
+
+    # 1. CE/PE Flow Ratio (10 points)
+    nifty_data = indices_data.get('NIFTY', {})
+    ce_flow = nifty_data.get('ce_flow', 0)
+    pe_flow = nifty_data.get('pe_flow', 0)
+
+    if ce_flow > pe_flow:
+        score_breakdown['ce_pe_flow'] = 10
+    elif pe_flow > ce_flow:
+        score_breakdown['ce_pe_flow'] = -10
+
+    # 2. Session Summary - Spikes (15 points)
+    # Check spike queue for CE vs PE spikes since 9:15 AM
+    ce_spikes = 0
+    pe_spikes = 0
+    ce_total_vol = 0
+    pe_total_vol = 0
+    ce_largest = 0
+    pe_largest = 0
+
+    if hasattr(volume_state, 'spike_queue') and volume_state.spike_queue:
+        for spike in volume_state.spike_queue:
+            if spike.option_type == 'CE':
+                ce_spikes += 1
+                ce_total_vol += spike.volume
+                ce_largest = max(ce_largest, spike.spike_ratio)
+            elif spike.option_type == 'PE':
+                pe_spikes += 1
+                pe_total_vol += spike.volume
+                pe_largest = max(pe_largest, spike.spike_ratio)
+
+    # CE vs PE spike analysis
+    spike_score = 0
+    if ce_spikes > pe_spikes:
+        spike_score += 4
+    elif pe_spikes > ce_spikes:
+        spike_score -= 4
+
+    if ce_total_vol > pe_total_vol:
+        spike_score += 4
+    elif pe_total_vol > ce_total_vol:
+        spike_score -= 4
+
+    # Average volume
+    ce_avg_vol = ce_total_vol / ce_spikes if ce_spikes > 0 else 0
+    pe_avg_vol = pe_total_vol / pe_spikes if pe_spikes > 0 else 0
+    if ce_avg_vol > pe_avg_vol:
+        spike_score += 4
+    elif pe_avg_vol > ce_avg_vol:
+        spike_score -= 4
+
+    if ce_largest > pe_largest:
+        spike_score += 3
+    elif pe_largest > ce_largest:
+        spike_score -= 3
+
+    score_breakdown['session_spikes'] = spike_score
+
+    # 3. CE vs PE Race (10 points)
+    race_data = create_ce_pe_race_chart()
+    if race_data:
+        if race_data['bias'] == 'BULLISH':
+            score_breakdown['ce_pe_race'] = 10
+        elif race_data['bias'] == 'BEARISH':
+            score_breakdown['ce_pe_race'] = -10
+
+    # 4. Live Momentum Tracker Sentiment (10 points)
+    # Get from composite score calculation
+    total_indices_ce = sum(d.get("ce_flow", 0) for d in indices_data.values())
+    total_indices_pe = sum(d.get("pe_flow", 0) for d in indices_data.values())
+    total_stocks_ce = sum(d.get("ce_flow", 0) for d in stocks_data.values())
+    total_stocks_pe = sum(d.get("pe_flow", 0) for d in stocks_data.values())
+    total_ce = total_indices_ce + total_stocks_ce
+    total_pe = total_indices_pe + total_stocks_pe
+    net_flow = total_ce - total_pe
+
+    if abs(net_flow) < 10000:
+        score_breakdown['live_sentiment'] = 0  # Sideways
+    elif net_flow > 0:
+        composite_score = min(100, 50 + (net_flow / 1000))
+        if composite_score > 65:
+            score_breakdown['live_sentiment'] = 10  # Bullish
+        else:
+            score_breakdown['live_sentiment'] = 5   # Mild Bullish
+    else:
+        composite_score = max(0, 50 - (abs(net_flow) / 1000))
+        if composite_score < 35:
+            score_breakdown['live_sentiment'] = -10  # Bearish
+        else:
+            score_breakdown['live_sentiment'] = -5   # Mild Bearish
+
+    # 5. NIFTY Net Flow (10 points)
+    nifty_net = nifty_data.get('net_flow', 0)
+    if nifty_net > 100000:
+        score_breakdown['nifty_net_flow'] = 10
+    elif nifty_net > 50000:
+        score_breakdown['nifty_net_flow'] = 7
+    elif nifty_net > 0:
+        score_breakdown['nifty_net_flow'] = 3
+    elif nifty_net < -100000:
+        score_breakdown['nifty_net_flow'] = -10
+    elif nifty_net < -50000:
+        score_breakdown['nifty_net_flow'] = -7
+    elif nifty_net < 0:
+        score_breakdown['nifty_net_flow'] = -3
+
+    # 6. Other Indices Net Flow (10 points)
+    indices_positive = 0
+    indices_negative = 0
+    for idx_name, idx_data in indices_data.items():
+        if idx_name != 'NIFTY':
+            idx_net = idx_data.get('net_flow', 0)
+            if idx_net > 0:
+                indices_positive += 1
+            elif idx_net < 0:
+                indices_negative += 1
+
+    total_other_indices = indices_positive + indices_negative
+    if total_other_indices > 0:
+        positive_pct = (indices_positive / total_other_indices) * 100
+        if positive_pct > 70:
+            score_breakdown['indices_net_flow'] = 10
+        elif positive_pct > 60:
+            score_breakdown['indices_net_flow'] = 7
+        elif positive_pct > 50:
+            score_breakdown['indices_net_flow'] = 3
+        elif positive_pct < 30:
+            score_breakdown['indices_net_flow'] = -10
+        elif positive_pct < 40:
+            score_breakdown['indices_net_flow'] = -7
+        elif positive_pct < 50:
+            score_breakdown['indices_net_flow'] = -3
+
+    # 7. Indices-Wide Performance (% change) (10 points)
+    indices_up = 0
+    indices_down = 0
+    for idx_name, idx_data in indices_data.items():
+        change_pct = idx_data.get('change_pct')
+        if change_pct is not None:
+            if change_pct > 0:
+                indices_up += 1
+            elif change_pct < 0:
+                indices_down += 1
+
+    total_indices = indices_up + indices_down
+    if total_indices > 0:
+        up_pct = (indices_up / total_indices) * 100
+        if up_pct > 60:
+            score_breakdown['indices_performance'] = 10
+        elif up_pct > 50:
+            score_breakdown['indices_performance'] = 5
+        elif up_pct < 40:
+            score_breakdown['indices_performance'] = -10
+        elif up_pct < 50:
+            score_breakdown['indices_performance'] = -5
+
+    # 8. VWAP & SuperTrend Strategy (15 points)
+    if vwap_st_strategy:
+        signal = vwap_st_strategy.get('signal', 'NEUTRAL')
+        if signal == 'BULLISH':
+            score_breakdown['vwap_supertrend'] = 15
+        elif signal == 'BEARISH':
+            score_breakdown['vwap_supertrend'] = -15
+
+    # 9. Market-Wide Stock Performance (10 points)
+    stocks_up = 0
+    stocks_down = 0
+    for stock_name, stock_data in stocks_data.items():
+        change_pct = stock_data.get('change_pct')
+        if change_pct is not None:
+            if change_pct > 0:
+                stocks_up += 1
+            elif change_pct < 0:
+                stocks_down += 1
+
+    total_stocks = stocks_up + stocks_down
+    if total_stocks > 0:
+        stocks_up_pct = (stocks_up / total_stocks) * 100
+        if stocks_up_pct > 65:
+            score_breakdown['stocks_performance'] = 10
+        elif stocks_up_pct > 55:
+            score_breakdown['stocks_performance'] = 7
+        elif stocks_up_pct > 50:
+            score_breakdown['stocks_performance'] = 3
+        elif stocks_up_pct < 35:
+            score_breakdown['stocks_performance'] = -10
+        elif stocks_up_pct < 45:
+            score_breakdown['stocks_performance'] = -7
+        elif stocks_up_pct < 50:
+            score_breakdown['stocks_performance'] = -3
+
+    # Calculate total score
+    total_score = sum(score_breakdown.values())
+
+    # Classify momentum
+    if total_score >= 70:
+        momentum_class = 'STRONG BULLISH'
+        confidence = 'HIGH'
+    elif total_score >= 40:
+        momentum_class = 'BULLISH'
+        confidence = 'MEDIUM' if total_score >= 55 else 'LOW'
+    elif total_score > -40:
+        momentum_class = 'SIDEWAYS'
+        confidence = 'LOW'
+    elif total_score > -70:
+        momentum_class = 'BEARISH'
+        confidence = 'MEDIUM' if total_score <= -55 else 'LOW'
+    else:
+        momentum_class = 'STRONG BEARISH'
+        confidence = 'HIGH'
+
+    return {
+        'total_score': total_score,
+        'breakdown': score_breakdown,
+        'momentum_class': momentum_class,
+        'confidence': confidence,
+        'nifty_price': nifty_data.get('price'),
+        'nifty_change_pct': nifty_data.get('change_pct'),
+        'stocks_up_pct': (stocks_up / total_stocks * 100) if total_stocks > 0 else 0,
+        'indices_up_pct': (indices_up / total_indices * 100) if total_indices > 0 else 0
+    }
+
+def create_nifty_momentum_alert(score_result, is_reversal=False, previous_class=None):
+    """
+    Create comprehensive NIFTY momentum alert message
+    """
+    momentum_class = score_result['momentum_class']
+    total_score = score_result['total_score']
+    confidence = score_result['confidence']
+    breakdown = score_result['breakdown']
+    nifty_price = score_result['nifty_price']
+    nifty_change_pct = score_result['nifty_change_pct']
+
+    # Emoji based on momentum
+    if 'STRONG BULLISH' in momentum_class:
+        emoji = '🚀🟢'
+        color = 'GREEN'
+    elif 'BULLISH' in momentum_class:
+        emoji = '🟢'
+        color = 'GREEN'
+    elif 'SIDEWAYS' in momentum_class:
+        emoji = '⚪'
+        color = 'YELLOW'
+    elif 'STRONG BEARISH' in momentum_class:
+        emoji = '📉🔴'
+        color = 'RED'
+    else:
+        emoji = '🔴'
+        color = 'RED'
+
+    # Header
+    message = ""
+    if is_reversal:
+        message = f"<b>🔄 NIFTY MOMENTUM REVERSAL ALERT</b>\n"
+        message += f"<b>{previous_class}</b> → <b>{emoji} {momentum_class}</b>\n\n"
+    else:
+        message = f"<b>{emoji} NIFTY MOMENTUM ALERT</b>\n"
+        message += f"<b>Status: {momentum_class}</b>\n\n"
+
+    # Score and confidence
+    message += f"📊 <b>Momentum Score: {total_score:+d}/100</b>\n"
+    message += f"🎯 <b>Confidence: {confidence}</b>\n\n"
+
+    # NIFTY price
+    if nifty_price and nifty_change_pct is not None:
+        change_emoji = "🟢" if nifty_change_pct > 0 else "🔴"
+        message += f"💹 <b>NIFTY: ₹{nifty_price:,.2f} {change_emoji} {nifty_change_pct:+.2f}%</b>\n\n"
+
+    # Score breakdown
+    message += f"<b>📈 Score Breakdown:</b>\n"
+    message += f"• CE/PE Flow: {breakdown['ce_pe_flow']:+d}/10\n"
+    message += f"• Session Spikes: {breakdown['session_spikes']:+d}/15\n"
+    message += f"• CE vs PE Race: {breakdown['ce_pe_race']:+d}/10\n"
+    message += f"• Live Sentiment: {breakdown['live_sentiment']:+d}/10\n"
+    message += f"• NIFTY Net Flow: {breakdown['nifty_net_flow']:+d}/10\n"
+    message += f"• Indices Net Flow: {breakdown['indices_net_flow']:+d}/10\n"
+    message += f"• Indices Performance: {breakdown['indices_performance']:+d}/10\n"
+    message += f"• VWAP+SuperTrend: {breakdown['vwap_supertrend']:+d}/15\n"
+    message += f"• Stocks Performance: {breakdown['stocks_performance']:+d}/10\n\n"
+
+    # Market statistics
+    message += f"<b>📊 Market Statistics:</b>\n"
+    message += f"• Stocks Up: {score_result['stocks_up_pct']:.1f}%\n"
+    message += f"• Indices Up: {score_result['indices_up_pct']:.1f}%\n\n"
+
+    # Trading recommendation
+    message += f"<b>💡 Trading Recommendation:</b>\n"
+    if 'STRONG BULLISH' in momentum_class:
+        message += f"🟢 <b>Strong Buy Signal</b>\n"
+        message += f"Consider aggressive long positions. High conviction setup.\n"
+        message += f"Focus on CE options with nearby strikes.\n"
+    elif 'BULLISH' in momentum_class:
+        message += f"🟢 <b>Buy Signal</b>\n"
+        message += f"Consider long positions with proper risk management.\n"
+        message += f"Watch for continuation signals.\n"
+    elif 'SIDEWAYS' in momentum_class:
+        message += f"⚪ <b>No Clear Direction</b>\n"
+        message += f"Stay cautious. Wait for clearer signals.\n"
+        message += f"Consider range-bound strategies or stay out.\n"
+    elif 'STRONG BEARISH' in momentum_class:
+        message += f"🔴 <b>Strong Sell Signal</b>\n"
+        message += f"Consider aggressive short positions. High conviction setup.\n"
+        message += f"Focus on PE options with nearby strikes.\n"
+    else:
+        message += f"🔴 <b>Sell Signal</b>\n"
+        message += f"Consider short positions with proper risk management.\n"
+        message += f"Watch for breakdown continuation.\n"
+
+    # Timestamp and hashtags
+    message += f"\n⏰ {datetime.now().strftime('%I:%M:%S %p')}\n"
+    message += f"\n#{momentum_class.replace(' ', '')} #NIFTY #MomentumAlert #{confidence}Confidence"
 
     return message
 
@@ -3144,6 +3487,8 @@ def polling_loop():
                 # Reset smart alert tracking for new day
                 engine.alert_cooldowns.clear()
                 engine.daily_score_history.clear()
+                engine.nifty_momentum_state = None
+                engine.nifty_momentum_last_alert = None
                 daily_summary_sent = False
                 print("✅ Smart alert tracking reset for new day")
 
@@ -3644,6 +3989,75 @@ def polling_loop():
                             daily_summary_sent = True
                         except Exception as e:
                             print(f"❌ Failed to send daily summary: {e}")
+
+                # ====================
+                # NIFTY MOMENTUM ALERT SYSTEM
+                # ====================
+                # Calculate NIFTY momentum score and send alerts for state changes
+                try:
+                    # Get VWAP/SuperTrend strategy data
+                    vwap_st_strategy = st.session_state.get('vwap_st_strategy', None)
+
+                    # Calculate momentum score
+                    momentum_score = calculate_nifty_momentum_score(
+                        indices_data,
+                        stocks_data,
+                        volume_state,
+                        vwap_st_strategy
+                    )
+
+                    current_momentum_class = momentum_score['momentum_class']
+                    previous_momentum_class = engine.nifty_momentum_state
+
+                    # Check if momentum changed (reversal detection)
+                    is_reversal = False
+                    if previous_momentum_class and previous_momentum_class != current_momentum_class:
+                        is_reversal = True
+
+                    # Check cooldown (15 minutes for momentum alerts)
+                    should_send_alert = False
+                    if engine.nifty_momentum_last_alert:
+                        time_since_alert = (now - engine.nifty_momentum_last_alert).total_seconds()
+                        # For reversals, send immediately. For same state, wait 15 minutes
+                        if is_reversal:
+                            should_send_alert = True
+                        elif time_since_alert >= 900:  # 15 minutes
+                            should_send_alert = True
+                    else:
+                        # First alert
+                        should_send_alert = True
+
+                    # Send alert if conditions met
+                    if should_send_alert:
+                        alert_message = create_nifty_momentum_alert(
+                            momentum_score,
+                            is_reversal=is_reversal,
+                            previous_class=previous_momentum_class
+                        )
+
+                        try:
+                            send_telegram_message(alert_message, parse_mode='HTML')
+                            print(f"📢 NIFTY MOMENTUM: {current_momentum_class} (Score: {momentum_score['total_score']:+d}/100)")
+                            if is_reversal:
+                                print(f"   🔄 REVERSAL: {previous_momentum_class} → {current_momentum_class}")
+
+                            # Update state
+                            engine.nifty_momentum_state = current_momentum_class
+                            engine.nifty_momentum_last_alert = now
+                        except Exception as e:
+                            print(f"❌ Failed to send NIFTY momentum alert: {e}")
+                    else:
+                        # Just update state, no alert
+                        engine.nifty_momentum_state = current_momentum_class
+                        print(f"📊 NIFTY Momentum: {current_momentum_class} (Score: {momentum_score['total_score']:+d}/100) [Cooldown: {int(900 - time_since_alert)}s]")
+
+                    # Store in session state for UI
+                    st.session_state.nifty_momentum_score = momentum_score
+
+                except Exception as e:
+                    print(f"❌ Error in NIFTY momentum calculation: {e}")
+                    import traceback
+                    traceback.print_exc()
 
                 total_indices_ce = sum(d["ce_flow"] for d in indices_data.values())
                 total_indices_pe = sum(d["pe_flow"] for d in indices_data.values())
