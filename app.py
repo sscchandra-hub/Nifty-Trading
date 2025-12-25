@@ -827,6 +827,8 @@ class EngineState:
     nifty_fut_expiry: str = ""
     last_stock_alert: dict = field(default_factory=dict)  # Track stock alerts with cooldowns
     top_10_stocks: set = field(default_factory=set)  # Track current Top 10 stocks
+    alert_cooldowns: dict = field(default_factory=dict)  # Track smart alert cooldowns (stock_name -> timestamp)
+    daily_score_history: list = field(default_factory=list)  # Track all scores for daily summary
 
 engine = EngineState()
 
@@ -1610,6 +1612,293 @@ def save_momentum_tracking(tracking):
 
     except Exception as e:
         print(f"Error saving momentum tracking: {e}")
+
+# ============================================
+# SMART SCORING & ALERT SYSTEM
+# ============================================
+
+def calculate_stock_score(stock_name, top_10_stocks, volume_spikes, momentum_tracking, stocks_data):
+    """
+    Calculate smart score for a stock based on confluence across 3 lists
+
+    Returns: {
+        'total_score': int,
+        'breakdown': {
+            'top10_score': int,
+            'volume_score': int,
+            'momentum_score': int,
+            'confluence_bonus': int
+        },
+        'signal_strength': str,
+        'lists_present': list,
+        'stock_data': dict
+    }
+    """
+    score_breakdown = {
+        'top10_score': 0,
+        'volume_score': 0,
+        'momentum_score': 0,
+        'confluence_bonus': 0
+    }
+    lists_present = []
+
+    # 1. Check Top 10 Stocks (by Net Flow)
+    top10_scores = {1: 30, 2: 25, 3: 25, 4: 20, 5: 20, 6: 15, 7: 15, 8: 10, 9: 10, 10: 10}
+    for rank, (name, data) in enumerate(top_10_stocks, 1):
+        if name == stock_name:
+            score_breakdown['top10_score'] = top10_scores.get(rank, 10)
+            lists_present.append('Top 10 Stocks')
+            break
+
+    # 2. Check Volume Spikes (by Total Activity)
+    volume_scores = {1: 30, 2: 25, 3: 25, 4: 20, 5: 20, 6: 15, 7: 15, 8: 10, 9: 10, 10: 10}
+    for rank, (name, data) in enumerate(volume_spikes, 1):
+        if name == stock_name:
+            score_breakdown['volume_score'] = volume_scores.get(rank, 10)
+            lists_present.append('Volume Spikes')
+            break
+
+    # 3. Check Momentum Stocks
+    if stock_name in momentum_tracking:
+        bullish_count = momentum_tracking[stock_name].get('bullish', 0)
+        bearish_count = momentum_tracking[stock_name].get('bearish', 0)
+        max_count = max(bullish_count, bearish_count)
+
+        if max_count >= 5:
+            score_breakdown['momentum_score'] = 30
+        elif max_count >= 3:
+            score_breakdown['momentum_score'] = 25
+        elif max_count == 2:
+            score_breakdown['momentum_score'] = 20
+        elif max_count == 1:
+            score_breakdown['momentum_score'] = 15
+
+        if max_count > 0:
+            lists_present.append('Momentum')
+
+    # 4. Calculate Confluence Bonus
+    num_lists = len(lists_present)
+    if num_lists == 3:
+        score_breakdown['confluence_bonus'] = 50  # ALL 3 LISTS!
+    elif num_lists == 2:
+        score_breakdown['confluence_bonus'] = 20  # 2 LISTS
+
+    # 5. Calculate Total Score
+    total_score = (score_breakdown['top10_score'] +
+                   score_breakdown['volume_score'] +
+                   score_breakdown['momentum_score'] +
+                   score_breakdown['confluence_bonus'])
+
+    # 6. Determine Signal Strength
+    if total_score >= 100:
+        signal_strength = '🚨🔥 SUPER STRONG'
+    elif total_score >= 70:
+        signal_strength = '⚡💪 VERY STRONG'
+    elif total_score >= 50:
+        signal_strength = '💪 STRONG'
+    else:
+        signal_strength = '✅ GOOD'
+
+    # 7. Get stock data
+    stock_data = stocks_data.get(stock_name, {})
+
+    return {
+        'total_score': total_score,
+        'breakdown': score_breakdown,
+        'signal_strength': signal_strength,
+        'lists_present': lists_present,
+        'stock_data': stock_data,
+        'num_lists': num_lists
+    }
+
+def calculate_entry_exit_levels(stock_price, change_pct, signal_strength, net_flow):
+    """
+    Calculate entry/exit levels based on signal strength and price action
+
+    Returns: {
+        'entry': float,
+        'target': float,
+        'stop_loss': float,
+        'risk_reward': str
+    }
+    """
+    if stock_price is None:
+        return None
+
+    # Determine direction
+    is_bullish = net_flow > 0
+
+    # Calculate levels based on signal strength and price
+    if signal_strength == '🚨🔥 SUPER STRONG':
+        # Aggressive levels for super strong signals
+        sl_percent = 1.0  # 1% stop loss
+        target_percent = 3.0 if is_bullish else -3.0  # 3% target
+    elif signal_strength == '⚡💪 VERY STRONG':
+        sl_percent = 1.2  # 1.2% stop loss
+        target_percent = 2.5 if is_bullish else -2.5  # 2.5% target
+    else:  # STRONG
+        sl_percent = 1.5  # 1.5% stop loss
+        target_percent = 2.0 if is_bullish else -2.0  # 2% target
+
+    if is_bullish:
+        entry = stock_price
+        target = stock_price * (1 + target_percent / 100)
+        stop_loss = stock_price * (1 - sl_percent / 100)
+    else:
+        entry = stock_price
+        target = stock_price * (1 + target_percent / 100)  # Lower for bearish
+        stop_loss = stock_price * (1 + sl_percent / 100)  # Higher for bearish
+
+    # Calculate risk-reward ratio
+    risk = abs(entry - stop_loss)
+    reward = abs(target - entry)
+    rr_ratio = reward / risk if risk > 0 else 0
+
+    return {
+        'entry': entry,
+        'target': target,
+        'stop_loss': stop_loss,
+        'risk_reward': f"1:{rr_ratio:.1f}"
+    }
+
+def create_smart_alert_message(stock_name, score_result, momentum_data, volume_spike_data, top10_rank):
+    """
+    Create comprehensive Telegram alert message with scoring and levels
+    """
+    stock_data = score_result['stock_data']
+    breakdown = score_result['breakdown']
+
+    price = stock_data.get('price')
+    change_pct = stock_data.get('change_pct')
+    net_flow = stock_data.get('net_flow', 0)
+
+    if price is None:
+        return None
+
+    # Price formatting
+    change_emoji = "🟢" if change_pct and change_pct > 0 else "🔴" if change_pct and change_pct < 0 else "⚪"
+    change_str = f"{change_pct:+.2f}%" if change_pct is not None else "N/A"
+
+    # Direction
+    direction = "BULLISH" if net_flow > 0 else "BEARISH"
+    direction_emoji = "🟢" if net_flow > 0 else "🔴"
+
+    # Calculate entry/exit levels
+    levels = calculate_entry_exit_levels(price, change_pct, score_result['signal_strength'], net_flow)
+
+    # Build message
+    message = f"<b>{score_result['signal_strength']} SIGNAL (Score: {score_result['total_score']}/140)</b>\n\n"
+    message += f"<b>{stock_name}</b> - ₹{price:,.2f} {change_emoji} {change_str}\n\n"
+
+    # List presence with scores
+    if breakdown['top10_score'] > 0:
+        message += f"✅ Top 10 Stocks: #{top10_rank} ({breakdown['top10_score']} pts)\n"
+    else:
+        message += f"❌ Top 10 Stocks: Not in list (0 pts)\n"
+
+    if breakdown['volume_score'] > 0:
+        vol_rank = "N/A"  # Will be filled by caller
+        message += f"✅ Volume Spikes: #{vol_rank} ({breakdown['volume_score']} pts)\n"
+    else:
+        message += f"❌ Volume Spikes: Not in list (0 pts)\n"
+
+    if breakdown['momentum_score'] > 0:
+        bullish_count = momentum_data.get('bullish', 0)
+        bearish_count = momentum_data.get('bearish', 0)
+        mom_type = "Bullish" if bullish_count > bearish_count else "Bearish"
+        mom_count = max(bullish_count, bearish_count)
+        message += f"✅ Momentum: {mom_type}({mom_count}) ({breakdown['momentum_score']} pts)\n"
+    else:
+        message += f"❌ Momentum: Not in list (0 pts)\n"
+
+    # Confluence bonus
+    if score_result['num_lists'] == 3:
+        message += f"🎯 <b>Confluence Bonus: +{breakdown['confluence_bonus']} pts (ALL 3 LISTS!)</b>\n\n"
+    elif score_result['num_lists'] == 2:
+        message += f"🎯 Confluence Bonus: +{breakdown['confluence_bonus']} pts (2 LISTS)\n\n"
+    else:
+        message += f"\n"
+
+    # Analysis section
+    message += f"📊 <b>Analysis:</b>\n"
+    message += f"• Direction: {direction_emoji} <b>{direction}</b>\n"
+    message += f"• Net Flow: {net_flow:+,.0f}\n"
+
+    if volume_spike_data:
+        ce_flow = volume_spike_data.get('ce_flow', 0)
+        pe_flow = volume_spike_data.get('pe_flow', 0)
+        total_vol = ce_flow + pe_flow
+        message += f"• Total Volume: {total_vol:,.0f} (CE: {ce_flow:,.0f}, PE: {pe_flow:,.0f})\n"
+
+    # Entry/Exit Levels
+    if levels:
+        message += f"\n💰 <b>Trade Levels:</b>\n"
+        message += f"• Entry: ₹{levels['entry']:,.2f}\n"
+        message += f"• Target: ₹{levels['target']:,.2f}\n"
+        message += f"• Stop Loss: ₹{levels['stop_loss']:,.2f}\n"
+        message += f"• Risk:Reward = {levels['risk_reward']}\n"
+
+    # Recommendation
+    message += f"\n💡 <b>Recommendation:</b> "
+    if score_result['total_score'] >= 100:
+        message += f"SUPER STRONG {direction} SIGNAL\n"
+        message += f"High conviction trade setup. Consider immediate action.\n"
+    elif score_result['total_score'] >= 70:
+        message += f"VERY STRONG {direction} SIGNAL\n"
+        message += f"Strong setup with good confluence. Recommended trade.\n"
+    else:
+        message += f"STRONG {direction} SIGNAL\n"
+        message += f"Good setup. Wait for confirmation or scale in.\n"
+
+    # Hashtags
+    hashtag_strength = score_result['signal_strength'].split()[0].replace('🚨🔥', 'SuperStrong').replace('⚡💪', 'VeryStrong').replace('💪', 'Strong')
+    message += f"\n#{hashtag_strength} #{stock_name} #{direction}"
+
+    return message
+
+def generate_daily_summary(all_scores, stocks_data):
+    """
+    Generate end-of-day summary of top scoring stocks
+    """
+    if not all_scores:
+        return None
+
+    # Sort by score
+    sorted_scores = sorted(all_scores, key=lambda x: x['score'], reverse=True)[:5]
+
+    current_time = datetime.now().strftime('%I:%M %p')
+
+    message = f"<b>📊 DAILY SUMMARY - {datetime.now().strftime('%d %b %Y')}</b>\n"
+    message += f"<b>Market Close Report - {current_time}</b>\n\n"
+    message += f"<b>🏆 TOP 5 HIGH-SCORING STOCKS TODAY:</b>\n\n"
+
+    for i, score_data in enumerate(sorted_scores, 1):
+        stock_name = score_data['stock_name']
+        total_score = score_data['score']
+        signal_strength = score_data['signal_strength']
+
+        stock_info = stocks_data.get(stock_name, {})
+        price = stock_info.get('price')
+        change_pct = stock_info.get('change_pct')
+        net_flow = stock_info.get('net_flow', 0)
+
+        change_emoji = "🟢" if change_pct and change_pct > 0 else "🔴"
+        change_str = f"{change_pct:+.2f}%" if change_pct is not None else "N/A"
+        direction = "Bullish" if net_flow > 0 else "Bearish"
+
+        message += f"<b>{i}. {stock_name}</b> - Score: {total_score}/140\n"
+        message += f"   {signal_strength}\n"
+        message += f"   ₹{price:,.2f} {change_emoji} {change_str} | {direction}\n"
+        message += f"   Lists: {score_data['num_lists']}/3\n\n"
+
+    message += f"<b>Market Statistics:</b>\n"
+    message += f"• Total stocks analyzed: {len(stocks_data)}\n"
+    message += f"• Stocks with score ≥50: {len([s for s in all_scores if s['score'] >= 50])}\n"
+    message += f"• Triple confluence: {len([s for s in all_scores if s['num_lists'] == 3])}\n\n"
+
+    message += f"#DailySummary #MarketClose #TopScorers"
+
+    return message
 
 def save_historical_data(index_name, data_row):
     """
@@ -2832,9 +3121,10 @@ def polling_loop():
     print("STARTING LIVE MOMENTUM TRACKER")
     print("Polling every 10 seconds with actionable alerts")
     print("="*50 + "\n")
-    
+
     current_date = datetime.now().date()
-    
+    daily_summary_sent = False  # Track if daily summary sent today
+
     while not engine.stop_flag:
         try:
             if datetime.now().date() != current_date:
@@ -2846,10 +3136,17 @@ def polling_loop():
                 import gc
                 gc.collect()
                 print("✅ Memory cleanup - garbage collection done")
-                
+
                 engine.futures_volume_history.clear()
                 engine.chart_update_counter = 0
                 reset_volume_data()  # Reset volume charts  # PHASE 1: Reset chart counter
+
+                # Reset smart alert tracking for new day
+                engine.alert_cooldowns.clear()
+                engine.daily_score_history.clear()
+                daily_summary_sent = False
+                print("✅ Smart alert tracking reset for new day")
+
                 current_date = datetime.now().date()
             
             if not engine.subscribe_tokens or engine.token_meta.empty:
@@ -3239,6 +3536,114 @@ def polling_loop():
 
                 # Store in session state for UI
                 st.session_state.momentum_tracking = momentum_tracking
+
+                # ====================
+                # SMART SCORING ALERT SYSTEM
+                # ====================
+                # Build Top 10 Stocks list (sorted by net_flow)
+                top_10_stocks = sorted(
+                    [(name, data) for name, data in stocks_data.items() if data.get('net_flow') is not None],
+                    key=lambda x: abs(x[1]['net_flow']),
+                    reverse=True
+                )[:10]
+
+                # Build Volume Spikes list (stocks by total activity: ce_flow + pe_flow)
+                volume_spikes = sorted(
+                    [(name, data) for name, data in stocks_data.items()
+                     if data.get('ce_flow') is not None and data.get('pe_flow') is not None],
+                    key=lambda x: x[1]['ce_flow'] + x[1]['pe_flow'],
+                    reverse=True
+                )[:10]
+
+                # Calculate scores for all stocks
+                all_scores = []
+                now = datetime.now()
+
+                for stock_name, stock_data in stocks_data.items():
+                    # Skip if missing price or change_pct
+                    if stock_data.get('price') is None or stock_data.get('change_pct') is None:
+                        continue
+
+                    # Calculate score
+                    score_result = calculate_stock_score(
+                        stock_name,
+                        top_10_stocks,
+                        volume_spikes,
+                        momentum_tracking,
+                        stocks_data
+                    )
+
+                    # Store score for daily summary
+                    all_scores.append({
+                        'stock_name': stock_name,
+                        'score': score_result['total_score'],
+                        'signal_strength': score_result['signal_strength'],
+                        'num_lists': score_result['num_lists'],
+                        'timestamp': now
+                    })
+
+                    # Check if score meets alert threshold (≥50)
+                    if score_result['total_score'] >= 50:
+                        # Check cooldown (5 minutes = 300 seconds)
+                        last_alert_time = engine.alert_cooldowns.get(stock_name)
+                        if last_alert_time:
+                            time_since_alert = (now - last_alert_time).total_seconds()
+                            if time_since_alert < 300:  # 5 minutes
+                                continue  # Skip - still in cooldown
+
+                        # Get momentum data for this stock
+                        momentum_data = momentum_tracking.get(stock_name, {'bullish': 0, 'bearish': 0})
+
+                        # Get volume spike data if present
+                        volume_spike_data = None
+                        for name, data in volume_spikes:
+                            if name == stock_name:
+                                volume_spike_data = data
+                                break
+
+                        # Get rank in top 10 stocks
+                        top10_rank = None
+                        for idx, (name, _) in enumerate(top_10_stocks, 1):
+                            if name == stock_name:
+                                top10_rank = idx
+                                break
+
+                        # Create alert message
+                        alert_message = create_smart_alert_message(
+                            stock_name,
+                            score_result,
+                            momentum_data,
+                            volume_spike_data,
+                            top10_rank
+                        )
+
+                        # Send Telegram alert
+                        try:
+                            send_telegram_message(alert_message, parse_mode='HTML')
+                            print(f"📢 SMART ALERT: {stock_name} - Score: {score_result['total_score']:.0f} ({score_result['signal_strength']})")
+
+                            # Update cooldown
+                            engine.alert_cooldowns[stock_name] = now
+                        except Exception as e:
+                            print(f"❌ Failed to send smart alert for {stock_name}: {e}")
+
+                # Store scores in session state and engine
+                st.session_state.smart_scores = all_scores
+                engine.daily_score_history.extend(all_scores)
+
+                # ====================
+                # DAILY SUMMARY AT MARKET CLOSE
+                # ====================
+                # Send daily summary at 3:30 PM (market close) - only once per day
+                if not daily_summary_sent and now.hour == 15 and now.minute >= 30:
+                    if engine.daily_score_history:
+                        try:
+                            summary_message = generate_daily_summary(engine.daily_score_history, stocks_data)
+                            send_telegram_message(summary_message, parse_mode='HTML')
+                            print(f"📊 DAILY SUMMARY sent at {now.strftime('%H:%M:%S')}")
+                            daily_summary_sent = True
+                        except Exception as e:
+                            print(f"❌ Failed to send daily summary: {e}")
 
                 total_indices_ce = sum(d["ce_flow"] for d in indices_data.values())
                 total_indices_pe = sum(d["pe_flow"] for d in indices_data.values())
