@@ -794,9 +794,13 @@ DERIV_OPT_SEGMENTS = {"NFO-OPT", "BFO-OPT"}
 INDEX_NAME_WHITELIST = {
     # Original 5 indices
     "NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX",
-    # New 10 sectoral indices
+    # Sectoral indices (F&O + Non-F&O for complete sector view)
     "NIFTY MIDCAP 50", "NIFTY AUTO", "NIFTY PHARMA", "NIFTY METAL", "NIFTY ENERGY",
-    "NIFTY FMCG", "NIFTY REALTY", "NIFTY PSU BANK", "NIFTY INFRA", "NIFTY OIL & GAS"
+    "NIFTY FMCG", "NIFTY REALTY", "NIFTY PSU BANK", "NIFTY INFRA", "NIFTY OIL & GAS",
+    # Additional sectoral indices (Non-F&O but useful for sector performance)
+    "INDIA VIX", "NIFTY HEALTHCARE", "NIFTY IT", "NIFTY MEDIA",
+    # Defence sector (checking both spellings)
+    "NIFTY IND DEFENCE", "NIFTY INDIA DEFENCE"
 }
 
 @dataclass
