@@ -1178,6 +1178,248 @@ def create_stock_performance_heatbar(stocks_data):
 
     return html
 
+# ============================================
+# VWAP & SUPERTREND STRATEGY FUNCTIONS
+# ============================================
+
+def calculate_vwap(candles):
+    """
+    Calculate VWAP (Volume Weighted Average Price)
+    VWAP = Cumulative(Typical Price * Volume) / Cumulative(Volume)
+    Typical Price = (High + Low + Close) / 3
+    """
+    if not candles or len(candles) == 0:
+        return None
+
+    cumulative_tp_volume = 0
+    cumulative_volume = 0
+
+    for candle in candles:
+        typical_price = (candle['high'] + candle['low'] + candle['close']) / 3
+        volume = candle['volume']
+        cumulative_tp_volume += typical_price * volume
+        cumulative_volume += volume
+
+    if cumulative_volume == 0:
+        return None
+
+    vwap = cumulative_tp_volume / cumulative_volume
+    return vwap
+
+def calculate_atr(candles, period=7):
+    """
+    Calculate ATR (Average True Range)
+    TR = max(high - low, abs(high - prev_close), abs(low - prev_close))
+    ATR = average of TR over period
+    """
+    if not candles or len(candles) < period + 1:
+        return None
+
+    true_ranges = []
+
+    for i in range(1, len(candles)):
+        high = candles[i]['high']
+        low = candles[i]['low']
+        prev_close = candles[i-1]['close']
+
+        tr = max(
+            high - low,
+            abs(high - prev_close),
+            abs(low - prev_close)
+        )
+        true_ranges.append(tr)
+
+    if len(true_ranges) < period:
+        return None
+
+    # Average of last 'period' true ranges
+    atr = sum(true_ranges[-period:]) / period
+    return atr
+
+def calculate_supertrend(candles, atr_period=7, multiplier=3.0):
+    """
+    Calculate SuperTrend indicator
+    Basic Band = (High + Low) / 2
+    Upper Band = Basic Band + (Multiplier × ATR)
+    Lower Band = Basic Band - (Multiplier × ATR)
+
+    Returns: (supertrend_value, trend_direction)
+    trend_direction: 'green' (bullish) or 'red' (bearish)
+    """
+    if not candles or len(candles) < atr_period + 1:
+        return None, None
+
+    atr = calculate_atr(candles, atr_period)
+    if atr is None:
+        return None, None
+
+    # Get last candle
+    last_candle = candles[-1]
+    basic_band = (last_candle['high'] + last_candle['low']) / 2
+
+    upper_band = basic_band + (multiplier * atr)
+    lower_band = basic_band - (multiplier * atr)
+
+    close_price = last_candle['close']
+
+    # Determine trend direction
+    if close_price > upper_band:
+        trend = 'green'
+        supertrend_value = lower_band
+    elif close_price < lower_band:
+        trend = 'red'
+        supertrend_value = upper_band
+    else:
+        # Price between bands - use previous trend or default to red
+        # For simplicity, if price is near lower band, it's bullish
+        if close_price > basic_band:
+            trend = 'green'
+            supertrend_value = lower_band
+        else:
+            trend = 'red'
+            supertrend_value = upper_band
+
+    return supertrend_value, trend
+
+def detect_vwap_supertrend_signal(candles, vwap, supertrend_value, supertrend_trend):
+    """
+    Detect VWAP + SuperTrend strategy signal
+
+    Bullish Signal:
+    - SuperTrend is GREEN (bullish)
+    - VWAP is ABOVE SuperTrend
+    - Last candle is GREEN (close > open)
+    - Candle closes ABOVE VWAP
+
+    Bearish Signal:
+    - SuperTrend is RED (bearish)
+    - VWAP is BELOW SuperTrend
+    - Last candle is RED (close < open)
+    - Candle closes BELOW VWAP
+
+    Returns: ('BULLISH', 'BEARISH', or 'NEUTRAL')
+    """
+    if not candles or vwap is None or supertrend_value is None or supertrend_trend is None:
+        return 'NEUTRAL'
+
+    last_candle = candles[-1]
+    candle_close = last_candle['close']
+    candle_open = last_candle['open']
+
+    # Check if candle is green or red
+    is_green_candle = candle_close > candle_open
+    is_red_candle = candle_close < candle_open
+
+    # Bullish conditions
+    if (supertrend_trend == 'green' and
+        vwap > supertrend_value and
+        is_green_candle and
+        candle_close > vwap):
+        return 'BULLISH'
+
+    # Bearish conditions
+    if (supertrend_trend == 'red' and
+        vwap < supertrend_value and
+        is_red_candle and
+        candle_close < vwap):
+        return 'BEARISH'
+
+    return 'NEUTRAL'
+
+def fetch_nifty_futures_15min_candles():
+    """
+    Fetch 15-minute candles for Nifty Futures from 9:15 AM to current time
+    Returns list of candle dictionaries
+    """
+    try:
+        if not hasattr(engine, 'nifty_fut_token') or not engine.nifty_fut_token:
+            print("❌ Nifty Futures token not available")
+            return None
+
+        current_time = datetime.now()
+
+        # Market hours check
+        if current_time.time() < dt_time(9, 15):
+            print("⏰ Market not open yet")
+            return None
+
+        # From 9:15 AM today
+        from_date = current_time.replace(hour=9, minute=15, second=0, microsecond=0)
+        # To current time
+        to_date = current_time
+
+        print(f"📊 Fetching 15-min candles for Nifty Futures from {from_date.strftime('%H:%M')} to {to_date.strftime('%H:%M')}")
+
+        historical_data = engine.kite.historical_data(
+            instrument_token=engine.nifty_fut_token,
+            from_date=from_date,
+            to_date=to_date,
+            interval="15minute"
+        )
+
+        if historical_data and len(historical_data) > 0:
+            print(f"✅ Fetched {len(historical_data)} candles for Nifty Futures")
+            return historical_data
+        else:
+            print("⚠️ No historical data received")
+            return None
+
+    except Exception as e:
+        print(f"❌ Error fetching 15-min candles: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+def create_vwap_supertrend_card(vwap, supertrend_value, supertrend_trend, signal, last_candle, ltp):
+    """
+    Create compact HTML card for VWAP & SuperTrend strategy (Option 1)
+    """
+    if vwap is None or supertrend_value is None:
+        return '<div style="background: #fff3cd; border-left: 4px solid #ffc107; padding: 1rem; border-radius: 5px; margin: 1rem 0;"><p style="margin: 0; color: #856404;">⏳ Calculating VWAP & SuperTrend... (requires at least 8 candles)</p></div>'
+
+    # Determine signal color and emoji
+    if signal == 'BULLISH':
+        signal_color = '#28a745'
+        signal_bg = 'linear-gradient(135deg, #d4edda 0%, #c3e6cb 100%)'
+        signal_emoji = '🟢'
+        signal_text = 'BULLISH'
+    elif signal == 'BEARISH':
+        signal_color = '#dc3545'
+        signal_bg = 'linear-gradient(135deg, #f8d7da 0%, #f5c6cb 100%)'
+        signal_emoji = '🔴'
+        signal_text = 'BEARISH'
+    else:
+        signal_color = '#ffc107'
+        signal_bg = 'linear-gradient(135deg, #fff3cd 0%, #ffeaa7 100%)'
+        signal_emoji = '🟡'
+        signal_text = 'NEUTRAL'
+
+    # SuperTrend color
+    st_color = '#28a745' if supertrend_trend == 'green' else '#dc3545'
+    st_text = '🟢 GREEN' if supertrend_trend == 'green' else '🔴 RED'
+
+    # Candle info
+    candle_close = last_candle['close'] if last_candle else ltp
+    candle_open = last_candle['open'] if last_candle else ltp
+    is_green = candle_close > candle_open
+    candle_color = '#28a745' if is_green else '#dc3545'
+    candle_emoji = '🟢' if is_green else '🔴'
+
+    # Position check
+    close_vs_vwap = "Above VWAP" if candle_close > vwap else "Below VWAP"
+    close_vs_vwap_icon = "✅" if (signal == 'BULLISH' and candle_close > vwap) or (signal == 'BEARISH' and candle_close < vwap) else "⚠️"
+
+    # Visual stack
+    vwap_vs_st = vwap - supertrend_value
+    close_vs_vwap_diff = candle_close - vwap
+
+    # Last updated time
+    last_update = datetime.now().strftime('%H:%M:%S')
+
+    html = f'<div style="background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); border-radius: 10px; padding: 1.5rem; margin: 1rem 0; box-shadow: 0 2px 4px rgba(0,0,0,0.1);"><div style="text-align: center; font-size: 1.3rem; font-weight: bold; color: #1f77b4; margin-bottom: 1rem;">📈 VWAP & SUPERTREND STRATEGY (15-min)</div><div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-bottom: 1rem;"><div style="background: {signal_bg}; border-radius: 8px; padding: 1rem; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.1);"><div style="font-size: 0.85rem; color: #666; margin-bottom: 0.5rem;">SIGNAL</div><div style="font-size: 1.5rem; font-weight: bold; color: {signal_color};">{signal_emoji} {signal_text}</div></div><div style="background: #fff; border-radius: 8px; padding: 1rem; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.1);"><div style="font-size: 0.85rem; color: #666; margin-bottom: 0.5rem;">VWAP</div><div style="font-size: 1.3rem; font-weight: bold; color: #333;">₹{vwap:.2f}</div></div><div style="background: #fff; border-radius: 8px; padding: 1rem; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.1);"><div style="font-size: 0.85rem; color: #666; margin-bottom: 0.5rem;">SUPERTREND</div><div style="font-size: 1.3rem; font-weight: bold; color: {st_color};">₹{supertrend_value:.2f}</div><div style="font-size: 0.75rem; color: {st_color}; margin-top: 0.25rem;">{st_text}</div></div></div><div style="background: #fff; border-radius: 8px; padding: 1rem; margin-bottom: 1rem; box-shadow: 0 2px 4px rgba(0,0,0,0.05);"><div style="font-size: 0.9rem; font-weight: bold; color: #333; margin-bottom: 0.5rem;">Last 15-min Candle: {candle_emoji} Close: ₹{candle_close:.2f}</div><div style="font-size: 0.85rem; color: #666;">Candle Position: {close_vs_vwap_icon} {close_vs_vwap} ({abs(close_vs_vwap_diff):+.2f})</div></div><div style="background: #fff; border-radius: 8px; padding: 1rem; margin-bottom: 1rem; box-shadow: 0 2px 4px rgba(0,0,0,0.05);"><div style="font-size: 0.85rem; font-weight: bold; color: #333; margin-bottom: 0.75rem;">📊 Visual Stack:</div><div style="font-family: monospace; font-size: 0.8rem; line-height: 1.8;"><div style="color: {candle_color};">🟢 Candle Close: ₹{candle_close:.2f}</div><div style="color: #1f77b4;">══ VWAP: ₹{vwap:.2f} ({vwap_vs_st:+.2f} vs ST)</div><div style="color: {st_color};">── SuperTrend: ₹{supertrend_value:.2f} ({st_text})</div></div></div><div style="text-align: center; font-size: 0.75rem; color: #999;">⏰ Last Updated: {last_update}</div></div>'
+
+    return html
+
 def save_historical_data(index_name, data_row):
     """
     PHASE 1: Save historical data to daily CSV file
@@ -2923,6 +3165,93 @@ def polling_loop():
                         print(f"✓ Futures: {engine.nifty_fut_symbol} Price={fut_price:.2f} Change={fut_change_pct:+.2f}% OI={fut_oi}")
 
                 # ============================================
+                # VWAP & SUPERTREND STRATEGY CALCULATION
+                # ============================================
+                vwap_st_strategy = None
+                try:
+                    # Fetch 15-min candles for strategy
+                    candles_15min = fetch_nifty_futures_15min_candles()
+
+                    if candles_15min and len(candles_15min) >= 8:
+                        # Calculate VWAP
+                        vwap = calculate_vwap(candles_15min)
+
+                        # Calculate SuperTrend (ATR=7, Multiplier=3.0)
+                        supertrend_value, supertrend_trend = calculate_supertrend(candles_15min, atr_period=7, multiplier=3.0)
+
+                        # Detect signal
+                        signal = detect_vwap_supertrend_signal(candles_15min, vwap, supertrend_value, supertrend_trend)
+
+                        # Get last candle and current price
+                        last_candle = candles_15min[-1]
+                        ltp = nifty_futures_data['price'] if nifty_futures_data else last_candle['close']
+
+                        vwap_st_strategy = {
+                            'vwap': vwap,
+                            'supertrend_value': supertrend_value,
+                            'supertrend_trend': supertrend_trend,
+                            'signal': signal,
+                            'last_candle': last_candle,
+                            'ltp': ltp,
+                            'candles_count': len(candles_15min)
+                        }
+
+                        # Store in session state
+                        st.session_state.vwap_st_strategy = vwap_st_strategy
+
+                        print(f"✓ VWAP & SuperTrend: Signal={signal}, VWAP=₹{vwap:.2f}, ST=₹{supertrend_value:.2f} ({supertrend_trend})")
+
+                        # Check for signal change and send Telegram alert
+                        previous_signal = st.session_state.get('vwap_st_previous_signal', 'NEUTRAL')
+
+                        if signal != previous_signal and signal != 'NEUTRAL':
+                            # Signal changed to BULLISH or BEARISH
+                            st.session_state.vwap_st_previous_signal = signal
+
+                            # Send Telegram alert
+                            if signal == 'BULLISH':
+                                telegram_msg = (
+                                    "🚨 <b>NIFTY FUTURES - BULLISH SIGNAL 🟢</b>\n\n"
+                                    f"📈 <b>Strategy:</b> VWAP + SuperTrend (15-min)\n"
+                                    f"⏰ <b>Time:</b> {datetime.now().strftime('%H:%M:%S')}\n\n"
+                                    "<b>✅ Entry Conditions Met:</b>\n"
+                                    f"• SuperTrend: 🟢 GREEN (₹{supertrend_value:.2f})\n"
+                                    f"• VWAP: ₹{vwap:.2f} (Above ST)\n"
+                                    f"• Candle: 🟢 GREEN (₹{last_candle['close']:.2f})\n"
+                                    f"• Position: Above VWAP ✓\n\n"
+                                    f"💡 <b>Recommendation:</b> GO LONG\n"
+                                    f"📊 <b>LTP:</b> ₹{ltp:.2f}\n"
+                                    f"🎯 <b>Watch for:</b> Price sustaining above VWAP\n\n"
+                                    "#NiftyFutures #Bullish #VWAP #SuperTrend"
+                                )
+                            else:  # BEARISH
+                                telegram_msg = (
+                                    "🚨 <b>NIFTY FUTURES - BEARISH SIGNAL 🔴</b>\n\n"
+                                    f"📉 <b>Strategy:</b> VWAP + SuperTrend (15-min)\n"
+                                    f"⏰ <b>Time:</b> {datetime.now().strftime('%H:%M:%S')}\n\n"
+                                    "<b>✅ Entry Conditions Met:</b>\n"
+                                    f"• SuperTrend: 🔴 RED (₹{supertrend_value:.2f})\n"
+                                    f"• VWAP: ₹{vwap:.2f} (Below ST)\n"
+                                    f"• Candle: 🔴 RED (₹{last_candle['close']:.2f})\n"
+                                    f"• Position: Below VWAP ✓\n\n"
+                                    f"💡 <b>Recommendation:</b> GO SHORT\n"
+                                    f"📊 <b>LTP:</b> ₹{ltp:.2f}\n"
+                                    f"🎯 <b>Watch for:</b> Price sustaining below VWAP\n\n"
+                                    "#NiftyFutures #Bearish #VWAP #SuperTrend"
+                                )
+
+                            send_telegram_alert(telegram_msg)
+                            print(f"📱 Telegram Alert Sent: {signal} Signal")
+
+                    else:
+                        print("⏳ VWAP & SuperTrend: Waiting for sufficient candles (need 8+)")
+
+                except Exception as e:
+                    print(f"❌ Error calculating VWAP & SuperTrend strategy: {e}")
+                    import traceback
+                    traceback.print_exc()
+
+                # ============================================
                 # TOP 10 STOCKS TRACKING & NEW ENTRY ALERTS
                 # ============================================
                 if stocks_data:
@@ -3021,6 +3350,7 @@ def polling_loop():
                     "stocks_data": stocks_data if stocks_data else {},
                     "deltas": deltas,
                     "nifty_futures_data": nifty_futures_data,
+                    "vwap_st_strategy": vwap_st_strategy,
                     "last_update": datetime.now().isoformat()
                 }
                 save_dashboard_cache(cache_data)
@@ -5171,6 +5501,33 @@ if nifty_futures_data_display:
 else:
     st.info("⏳ Waiting for NIFTY Futures data...")
     st.caption("Data will appear once polling starts")
+
+# ============================================
+# VWAP & SUPERTREND STRATEGY CARD
+# ============================================
+# Get strategy data from session state or cache
+vwap_st_strategy_display = st.session_state.get('vwap_st_strategy', None)
+
+if not vwap_st_strategy_display:
+    cached = load_dashboard_cache()
+    if cached and 'vwap_st_strategy' in cached:
+        vwap_st_strategy_display = cached['vwap_st_strategy']
+        st.session_state.vwap_st_strategy = vwap_st_strategy_display
+
+if vwap_st_strategy_display:
+    # Display the strategy card
+    strategy_html = create_vwap_supertrend_card(
+        vwap=vwap_st_strategy_display.get('vwap'),
+        supertrend_value=vwap_st_strategy_display.get('supertrend_value'),
+        supertrend_trend=vwap_st_strategy_display.get('supertrend_trend'),
+        signal=vwap_st_strategy_display.get('signal'),
+        last_candle=vwap_st_strategy_display.get('last_candle'),
+        ltp=vwap_st_strategy_display.get('ltp')
+    )
+    st.markdown(strategy_html, unsafe_allow_html=True)
+else:
+    # Show waiting message
+    st.markdown('<div style="background: #fff3cd; border-left: 4px solid #ffc107; padding: 1rem; border-radius: 5px; margin: 1rem 0;"><p style="margin: 0; color: #856404;">⏳ VWAP & SuperTrend strategy will appear once sufficient 15-min candles are available...</p></div>', unsafe_allow_html=True)
 
 
 st.subheader("💹 Combined CE/PE Summary")
