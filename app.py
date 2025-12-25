@@ -1426,6 +1426,191 @@ def create_vwap_supertrend_card(vwap, supertrend_value, supertrend_trend, signal
 
     return html
 
+# ============================================
+# MOMENTUM STOCKS TRACKING FUNCTIONS
+# ============================================
+
+def get_stock_weekly_ohlc(stock_name):
+    """
+    Fetch current week's OHLC for a stock (from Monday/start of week to now)
+    Returns: (high, low, close) or (None, None, None)
+    """
+    try:
+        # Get stock futures token
+        fut_rows = engine.token_meta[
+            (engine.token_meta["name"] == stock_name) &
+            (engine.token_meta.get("type") == "FUT") &
+            (engine.token_meta.get("category") == "STOCK")
+        ]
+
+        if fut_rows.empty:
+            return None, None, None
+
+        fut_token = int(fut_rows.iloc[0]["instrument_token"])
+
+        # Get start of current week (Monday)
+        today = datetime.now()
+        start_of_week = today - timedelta(days=today.weekday())  # Monday
+        start_of_week = start_of_week.replace(hour=9, minute=15, second=0, microsecond=0)
+
+        # Fetch weekly candle data
+        weekly_data = engine.kite.historical_data(
+            instrument_token=fut_token,
+            from_date=start_of_week,
+            to_date=today,
+            interval="week"
+        )
+
+        if weekly_data and len(weekly_data) > 0:
+            current_week = weekly_data[-1]
+            return current_week['high'], current_week['low'], current_week['close']
+
+        return None, None, None
+
+    except Exception as e:
+        # print(f"Error fetching weekly OHLC for {stock_name}: {e}")
+        return None, None, None
+
+def get_stock_daily_ohlc(stock_name):
+    """
+    Fetch today's OHLC for a stock (from 9:15 AM to now)
+    Returns: (high, low, close) or (None, None, None)
+    """
+    try:
+        # Get stock futures token
+        fut_rows = engine.token_meta[
+            (engine.token_meta["name"] == stock_name) &
+            (engine.token_meta.get("type") == "FUT") &
+            (engine.token_meta.get("category") == "STOCK")
+        ]
+
+        if fut_rows.empty:
+            return None, None, None
+
+        fut_token = int(fut_rows.iloc[0]["instrument_token"])
+
+        # Get today's start (9:15 AM)
+        today = datetime.now()
+        today_start = today.replace(hour=9, minute=15, second=0, microsecond=0)
+
+        # Fetch daily candle data
+        daily_data = engine.kite.historical_data(
+            instrument_token=fut_token,
+            from_date=today_start,
+            to_date=today,
+            interval="day"
+        )
+
+        if daily_data and len(daily_data) > 0:
+            today_candle = daily_data[-1]
+            return today_candle['high'], today_candle['low'], today_candle['close']
+
+        return None, None, None
+
+    except Exception as e:
+        # print(f"Error fetching daily OHLC for {stock_name}: {e}")
+        return None, None, None
+
+def check_momentum_conditions(stock_name, ltp):
+    """
+    Check if stock meets bullish or bearish momentum conditions
+
+    Bullish: Weekly Close = Weekly High AND Daily Close = Daily High
+    Bearish: Weekly Close = Weekly Low AND Daily Close = Daily Low
+
+    Returns: ('BULLISH', 'BEARISH', or None)
+    """
+    try:
+        # Fetch weekly and daily OHLC
+        weekly_high, weekly_low, weekly_close = get_stock_weekly_ohlc(stock_name)
+        daily_high, daily_low, daily_close = get_stock_daily_ohlc(stock_name)
+
+        if None in [weekly_high, weekly_low, weekly_close, daily_high, daily_low, daily_close]:
+            return None
+
+        # Use LTP as current close
+        current_close = ltp
+
+        # Check BULLISH conditions (exact match)
+        if (current_close == weekly_high and
+            current_close == daily_high and
+            weekly_close == weekly_high and
+            daily_close == daily_high):
+            return 'BULLISH'
+
+        # Check BEARISH conditions (exact match)
+        if (current_close == weekly_low and
+            current_close == daily_low and
+            weekly_close == weekly_low and
+            daily_close == daily_low):
+            return 'BEARISH'
+
+        return None
+
+    except Exception as e:
+        # print(f"Error checking momentum for {stock_name}: {e}")
+        return None
+
+def load_momentum_tracking():
+    """
+    Load today's momentum tracking from CSV
+    Returns: dict with structure {stock_name: {'bullish': count, 'bearish': count}}
+    """
+    try:
+        today = datetime.now().date()
+        momentum_file = HISTORICAL_DIR / f"momentum_{today}.csv"
+
+        if not momentum_file.exists():
+            return {}
+
+        import csv
+        tracking = {}
+
+        with open(momentum_file, 'r') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                stock_name = row['stock_name']
+                tracking[stock_name] = {
+                    'bullish': int(row.get('bullish_count', 0)),
+                    'bearish': int(row.get('bearish_count', 0))
+                }
+
+        return tracking
+
+    except Exception as e:
+        print(f"Error loading momentum tracking: {e}")
+        return {}
+
+def save_momentum_tracking(tracking):
+    """
+    Save momentum tracking to today's CSV file
+    tracking: dict with structure {stock_name: {'bullish': count, 'bearish': count}}
+    """
+    try:
+        today = datetime.now().date()
+        HISTORICAL_DIR.mkdir(parents=True, exist_ok=True)
+        momentum_file = HISTORICAL_DIR / f"momentum_{today}.csv"
+
+        import csv
+
+        with open(momentum_file, 'w', newline='') as f:
+            fieldnames = ['stock_name', 'bullish_count', 'bearish_count', 'last_updated']
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+
+            writer.writeheader()
+            for stock_name, counts in tracking.items():
+                writer.writerow({
+                    'stock_name': stock_name,
+                    'bullish_count': counts['bullish'],
+                    'bearish_count': counts['bearish'],
+                    'last_updated': datetime.now().isoformat()
+                })
+
+        print(f"✅ Momentum tracking saved: {len(tracking)} stocks")
+
+    except Exception as e:
+        print(f"Error saving momentum tracking: {e}")
+
 def save_historical_data(index_name, data_row):
     """
     PHASE 1: Save historical data to daily CSV file
@@ -3020,7 +3205,41 @@ def polling_loop():
                                 ohlc_debug = quote_debug.get('ohlc', {})
                                 if ohlc_debug:
                                     print(f"   DEBUG {first_stock} OHLC: open={ohlc_debug.get('open')}, close={ohlc_debug.get('close')}, prev_close={ohlc_debug.get('previous_close')}")
-                
+
+                # ====================
+                # MOMENTUM STOCKS TRACKING
+                # ====================
+                momentum_tracking = load_momentum_tracking()
+
+                # Check each stock for momentum conditions
+                for stock_name, stock_data in stocks_data.items():
+                    stock_price = stock_data.get('price')
+                    if stock_price is None:
+                        continue
+
+                    # Check momentum condition
+                    momentum_signal = check_momentum_conditions(stock_name, stock_price)
+
+                    if momentum_signal:
+                        # Initialize tracking for this stock if needed
+                        if stock_name not in momentum_tracking:
+                            momentum_tracking[stock_name] = {'bullish': 0, 'bearish': 0}
+
+                        # Increment count based on signal
+                        if momentum_signal == 'BULLISH':
+                            momentum_tracking[stock_name]['bullish'] += 1
+                            print(f"🟢 MOMENTUM: {stock_name} Bullish count = {momentum_tracking[stock_name]['bullish']}")
+                        elif momentum_signal == 'BEARISH':
+                            momentum_tracking[stock_name]['bearish'] += 1
+                            print(f"🔴 MOMENTUM: {stock_name} Bearish count = {momentum_tracking[stock_name]['bearish']}")
+
+                # Save updated tracking
+                if momentum_tracking:
+                    save_momentum_tracking(momentum_tracking)
+
+                # Store in session state for UI
+                st.session_state.momentum_tracking = momentum_tracking
+
                 total_indices_ce = sum(d["ce_flow"] for d in indices_data.values())
                 total_indices_pe = sum(d["pe_flow"] for d in indices_data.values())
                 total_stocks_ce = sum(d["ce_flow"] for d in stocks_data.values())
@@ -6058,6 +6277,150 @@ if cached_data and "stocks_data" in cached_data:
                 """)
         else:
             st.info("No significant volume spikes detected yet. Spikes appear when net flow ≥ 200M")
+
+
+# ============================================
+# MOMENTUM STOCKS (Bullish & Bearish)
+# ============================================
+momentum_data = st.session_state.get('momentum_tracking', {})
+
+if momentum_data and len(momentum_data) > 0:
+    st.markdown("")
+    st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    st.markdown(create_enhanced_section_header("MOMENTUM STOCKS (Intraday Tracking)", "⚡"), unsafe_allow_html=True)
+    st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+    # Separate bullish and bearish stocks
+    bullish_stocks = []
+    bearish_stocks = []
+
+    # Get stock prices from cached data
+    stocks_data_mom = {}
+    if cached_data and "stocks_data" in cached_data:
+        stocks_data_mom = cached_data.get("stocks_data", {})
+
+    for stock_name, counts in momentum_data.items():
+        bullish_count = counts.get('bullish', 0)
+        bearish_count = counts.get('bearish', 0)
+
+        # Get stock price and change%
+        stock_info = stocks_data_mom.get(stock_name, {})
+        price = stock_info.get('price')
+        change_pct = stock_info.get('change_pct')
+
+        if bullish_count > 0:
+            bullish_stocks.append({
+                'name': stock_name,
+                'count': bullish_count,
+                'price': price,
+                'change_pct': change_pct
+            })
+
+        if bearish_count > 0:
+            bearish_stocks.append({
+                'name': stock_name,
+                'count': bearish_count,
+                'price': price,
+                'change_pct': change_pct
+            })
+
+    # Sort by count (descending)
+    bullish_stocks_sorted = sorted(bullish_stocks, key=lambda x: x['count'], reverse=True)[:10]
+    bearish_stocks_sorted = sorted(bearish_stocks, key=lambda x: x['count'], reverse=True)[:10]
+
+    # Display in two columns
+    col1, col2 = st.columns(2)
+
+    # Bullish Momentum
+    with col1:
+        st.markdown("### 🟢 BULLISH MOMENTUM (Top 10)")
+        st.caption("Weekly High = Daily High = Current LTP")
+
+        if bullish_stocks_sorted:
+            for i, stock in enumerate(bullish_stocks_sorted, 1):
+                name = stock['name']
+                count = stock['count']
+                price = stock['price']
+                change_pct = stock['change_pct']
+
+                # Format price and change
+                price_str = f"₹{price:,.2f}" if price else "N/A"
+                if change_pct is not None:
+                    change_emoji = "🟢" if change_pct > 0 else "🔴" if change_pct < 0 else "⚪"
+                    change_str = f"{change_emoji} {change_pct:+.2f}%"
+                else:
+                    change_str = ""
+
+                st.markdown(f"**{i}. {name}({count})** - {price_str} {change_str}")
+        else:
+            st.info("No bullish momentum stocks detected yet")
+
+    # Bearish Momentum
+    with col2:
+        st.markdown("### 🔴 BEARISH MOMENTUM (Top 10)")
+        st.caption("Weekly Low = Daily Low = Current LTP")
+
+        if bearish_stocks_sorted:
+            for i, stock in enumerate(bearish_stocks_sorted, 1):
+                name = stock['name']
+                count = stock['count']
+                price = stock['price']
+                change_pct = stock['change_pct']
+
+                # Format price and change
+                price_str = f"₹{price:,.2f}" if price else "N/A"
+                if change_pct is not None:
+                    change_emoji = "🟢" if change_pct > 0 else "🔴" if change_pct < 0 else "⚪"
+                    change_str = f"{change_emoji} {change_pct:+.2f}%"
+                else:
+                    change_str = ""
+
+                st.markdown(f"**{i}. {name}({count})** - {price_str} {change_str}")
+        else:
+            st.info("No bearish momentum stocks detected yet")
+
+    # Info box
+    st.markdown("")
+    with st.expander("ℹ️ How Momentum Tracking Works"):
+        st.markdown("""
+        **Momentum Stocks Criteria:**
+
+        **🟢 Bullish Momentum:**
+        - Current LTP = Weekly High (exact match)
+        - Current LTP = Daily High (exact match)
+        - Stock is making new highs on both timeframes simultaneously
+
+        **🔴 Bearish Momentum:**
+        - Current LTP = Weekly Low (exact match)
+        - Current LTP = Daily Low (exact match)
+        - Stock is making new lows on both timeframes simultaneously
+
+        **Count Number:**
+        - Shows how many times the stock met momentum criteria today
+        - Higher count = More persistent momentum
+        - Resets daily at market open
+
+        **Example:**
+        ```
+        RELIANCE(3) - ₹2,450.50 🟢 +2.5%
+
+        This means RELIANCE hit bullish momentum 3 times today
+        (price kept matching weekly high + daily high)
+        ```
+
+        **Trading Strategy:**
+        - **High count stocks:** Strong sustained momentum, consider trend following
+        - **Count=1:** Early momentum detection, watch for confirmation
+        - **Both lists:** Stocks showing clear directional bias
+        """)
+
+else:
+    st.markdown("")
+    st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    st.markdown(create_enhanced_section_header("MOMENTUM STOCKS (Intraday Tracking)", "⚡"), unsafe_allow_html=True)
+    st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    st.info("⏳ Momentum stocks will appear once market opens and stocks meet criteria...")
+    st.caption("Tracking criteria: Weekly Close = Weekly High/Low AND Daily Close = Daily High/Low")
 
 
 st.markdown("---")
