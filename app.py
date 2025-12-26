@@ -7101,22 +7101,34 @@ if cached_data and "stocks_data" in cached_data:
 # ============================================
 # MOMENTUM STOCKS (Bullish & Bearish)
 # ============================================
+st.markdown("")
+st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+st.markdown(create_enhanced_section_header("MOMENTUM STOCKS (Intraday Tracking)", "⚡"), unsafe_allow_html=True)
+st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
 momentum_data = st.session_state.get('momentum_tracking', {})
 
+# Show tracking status
+is_polling = engine.polling_active if hasattr(engine, 'polling_active') else False
+if is_polling:
+    total_stocks = len(momentum_data) if momentum_data else 0
+    bullish_count_total = sum(d.get('bullish', 0) for d in momentum_data.values()) if momentum_data else 0
+    bearish_count_total = sum(d.get('bearish', 0) for d in momentum_data.values()) if momentum_data else 0
+    st.caption(f"✅ **Tracking Active:** Monitoring 209 F&O stocks | Stocks tracked: {total_stocks} | Bullish signals: {bullish_count_total} | Bearish signals: {bearish_count_total}")
+else:
+    st.warning("⚠️ Momentum tracking not active. Please ensure polling is running.")
+st.markdown("")
+
+# Separate bullish and bearish stocks
+bullish_stocks = []
+bearish_stocks = []
+
+# Get stock prices from cached data
+stocks_data_mom = {}
+if cached_data and "stocks_data" in cached_data:
+    stocks_data_mom = cached_data.get("stocks_data", {})
+
 if momentum_data and len(momentum_data) > 0:
-    st.markdown("")
-    st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    st.markdown(create_enhanced_section_header("MOMENTUM STOCKS (Intraday Tracking)", "⚡"), unsafe_allow_html=True)
-    st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-
-    # Separate bullish and bearish stocks
-    bullish_stocks = []
-    bearish_stocks = []
-
-    # Get stock prices from cached data
-    stocks_data_mom = {}
-    if cached_data and "stocks_data" in cached_data:
-        stocks_data_mom = cached_data.get("stocks_data", {})
 
     for stock_name, counts in momentum_data.items():
         bullish_count = counts.get('bullish', 0)
@@ -7234,12 +7246,54 @@ if momentum_data and len(momentum_data) > 0:
         """)
 
 else:
+    # Show empty state when no momentum data
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("### 🟢 BULLISH MOMENTUM (Top 10)")
+        st.caption("Weekly High = Daily High = Current LTP")
+        st.info("⏳ Waiting for stocks to meet bullish momentum criteria...")
+
+    with col2:
+        st.markdown("### 🔴 BEARISH MOMENTUM (Top 10)")
+        st.caption("Weekly Low = Daily Low = Current LTP")
+        st.info("⏳ Waiting for stocks to meet bearish momentum criteria...")
+
     st.markdown("")
-    st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    st.markdown(create_enhanced_section_header("MOMENTUM STOCKS (Intraday Tracking)", "⚡"), unsafe_allow_html=True)
-    st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    st.info("⏳ Momentum stocks will appear once market opens and stocks meet criteria...")
-    st.caption("Tracking criteria: Weekly Close = Weekly High/Low AND Daily Close = Daily High/Low")
+    st.caption("**Tracking:** Checking all 209 F&O stocks every ~10 seconds for exact Weekly/Daily High/Low matches")
+
+    with st.expander("ℹ️ How Momentum Tracking Works"):
+        st.markdown("""
+        **Momentum Stocks Criteria:**
+
+        **🟢 Bullish Momentum:**
+        - Current LTP = Weekly High (exact match)
+        - Current LTP = Daily High (exact match)
+        - Stock is making new highs on both timeframes simultaneously
+
+        **🔴 Bearish Momentum:**
+        - Current LTP = Weekly Low (exact match)
+        - Current LTP = Daily Low (exact match)
+        - Stock is making new lows on both timeframes simultaneously
+
+        **Count Number:**
+        - Shows how many times the stock met momentum criteria today
+        - Higher count = More persistent momentum
+        - Resets daily at market open
+
+        **Example:**
+        ```
+        RELIANCE(3) - ₹2,450.50 🟢 +2.5%
+
+        This means RELIANCE hit bullish momentum 3 times today
+        (price kept matching weekly high + daily high)
+        ```
+
+        **Trading Strategy:**
+        - **High count stocks:** Strong sustained momentum, consider trend following
+        - **Count=1:** Early momentum detection, watch for confirmation
+        - **Both lists:** Stocks showing clear directional bias
+        """)
 
 
 st.markdown("---")
