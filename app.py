@@ -2807,34 +2807,32 @@ def fetch_chartink_alerts(mode='LIVE'):
                 log_debug(f"  Parsed stocks: {parsed['stocks']}")
                 log_debug(f"  Direction: {parsed['direction']}")
 
-                # In TEST mode, filter by subject keywords
-                if mode == 'TEST':
-                    if parsed['direction'] is None:
-                        log_debug(f"  ⏭️ Skipping: Not a momentum alert (direction is None)")
-                        continue  # Skip non-momentum alerts in TEST mode
-                else:
-                    log_debug(f"  Mode: LIVE (processing all directions)")
+                # Filter by subject keywords (both modes)
+                if parsed['direction'] is None:
+                    log_debug(f"  ⏭️ Skipping: Not a momentum alert (direction is None)")
+                    continue  # Skip non-momentum alerts
 
-                # Only process if direction is classified
-                if parsed['direction']:
-                    # Add timestamp
-                    try:
-                        parsed['timestamp'] = email.utils.parsedate_to_datetime(parsed['date'])
-                    except Exception as e:
-                        log_debug(f"  ⚠️ Could not parse date: {e}")
-                        parsed['timestamp'] = datetime.now()
+                log_debug(f"  Mode: {mode} | Direction: {parsed['direction']}")
 
-                    alerts.append(parsed)
-                    log_debug(f"  ✅ Alert added!")
+                # Add timestamp
+                try:
+                    parsed['timestamp'] = email.utils.parsedate_to_datetime(parsed['date'])
+                except Exception as e:
+                    log_debug(f"  ⚠️ Could not parse date: {e}")
+                    parsed['timestamp'] = datetime.now()
 
-                    # Print to console
-                    direction_emoji = "🟢" if parsed['direction'] == 'LONG' else "🔴"
-                    stocks_str = ', '.join(parsed['stocks']) if parsed['stocks'] else 'None'
-                    summary = f"{direction_emoji} {parsed['direction']:5s} | {parsed['date'][:25]:25s} | Stocks: {stocks_str}"
-                    log_debug(f"  {summary}")
+                # Add to alerts list
+                alerts.append(parsed)
+                log_debug(f"  ✅ Alert added!")
+
+                # Print to console
+                direction_emoji = "🟢" if parsed['direction'] == 'LONG' else "🔴"
+                stocks_str = ', '.join(parsed['stocks']) if parsed['stocks'] else 'None'
+                summary = f"{direction_emoji} {parsed['direction']:5s} | {parsed['date'][:25]:25s} | Stocks: {stocks_str}"
+                log_debug(f"  {summary}")
 
                 # Mark as seen ONLY in LIVE mode
-                if mode == 'LIVE' and parsed['direction']:
+                if mode == 'LIVE':
                     mail.store(email_id, '+FLAGS', '\\Seen')
                     log_debug(f"  📧 Marked as SEEN (LIVE mode)")
 
