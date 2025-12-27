@@ -3017,6 +3017,152 @@ def send_stock_alert(stock_name, alert_type, price, change_pct, net_flow, volume
         print(f"Error sending stock alert: {e}")
         return False
 
+def send_nifty_comprehensive_alert(score_result):
+    """
+    Send comprehensive NIFTY alert based on 8-criteria scoring
+    Alert Threshold: +60 (BULLISH) / -60 (BEARISH)
+    Confidence: Medium (60-69), High (70-84), Very High (85-100)
+    Cooldown: 15 minutes per signal type
+    """
+    total_score = score_result['total_score']
+    breakdown = score_result['breakdown']
+
+    # Check if score meets threshold
+    if abs(total_score) < 60:
+        return False  # Not strong enough to alert
+
+    now = datetime.now()
+    signal_type = 'BULLISH' if total_score > 0 else 'BEARISH'
+    cooldown_key = f"NIFTY_COMPREHENSIVE_{signal_type}"
+
+    # Check cooldown (15 minutes)
+    if cooldown_key in engine.last_stock_alert:
+        last_alert_time = engine.last_stock_alert[cooldown_key]
+        time_diff = (now - last_alert_time).total_seconds() / 60
+        if time_diff < 15:
+            return False
+
+    # Determine confidence level
+    abs_score = abs(total_score)
+    if abs_score >= 85:
+        confidence = "🔴 VERY HIGH"
+        confidence_text = "EXTREMELY STRONG"
+    elif abs_score >= 70:
+        confidence = "🟠 HIGH"
+        confidence_text = "STRONG"
+    else:  # 60-69
+        confidence = "🟡 MEDIUM"
+        confidence_text = ""
+
+    # Format alert message
+    if signal_type == 'BULLISH':
+        emoji = "🟢"
+        direction = "BULLISH"
+        full_signal = f"{confidence_text} {direction}".strip()
+    else:
+        emoji = "🔴"
+        direction = "BEARISH"
+        full_signal = f"{confidence_text} {direction}".strip()
+
+    telegram_message = f"🚨 <b>NIFTY COMPREHENSIVE SIGNAL {emoji}</b>\n\n"
+    telegram_message += f"📊 <b>{full_signal} MOMENTUM</b>\n"
+    telegram_message += f"Score: <b>{total_score:+d}/100</b> {confidence}\n\n"
+
+    # List conditions with check marks
+    telegram_message += "✅ <b>Key Conditions:</b>\n"
+
+    # CE/PE Flow
+    if breakdown['ce_pe_flow'] > 0:
+        telegram_message += "• CE Flow dominance ✓\n"
+    elif breakdown['ce_pe_flow'] < 0:
+        telegram_message += "• PE Flow dominance ✓\n"
+
+    # Session Spikes
+    spike_score = breakdown['session_spikes']
+    if abs(spike_score) >= 12:
+        telegram_message += f"• {'CE' if spike_score > 0 else 'PE'} Spikes: Strong dominance ✓\n"
+    elif abs(spike_score) >= 8:
+        telegram_message += f"• {'CE' if spike_score > 0 else 'PE'} Spikes: Ahead ✓\n"
+
+    # CE vs PE Race
+    if breakdown['ce_pe_race'] != 0:
+        telegram_message += f"• CE vs PE Race: {'BULLISH' if breakdown['ce_pe_race'] > 0 else 'BEARISH'} ✓\n"
+
+    # Live Sentiment
+    if abs(breakdown['live_sentiment']) >= 8:
+        telegram_message += f"• Market Sentiment: {'BULLISH' if breakdown['live_sentiment'] > 0 else 'BEARISH'} ✓\n"
+
+    # Nifty Net Flow
+    if abs(breakdown['nifty_net_flow']) >= 7:
+        nifty_flow_text = f"+ve (Strong)" if breakdown['nifty_net_flow'] > 0 else "-ve (Strong)"
+        telegram_message += f"• Nifty Net Flow: {nifty_flow_text} ✓\n"
+
+    # Indices metrics
+    indices_up_pct = score_result.get('indices_up_pct', 0)
+    stocks_up_pct = score_result.get('stocks_up_pct', 0)
+
+    if abs(breakdown['indices_net_flow']) >= 7:
+        telegram_message += f"• Indices: {indices_up_pct:.0f}% positive ✓\n"
+
+    if abs(breakdown['stocks_performance']) >= 7:
+        telegram_message += f"• F&O Stocks: {stocks_up_pct:.0f}% positive ✓\n"
+
+    # Add price info if available
+    nifty_price = score_result.get('nifty_price')
+    nifty_change = score_result.get('nifty_change_pct')
+    if nifty_price:
+        change_emoji = "🟢" if nifty_change and nifty_change > 0 else "🔴"
+        telegram_message += f"\n💰 <b>Nifty:</b> ₹{nifty_price:.2f} {change_emoji}{nifty_change:+.2f}%\n"
+
+    # Timestamp
+    telegram_message += f"\n⏰ {now.strftime('%I:%M:%S %p')}\n"
+    telegram_message += f"#Nifty #{direction}"
+
+    # Send alert
+    try:
+        send_telegram_alert(telegram_message)
+        print(f"📱 NIFTY Comprehensive Alert: {full_signal} (Score: {total_score:+d})")
+        engine.last_stock_alert[cooldown_key] = now
+        return True
+    except Exception as e:
+        print(f"Error sending NIFTY comprehensive alert: {e}")
+        return False
+
+def send_stock_confluence_alert(confluence_stocks):
+    """
+    Send comprehensive stock confluence alert
+    confluence_stocks: dict of {stock_name: count}
+    Sends alert on ANY change to the list
+    """
+    if not confluence_stocks:
+        return False
+
+    telegram_message = "🔥 <b>STOCK CONFLUENCE ALERTS</b>\n\n"
+    telegram_message += f"✅ <b>Stocks in ALL 3 Systems:</b>\n"
+
+    # Sort by count (highest first), then alphabetically
+    sorted_stocks = sorted(confluence_stocks.items(), key=lambda x: (-x[1], x[0]))
+
+    for stock_name, count in sorted_stocks:
+        if count >= 4:
+            telegram_message += f"• <b>{stock_name}</b> ({count}) ⚡ VERY STRONG\n"
+        elif count >= 2:
+            telegram_message += f"• <b>{stock_name}</b> ({count}) - Sustained\n"
+        else:  # count == 1
+            telegram_message += f"• <b>{stock_name}</b> (1) - NEW\n"
+
+    telegram_message += f"\n📊 {len(confluence_stocks)} stock(s) with full alignment\n"
+    telegram_message += f"⏰ {datetime.now().strftime('%I:%M:%S %p')}"
+
+    # Send alert
+    try:
+        send_telegram_alert(telegram_message)
+        print(f"📱 Stock Confluence Alert: {len(confluence_stocks)} stocks")
+        return True
+    except Exception as e:
+        print(f"Error sending stock confluence alert: {e}")
+        return False
+
 def get_momentum_signal(delta_1min, delta_5min):
     """Determine momentum signal"""
     if delta_1min is None:
@@ -4293,6 +4439,49 @@ def polling_loop():
                     reverse=True
                 )[:10]
 
+                # ============================================
+                # STOCK CONFLUENCE TRACKING (3/3 Sections)
+                # ============================================
+                # Initialize confluence tracking in session state
+                if 'stock_confluence_counts' not in st.session_state:
+                    st.session_state.stock_confluence_counts = {}
+
+                # Get stocks in all 3 sections
+                top_10_names = set([name for name, _ in top_10_stocks])
+                volume_spike_names = set([name for name, _ in volume_spikes])
+
+                # Get Chartink alert stocks (from Gmail)
+                chartink_stocks = set()
+                if hasattr(st.session_state, 'chartink_alerts') and st.session_state.chartink_alerts:
+                    for alert in st.session_state.chartink_alerts:
+                        # Each alert has 'stocks' field which is a list
+                        if 'stocks' in alert and alert['stocks']:
+                            chartink_stocks.update(alert['stocks'])
+
+                # Find stocks in ALL 3 sections
+                confluence_stocks = top_10_names & volume_spike_names & chartink_stocks
+
+                # Update counts
+                current_counts = {}
+                for stock_name in confluence_stocks:
+                    if stock_name in st.session_state.stock_confluence_counts:
+                        # Increment count
+                        current_counts[stock_name] = st.session_state.stock_confluence_counts[stock_name] + 1
+                    else:
+                        # New stock
+                        current_counts[stock_name] = 1
+
+                # Check if list has changed
+                list_changed = (set(current_counts.keys()) != set(st.session_state.stock_confluence_counts.keys())) or \
+                               any(current_counts.get(s) != st.session_state.stock_confluence_counts.get(s) for s in current_counts)
+
+                # Update session state
+                st.session_state.stock_confluence_counts = current_counts
+
+                # Send alert if list changed (Option 1: Alert on EVERY change)
+                if list_changed and current_counts:
+                    send_stock_confluence_alert(current_counts)
+
                 # Calculate scores for all stocks
                 all_scores = []
                 now = datetime.now()
@@ -4713,6 +4902,25 @@ def polling_loop():
 
                 except Exception as e:
                     print(f"❌ Error calculating VWAP & SuperTrend strategy: {e}")
+                    import traceback
+                    traceback.print_exc()
+
+                # ============================================
+                # NIFTY COMPREHENSIVE ALERT (8 Criteria Scoring)
+                # ============================================
+                try:
+                    # Calculate comprehensive score using all 8 criteria
+                    score_result = calculate_comprehensive_score(
+                        indices_data=indices_data,
+                        stocks_data=stocks_data,
+                        vwap_st_strategy=vwap_st_strategy
+                    )
+
+                    # Send alert if score >= +60 or <= -60
+                    send_nifty_comprehensive_alert(score_result)
+
+                except Exception as e:
+                    print(f"❌ Error calculating NIFTY comprehensive alert: {e}")
                     import traceback
                     traceback.print_exc()
 
