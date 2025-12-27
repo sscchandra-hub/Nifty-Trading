@@ -7477,6 +7477,23 @@ if 'chartink_alerts' not in st.session_state:
 if 'chartink_last_fetch' not in st.session_state:
     st.session_state.chartink_last_fetch = None
 
+# UI Debug logging helper - writes to both console and file
+from pathlib import Path
+ui_debug_dir = Path(r'D:\Stocks Analysis\Apex Nifty Trading')
+ui_debug_file = ui_debug_dir / f"UI_DEBUG_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+
+def log_ui(msg):
+    """Write to both console and UI debug file"""
+    timestamp = datetime.now().strftime('[%Y-%m-%d %H:%M:%S]')
+    full_msg = f"{timestamp} {msg}"
+    print(full_msg)
+    try:
+        ui_debug_dir.mkdir(parents=True, exist_ok=True)
+        with open(ui_debug_file, 'a', encoding='utf-8') as f:
+            f.write(full_msg + '\n')
+    except Exception as e:
+        print(f"Failed to write UI debug: {e}")
+
 # Check if Gmail is configured
 gmail_configured = bool(os.getenv('GMAIL_USER') and os.getenv('GMAIL_APP_PASSWORD'))
 
@@ -7501,28 +7518,35 @@ if gmail_configured:
     if st.button("📬 Fetch Chartink Alerts", type="primary"):
         mode = 'TEST' if test_mode else 'LIVE'
 
+        log_ui(f"🔵 FETCH BUTTON CLICKED - Mode: {mode}")
+
         with st.spinner(f"Fetching alerts in {mode} mode..."):
             alerts = fetch_chartink_alerts(mode=mode)
 
         # DEBUG: Print what we got
-        print(f"DEBUG: Fetched {len(alerts)} alerts")
-        print(f"DEBUG: First alert sample: {alerts[0] if alerts else 'NONE'}")
+        log_ui(f"DEBUG: Fetched {len(alerts)} alerts from fetch_chartink_alerts()")
+        log_ui(f"DEBUG: First alert sample: {alerts[0] if alerts else 'NONE'}")
+        log_ui(f"DEBUG: Alert types: {[type(a) for a in alerts[:3]]}")
 
         # Store in session state
         st.session_state.chartink_alerts = alerts
         st.session_state.chartink_last_fetch = datetime.now().strftime('%I:%M:%S %p')
 
         # DEBUG: Verify storage
-        print(f"DEBUG: Stored {len(st.session_state.chartink_alerts)} alerts in session_state")
+        log_ui(f"DEBUG: Stored {len(st.session_state.chartink_alerts)} alerts in session_state")
+        log_ui(f"DEBUG: session_state.chartink_alerts type: {type(st.session_state.chartink_alerts)}")
+        log_ui(f"DEBUG: session_state.chartink_alerts content: {st.session_state.chartink_alerts[:2] if st.session_state.chartink_alerts else 'EMPTY'}")
 
         # Force re-render to display alerts
+        log_ui(f"🔄 Calling st.rerun() to refresh display")
         st.rerun()
 
     # Display alerts from session state
     # DEBUG: Check what's in session state
-    print(f"DEBUG DISPLAY: session_state has {len(st.session_state.chartink_alerts)} alerts")
+    log_ui(f"📊 DISPLAY SECTION - session_state has {len(st.session_state.chartink_alerts)} alerts")
 
     if st.session_state.chartink_alerts:
+        log_ui(f"✅ DISPLAY: Found alerts to display - {len(st.session_state.chartink_alerts)} total")
         alerts = st.session_state.chartink_alerts
 
         # Show last fetch time
@@ -7534,6 +7558,8 @@ if gmail_configured:
         # Separate by direction
         long_alerts = [a for a in alerts if a['direction'] == 'LONG']
         bearish_alerts = [a for a in alerts if a['direction'] == 'SHORT']
+
+        log_ui(f"📈 LONG alerts: {len(long_alerts)}, 📉 SHORT alerts: {len(bearish_alerts)}")
 
         # Display in columns
         col1, col2 = st.columns(2)
@@ -7570,8 +7596,10 @@ if gmail_configured:
             else:
                 st.info("No bearish alerts found")
     elif st.session_state.chartink_last_fetch:
+        log_ui(f"⚠️ DISPLAY: No alerts in session_state but last_fetch exists: {st.session_state.chartink_last_fetch}")
         st.info(f"No momentum alerts found | Last fetched: {st.session_state.chartink_last_fetch}")
     else:
+        log_ui(f"ℹ️ DISPLAY: No alerts and no last_fetch - first load")
         st.info("Click 'Fetch Chartink Alerts' to load momentum alerts")
 
     # Info expander
