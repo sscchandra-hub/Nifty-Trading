@@ -7461,18 +7461,31 @@ st.markdown("━━━━━━━━━━━━━━━━━━━━━━�
 st.markdown(create_enhanced_section_header("📧 CHARTINK MOMENTUM ALERTS (Gmail)", "⚡"), unsafe_allow_html=True)
 st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
+# Initialize session state for alerts
+if 'chartink_alerts' not in st.session_state:
+    st.session_state.chartink_alerts = []
+if 'chartink_last_fetch' not in st.session_state:
+    st.session_state.chartink_last_fetch = None
+
 # Check if Gmail is configured
 gmail_configured = bool(os.getenv('GMAIL_USER') and os.getenv('GMAIL_APP_PASSWORD'))
 
 if gmail_configured:
-    col1, col2 = st.columns([3, 1])
+    col1, col2, col3 = st.columns([2, 1, 1])
 
     with col1:
-        st.caption("✅ Gmail configured | Monitoring: **Alert for Weekly close=high/low**")
+        st.caption("✅ Gmail configured | Monitoring: **Alert for Weekly close=high/low ONLY**")
 
     with col2:
         # Mode selector
         test_mode = st.checkbox("🧪 TEST Mode", value=False, help="TEST: Last 30 days (read-only) | LIVE: Unread emails only")
+
+    with col3:
+        # Clear button
+        if st.button("🗑️ Clear", help="Clear displayed alerts"):
+            st.session_state.chartink_alerts = []
+            st.session_state.chartink_last_fetch = None
+            st.rerun()
 
     # Fetch alerts button
     if st.button("📬 Fetch Chartink Alerts", type="primary"):
@@ -7481,49 +7494,62 @@ if gmail_configured:
         with st.spinner(f"Fetching alerts in {mode} mode..."):
             alerts = fetch_chartink_alerts(mode=mode)
 
-        if alerts:
+        # Store in session state
+        st.session_state.chartink_alerts = alerts
+        st.session_state.chartink_last_fetch = datetime.now().strftime('%I:%M:%S %p')
+
+    # Display alerts from session state
+    if st.session_state.chartink_alerts:
+        alerts = st.session_state.chartink_alerts
+
+        # Show last fetch time
+        if st.session_state.chartink_last_fetch:
+            st.success(f"✅ Found {len(alerts)} momentum alert(s) | Last fetched: {st.session_state.chartink_last_fetch}")
+        else:
             st.success(f"✅ Found {len(alerts)} momentum alert(s)")
 
-            # Separate by direction
-            long_alerts = [a for a in alerts if a['direction'] == 'LONG']
-            bearish_alerts = [a for a in alerts if a['direction'] == 'SHORT']
+        # Separate by direction
+        long_alerts = [a for a in alerts if a['direction'] == 'LONG']
+        bearish_alerts = [a for a in alerts if a['direction'] == 'SHORT']
 
-            # Display in columns
-            col1, col2 = st.columns(2)
+        # Display in columns
+        col1, col2 = st.columns(2)
 
-            with col1:
-                st.markdown("### 🟢 BULLISH ALERTS (LONG)")
-                st.caption("Weekly close = Weekly high")
+        with col1:
+            st.markdown("### 🟢 BULLISH ALERTS (LONG)")
+            st.caption("Weekly close = Weekly high")
 
-                if long_alerts:
-                    for alert in long_alerts:
-                        stocks_str = ', '.join(alert['stocks']) if alert['stocks'] else 'None'
-                        timestamp_str = alert['timestamp'].strftime('%b %d, %I:%M %p') if hasattr(alert['timestamp'], 'strftime') else alert['date'][:20]
+            if long_alerts:
+                for alert in long_alerts:
+                    stocks_str = ', '.join(alert['stocks']) if alert['stocks'] else 'None'
+                    timestamp_str = alert['timestamp'].strftime('%b %d, %I:%M %p') if hasattr(alert['timestamp'], 'strftime') else alert['date'][:20]
 
-                        with st.container():
-                            st.markdown(f"**📈 {stocks_str}**")
-                            st.caption(f"⏰ {timestamp_str}")
-                            st.markdown("---")
-                else:
-                    st.info("No bullish alerts found")
+                    with st.container():
+                        st.markdown(f"**📈 {stocks_str}**")
+                        st.caption(f"⏰ {timestamp_str}")
+                        st.markdown("---")
+            else:
+                st.info("No bullish alerts found")
 
-            with col2:
-                st.markdown("### 🔴 BEARISH ALERTS (SHORT)")
-                st.caption("Weekly close = Weekly low")
+        with col2:
+            st.markdown("### 🔴 BEARISH ALERTS (SHORT)")
+            st.caption("Weekly close = Weekly low")
 
-                if bearish_alerts:
-                    for alert in bearish_alerts:
-                        stocks_str = ', '.join(alert['stocks']) if alert['stocks'] else 'None'
-                        timestamp_str = alert['timestamp'].strftime('%b %d, %I:%M %p') if hasattr(alert['timestamp'], 'strftime') else alert['date'][:20]
+            if bearish_alerts:
+                for alert in bearish_alerts:
+                    stocks_str = ', '.join(alert['stocks']) if alert['stocks'] else 'None'
+                    timestamp_str = alert['timestamp'].strftime('%b %d, %I:%M %p') if hasattr(alert['timestamp'], 'strftime') else alert['date'][:20]
 
-                        with st.container():
-                            st.markdown(f"**📉 {stocks_str}**")
-                            st.caption(f"⏰ {timestamp_str}")
-                            st.markdown("---")
-                else:
-                    st.info("No bearish alerts found")
-        else:
-            st.warning(f"No momentum alerts found in {mode} mode")
+                    with st.container():
+                        st.markdown(f"**📉 {stocks_str}**")
+                        st.caption(f"⏰ {timestamp_str}")
+                        st.markdown("---")
+            else:
+                st.info("No bearish alerts found")
+    elif st.session_state.chartink_last_fetch:
+        st.info(f"No momentum alerts found | Last fetched: {st.session_state.chartink_last_fetch}")
+    else:
+        st.info("Click 'Fetch Chartink Alerts' to load momentum alerts")
 
     # Info expander
     st.markdown("")
