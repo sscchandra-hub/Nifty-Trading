@@ -2726,29 +2726,40 @@ def fetch_chartink_alerts(mode='LIVE'):
         log_debug(f"Mailbox data: {data}")
 
         # Build search criteria based on mode
+        # IMPORTANT: Filter by SUBJECT at IMAP level (not in Python)
         if mode == 'LIVE':
-            # LIVE: Only unseen emails from Chartink
-            search_criteria = '(UNSEEN FROM "Chartink")'
-            log_debug(f"\n🔴 LIVE MODE: Searching for UNSEEN Chartink emails...")
+            # LIVE: Only unseen emails with specific subjects
+            search_criteria_high = '(UNSEEN FROM "Chartink" SUBJECT "Weekly close=high")'
+            search_criteria_low = '(UNSEEN FROM "Chartink" SUBJECT "Weekly close=low")'
+            log_debug(f"\n🔴 LIVE MODE: Searching for UNSEEN momentum alerts (high/low)...")
         else:  # TEST mode
-            # TEST: Last 30 days, matching specific subjects
+            # TEST: Last 30 days, matching specific subjects only
             since_date = (datetime.now() - timedelta(days=30)).strftime("%d-%b-%Y")
-            search_criteria = f'(SINCE {since_date} FROM "Chartink")'
-            log_debug(f"\n🧪 TEST MODE: Searching for Chartink emails since {since_date}...")
+            search_criteria_high = f'(SINCE {since_date} FROM "Chartink" SUBJECT "Weekly close=high")'
+            search_criteria_low = f'(SINCE {since_date} FROM "Chartink" SUBJECT "Weekly close=low")'
+            log_debug(f"\n🧪 TEST MODE: Searching for momentum alerts (high/low) since {since_date}...")
 
-        log_debug(f"Search criteria: {search_criteria}")
+        log_debug(f"Search criteria HIGH: {search_criteria_high}")
+        log_debug(f"Search criteria LOW: {search_criteria_low}")
 
-        # Search emails
+        # Search emails - TWO searches (one for high, one for low)
         log_debug("\n--- Searching emails ---")
-        status, message_ids = mail.search(None, search_criteria)
-        log_debug(f"Search status: {status}")
 
-        if status != 'OK':
-            log_debug(f"❌ Email search failed: {status}")
-            return alerts
+        # Search for "Weekly close=high"
+        status_high, message_ids_high = mail.search(None, search_criteria_high)
+        log_debug(f"Search HIGH status: {status_high}")
+        email_ids_high = message_ids_high[0].split() if status_high == 'OK' else []
+        log_debug(f"📬 Found {len(email_ids_high)} 'Weekly close=high' emails")
 
-        email_ids = message_ids[0].split()
-        log_debug(f"📬 Found {len(email_ids)} emails")
+        # Search for "Weekly close=low"
+        status_low, message_ids_low = mail.search(None, search_criteria_low)
+        log_debug(f"Search LOW status: {status_low}")
+        email_ids_low = message_ids_low[0].split() if status_low == 'OK' else []
+        log_debug(f"📬 Found {len(email_ids_low)} 'Weekly close=low' emails")
+
+        # Combine results (remove duplicates)
+        email_ids = list(set(email_ids_high + email_ids_low))
+        log_debug(f"📬 Total momentum alerts: {len(email_ids)}")
         log_debug(f"Email IDs: {email_ids}")
 
         if len(email_ids) == 0:
@@ -2807,12 +2818,13 @@ def fetch_chartink_alerts(mode='LIVE'):
                 log_debug(f"  Parsed stocks: {parsed['stocks']}")
                 log_debug(f"  Direction: {parsed['direction']}")
 
-                # Filter by subject keywords (both modes)
+                # Safety check (should never be None since IMAP already filtered by subject)
                 if parsed['direction'] is None:
-                    log_debug(f"  ⏭️ Skipping: Not a momentum alert (direction is None)")
-                    continue  # Skip non-momentum alerts
+                    log_debug(f"  ⚠️ WARNING: IMAP returned an email but direction is None!")
+                    log_debug(f"  ⚠️ This shouldn't happen - IMAP filter may not be working correctly")
+                    continue
 
-                log_debug(f"  Mode: {mode} | Direction: {parsed['direction']}")
+                log_debug(f"  ✅ Momentum alert confirmed | Direction: {parsed['direction']}")
 
                 # Add timestamp
                 try:
