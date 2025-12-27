@@ -7504,14 +7504,24 @@ if gmail_configured:
         with st.spinner(f"Fetching alerts in {mode} mode..."):
             alerts = fetch_chartink_alerts(mode=mode)
 
+        # DEBUG: Print what we got
+        print(f"DEBUG: Fetched {len(alerts)} alerts")
+        print(f"DEBUG: First alert sample: {alerts[0] if alerts else 'NONE'}")
+
         # Store in session state
         st.session_state.chartink_alerts = alerts
         st.session_state.chartink_last_fetch = datetime.now().strftime('%I:%M:%S %p')
+
+        # DEBUG: Verify storage
+        print(f"DEBUG: Stored {len(st.session_state.chartink_alerts)} alerts in session_state")
 
         # Force re-render to display alerts
         st.rerun()
 
     # Display alerts from session state
+    # DEBUG: Check what's in session state
+    print(f"DEBUG DISPLAY: session_state has {len(st.session_state.chartink_alerts)} alerts")
+
     if st.session_state.chartink_alerts:
         alerts = st.session_state.chartink_alerts
 
