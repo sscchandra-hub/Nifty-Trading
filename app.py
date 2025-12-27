@@ -2675,89 +2675,190 @@ def fetch_chartink_alerts(mode='LIVE'):
             ...
         ]
     """
+    # Create debug log file
+    debug_dir = Path(r'D:\Stocks Analysis\Apex Nifty Trading')
+    debug_dir.mkdir(parents=True, exist_ok=True)
+    debug_file = debug_dir / f"chartink_debug_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+
+    def log_debug(message):
+        """Write to both console and debug file"""
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        log_msg = f"[{timestamp}] {message}"
+        print(log_msg)
+        try:
+            with open(debug_file, 'a', encoding='utf-8') as f:
+                f.write(log_msg + '\n')
+        except Exception as e:
+            print(f"Failed to write to debug file: {e}")
+
+    log_debug("="*80)
+    log_debug(f"CHARTINK GMAIL INTEGRATION - {mode} MODE")
+    log_debug("="*80)
+
+    # Check credentials
+    gmail_user = os.getenv('GMAIL_USER')
+    gmail_password = os.getenv('GMAIL_APP_PASSWORD')
+
+    log_debug(f"Gmail User: {gmail_user if gmail_user else 'NOT SET'}")
+    log_debug(f"Gmail Password: {'SET (length={})'.format(len(gmail_password)) if gmail_password else 'NOT SET'}")
+
+    if not gmail_user or not gmail_password:
+        log_debug("❌ FAILED: Gmail credentials not found in .env file")
+        log_debug("Required: GMAIL_USER and GMAIL_APP_PASSWORD")
+        return []
+
+    # Connect to Gmail
+    log_debug("\n--- Connecting to Gmail ---")
     mail = connect_gmail()
     if not mail:
+        log_debug("❌ FAILED: Could not connect to Gmail")
         return []
+
+    log_debug("✅ Connected to Gmail successfully")
 
     alerts = []
 
     try:
         # Select inbox
-        mail.select('INBOX')
+        log_debug("\n--- Selecting INBOX ---")
+        status, data = mail.select('INBOX')
+        log_debug(f"Select status: {status}")
+        log_debug(f"Mailbox data: {data}")
 
         # Build search criteria based on mode
         if mode == 'LIVE':
             # LIVE: Only unseen emails from Chartink
             search_criteria = '(UNSEEN FROM "Chartink")'
-            print("🔴 LIVE MODE: Searching for UNSEEN Chartink emails...")
+            log_debug(f"\n🔴 LIVE MODE: Searching for UNSEEN Chartink emails...")
         else:  # TEST mode
             # TEST: Last 30 days, matching specific subjects
             since_date = (datetime.now() - timedelta(days=30)).strftime("%d-%b-%Y")
             search_criteria = f'(SINCE {since_date} FROM "Chartink")'
-            print(f"🧪 TEST MODE: Searching for Chartink emails since {since_date}...")
+            log_debug(f"\n🧪 TEST MODE: Searching for Chartink emails since {since_date}...")
+
+        log_debug(f"Search criteria: {search_criteria}")
 
         # Search emails
+        log_debug("\n--- Searching emails ---")
         status, message_ids = mail.search(None, search_criteria)
+        log_debug(f"Search status: {status}")
 
         if status != 'OK':
-            print(f"❌ Email search failed: {status}")
+            log_debug(f"❌ Email search failed: {status}")
             return alerts
 
         email_ids = message_ids[0].split()
-        print(f"📬 Found {len(email_ids)} emails")
+        log_debug(f"📬 Found {len(email_ids)} emails")
+        log_debug(f"Email IDs: {email_ids}")
+
+        if len(email_ids) == 0:
+            log_debug("\n⚠️ No emails found matching criteria")
+            log_debug("Possible reasons:")
+            log_debug("  1. No Chartink emails in last 30 days")
+            log_debug("  2. All emails already read (in LIVE mode)")
+            log_debug("  3. Sender name in Gmail is different (not 'Chartink')")
+
+            # Try broader search to debug
+            log_debug("\n--- Trying broader search (all Chartink emails) ---")
+            status2, message_ids2 = mail.search(None, 'FROM "Chartink"')
+            email_ids2 = message_ids2[0].split()
+            log_debug(f"Total Chartink emails (all time): {len(email_ids2)}")
+
+            if len(email_ids2) > 0:
+                log_debug("Found Chartink emails! Issue might be:")
+                log_debug("  - In LIVE mode: All emails already marked as READ")
+                log_debug("  - In TEST mode: No emails in last 30 days")
+            else:
+                log_debug("No Chartink emails found at all!")
+                log_debug("Possible issues:")
+                log_debug("  - Sender name might be different (check actual sender)")
+                log_debug("  - Wrong Gmail account")
+                log_debug("  - No Chartink alerts received yet")
 
         # Process each email
-        for email_id in email_ids:
+        log_debug("\n--- Processing emails ---")
+        for idx, email_id in enumerate(email_ids, 1):
             try:
+                log_debug(f"\n[Email {idx}/{len(email_ids)}] Processing ID: {email_id}")
+
                 # Fetch email
                 status, msg_data = mail.fetch(email_id, '(RFC822)')
+                log_debug(f"  Fetch status: {status}")
 
                 if status != 'OK':
+                    log_debug(f"  ⚠️ Failed to fetch email")
                     continue
 
                 # Parse email
                 raw_email = msg_data[0][1]
                 msg = email.message_from_bytes(raw_email)
 
+                # Get subject and sender for debugging
+                subject = msg.get('Subject', '')
+                sender = msg.get('From', '')
+                date = msg.get('Date', '')
+
+                log_debug(f"  From: {sender}")
+                log_debug(f"  Subject: {subject}")
+                log_debug(f"  Date: {date}")
+
                 # Parse Chartink email
                 parsed = parse_chartink_email(msg)
+                log_debug(f"  Parsed stocks: {parsed['stocks']}")
+                log_debug(f"  Direction: {parsed['direction']}")
 
                 # In TEST mode, filter by subject keywords
                 if mode == 'TEST':
                     if parsed['direction'] is None:
+                        log_debug(f"  ⏭️ Skipping: Not a momentum alert (direction is None)")
                         continue  # Skip non-momentum alerts in TEST mode
+                else:
+                    log_debug(f"  Mode: LIVE (processing all directions)")
 
                 # Only process if direction is classified
                 if parsed['direction']:
                     # Add timestamp
                     try:
                         parsed['timestamp'] = email.utils.parsedate_to_datetime(parsed['date'])
-                    except:
+                    except Exception as e:
+                        log_debug(f"  ⚠️ Could not parse date: {e}")
                         parsed['timestamp'] = datetime.now()
 
                     alerts.append(parsed)
+                    log_debug(f"  ✅ Alert added!")
 
                     # Print to console
                     direction_emoji = "🟢" if parsed['direction'] == 'LONG' else "🔴"
                     stocks_str = ', '.join(parsed['stocks']) if parsed['stocks'] else 'None'
-                    print(f"{direction_emoji} {parsed['direction']:5s} | {parsed['date'][:25]:25s} | Stocks: {stocks_str}")
+                    summary = f"{direction_emoji} {parsed['direction']:5s} | {parsed['date'][:25]:25s} | Stocks: {stocks_str}"
+                    log_debug(f"  {summary}")
 
                 # Mark as seen ONLY in LIVE mode
                 if mode == 'LIVE' and parsed['direction']:
                     mail.store(email_id, '+FLAGS', '\\Seen')
+                    log_debug(f"  📧 Marked as SEEN (LIVE mode)")
 
             except Exception as e:
-                print(f"⚠️ Error processing email {email_id}: {e}")
+                log_debug(f"  ❌ Error processing email {email_id}: {e}")
+                import traceback
+                log_debug(f"  Traceback: {traceback.format_exc()}")
                 continue
 
         # Close connection
+        log_debug("\n--- Closing connection ---")
         mail.close()
         mail.logout()
+        log_debug("✅ Connection closed")
 
-        print(f"✅ Processed {len(alerts)} momentum alerts")
+        log_debug(f"\n{'='*80}")
+        log_debug(f"SUMMARY: Processed {len(alerts)} momentum alerts")
+        log_debug(f"{'='*80}")
+        log_debug(f"\nDebug log saved to: {debug_file}")
 
     except Exception as e:
-        print(f"❌ Error fetching emails: {e}")
+        log_debug(f"\n❌ CRITICAL ERROR: {e}")
+        import traceback
+        log_debug(f"Traceback:\n{traceback.format_exc()}")
         try:
             mail.close()
             mail.logout()
