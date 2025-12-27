@@ -7504,6 +7504,12 @@ if 'chartink_alerts' not in st.session_state:
     st.session_state.chartink_alerts = []
 if 'chartink_last_fetch' not in st.session_state:
     st.session_state.chartink_last_fetch = None
+if 'chartink_last_fetch_time' not in st.session_state:
+    st.session_state.chartink_last_fetch_time = None
+if 'chartink_fetch_count' not in st.session_state:
+    st.session_state.chartink_fetch_count = 0
+if 'chartink_auto_fetch_enabled' not in st.session_state:
+    st.session_state.chartink_auto_fetch_enabled = False
 
 # UI Debug logging helper - writes to both console and file
 from pathlib import Path
@@ -7527,7 +7533,7 @@ def log_ui(msg):
 gmail_configured = bool(os.getenv('GMAIL_USER') and os.getenv('GMAIL_APP_PASSWORD'))
 
 if gmail_configured:
-    col1, col2, col3 = st.columns([2, 1, 1])
+    col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
 
     with col1:
         st.caption("✅ Gmail configured | Monitoring: **Alert for Weekly close=high/low ONLY**")
@@ -7537,14 +7543,67 @@ if gmail_configured:
         test_mode = st.checkbox("🧪 TEST Mode", value=False, help="TEST: Last 30 days (read-only) | LIVE: Unread emails only")
 
     with col3:
+        # Auto-fetch toggle (only for LIVE mode)
+        if not test_mode:
+            auto_fetch = st.checkbox("⚡ Auto-fetch", value=st.session_state.chartink_auto_fetch_enabled,
+                                    help="Auto-fetch new alerts: First fetch after 5min, then every 30sec")
+            if auto_fetch != st.session_state.chartink_auto_fetch_enabled:
+                st.session_state.chartink_auto_fetch_enabled = auto_fetch
+                st.rerun()
+
+    with col4:
         # Clear button
         if st.button("🗑️ Clear", help="Clear displayed alerts"):
             st.session_state.chartink_alerts = []
             st.session_state.chartink_last_fetch = None
+            st.session_state.chartink_last_fetch_time = None
+            st.session_state.chartink_fetch_count = 0
             st.rerun()
 
-    # Fetch alerts button
-    if st.button("📬 Fetch Chartink Alerts", type="primary"):
+    # AUTO-FETCH LOGIC (only in LIVE mode with auto-fetch enabled)
+    should_auto_fetch = False
+    if not test_mode and st.session_state.chartink_auto_fetch_enabled:
+        now = datetime.now()
+
+        if st.session_state.chartink_last_fetch_time is None:
+            # First time - fetch immediately
+            should_auto_fetch = True
+            log_ui("🤖 AUTO-FETCH: First fetch triggered")
+        else:
+            last_fetch_time = st.session_state.chartink_last_fetch_time
+            seconds_since_last = (now - last_fetch_time).total_seconds()
+
+            if st.session_state.chartink_fetch_count == 1:
+                # After first fetch, wait 5 minutes before second fetch
+                if seconds_since_last >= 300:  # 5 minutes
+                    should_auto_fetch = True
+                    log_ui(f"🤖 AUTO-FETCH: 5 min interval reached ({seconds_since_last:.0f}s since last)")
+            else:
+                # After second fetch, check every 30 seconds
+                if seconds_since_last >= 30:
+                    should_auto_fetch = True
+                    log_ui(f"🤖 AUTO-FETCH: 30 sec interval reached ({seconds_since_last:.0f}s since last)")
+
+    # Execute auto-fetch if triggered
+    if should_auto_fetch:
+        mode = 'LIVE'
+        log_ui(f"🤖 AUTO-FETCH STARTING - Fetch #{st.session_state.chartink_fetch_count + 1}")
+
+        with st.spinner(f"Auto-fetching new alerts..."):
+            alerts = fetch_chartink_alerts(mode=mode)
+
+        log_ui(f"✅ AUTO-FETCH COMPLETED: {len(alerts)} alerts")
+
+        # Update tracking
+        st.session_state.chartink_alerts = alerts
+        st.session_state.chartink_last_fetch = datetime.now().strftime('%I:%M:%S %p')
+        st.session_state.chartink_last_fetch_time = datetime.now()
+        st.session_state.chartink_fetch_count += 1
+
+        st.rerun()
+
+    # Manual fetch alerts button
+    if st.button("📬 Fetch Now", type="primary"):
         mode = 'TEST' if test_mode else 'LIVE'
 
         log_ui(f"🔵 FETCH BUTTON CLICKED - Mode: {mode}")
@@ -7560,11 +7619,36 @@ if gmail_configured:
         # Store in session state for immediate display
         st.session_state.chartink_alerts = alerts
         st.session_state.chartink_last_fetch = datetime.now().strftime('%I:%M:%S %p')
-        log_ui(f"💾 Stored {len(alerts)} alerts in session_state")
+        st.session_state.chartink_last_fetch_time = datetime.now()
+        st.session_state.chartink_fetch_count += 1
+        log_ui(f"💾 Stored {len(alerts)} alerts in session_state (Fetch #{st.session_state.chartink_fetch_count})")
 
         # Force page reload to display
         log_ui(f"🔄 Triggering page reload to display alerts...")
         st.rerun()
+
+    # Show auto-fetch status
+    if not test_mode and st.session_state.chartink_auto_fetch_enabled:
+        if st.session_state.chartink_last_fetch_time:
+            now = datetime.now()
+            seconds_since = (now - st.session_state.chartink_last_fetch_time).total_seconds()
+
+            if st.session_state.chartink_fetch_count == 1:
+                # After first fetch, wait 5 minutes
+                next_fetch_in = 300 - seconds_since
+                if next_fetch_in > 0:
+                    st.info(f"⚡ Auto-fetch enabled | Next fetch in: {int(next_fetch_in)}s (waiting 5 min after first fetch)")
+                else:
+                    st.info(f"⚡ Auto-fetch enabled | Fetching on next refresh...")
+            else:
+                # After second fetch, every 30 seconds
+                next_fetch_in = 30 - seconds_since
+                if next_fetch_in > 0:
+                    st.info(f"⚡ Auto-fetch enabled | Next fetch in: {int(next_fetch_in)}s (every 30s)")
+                else:
+                    st.info(f"⚡ Auto-fetch enabled | Fetching on next refresh...")
+        else:
+            st.info(f"⚡ Auto-fetch enabled | Will fetch on next refresh...")
 
     # Display alerts - try session_state first, then fall back to file
     # DEBUG: Check what's in session state
