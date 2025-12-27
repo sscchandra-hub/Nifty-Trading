@@ -23,6 +23,10 @@ from dotenv import load_dotenv
 from kiteconnect import KiteConnect
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import imaplib
+import email
+from email.header import decode_header
+from html.parser import HTMLParser
 
 try:
     from streamlit_autorefresh import st_autorefresh
@@ -794,9 +798,13 @@ DERIV_OPT_SEGMENTS = {"NFO-OPT", "BFO-OPT"}
 INDEX_NAME_WHITELIST = {
     # Original 5 indices
     "NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX",
-    # New 10 sectoral indices
+    # Sectoral indices (F&O + Non-F&O for complete sector view)
     "NIFTY MIDCAP 50", "NIFTY AUTO", "NIFTY PHARMA", "NIFTY METAL", "NIFTY ENERGY",
-    "NIFTY FMCG", "NIFTY REALTY", "NIFTY PSU BANK", "NIFTY INFRA", "NIFTY OIL & GAS"
+    "NIFTY FMCG", "NIFTY REALTY", "NIFTY PSU BANK", "NIFTY INFRA", "NIFTY OIL & GAS",
+    # Additional sectoral indices (Non-F&O but useful for sector performance)
+    "INDIA VIX", "NIFTY HEALTHCARE", "NIFTY IT", "NIFTY MEDIA",
+    # Defence sector (checking both spellings)
+    "NIFTY IND DEFENCE", "NIFTY INDIA DEFENCE"
 }
 
 @dataclass
@@ -822,6 +830,11 @@ class EngineState:
     nifty_fut_symbol: str = ""
     nifty_fut_expiry: str = ""
     last_stock_alert: dict = field(default_factory=dict)  # Track stock alerts with cooldowns
+    top_10_stocks: set = field(default_factory=set)  # Track current Top 10 stocks
+    alert_cooldowns: dict = field(default_factory=dict)  # Track smart alert cooldowns (stock_name -> timestamp)
+    daily_score_history: list = field(default_factory=list)  # Track all scores for daily summary
+    nifty_momentum_state: str = None  # Track NIFTY momentum class for reversal detection
+    nifty_momentum_last_alert: datetime = None  # Track last NIFTY momentum alert time
 
 engine = EngineState()
 
@@ -902,6 +915,1337 @@ def format_number(num):
         formatted = f"{num:.0f}"
     
     return formatted
+
+# ============================================
+# ENHANCED UI HELPER FUNCTIONS
+# ============================================
+
+def create_cepe_progress_bar(ce_value, pe_value, show_labels=True):
+    """
+    Create visual CE vs PE progress bar using HTML/CSS
+    Returns HTML string for st.markdown()
+    """
+    total = ce_value + pe_value
+    if total > 0:
+        ce_pct = (ce_value / total) * 100
+        pe_pct = 100 - ce_pct
+    else:
+        ce_pct = 50
+        pe_pct = 50
+
+    ce_label = f"{ce_pct:.1f}%" if show_labels else ""
+    pe_label = f"{pe_pct:.1f}%" if show_labels else ""
+
+    html = f"""<div class="cepe-bar-container"><div class="cepe-bar-ce" style="width: {ce_pct}%;">{ce_label}</div><div class="cepe-bar-pe" style="width: {pe_pct}%;">{pe_label}</div></div>"""
+    return html
+
+def get_status_indicator(value, threshold_high=0, threshold_low=0):
+    """
+    Return traffic light status indicator based on value
+    🟢 Green for positive/bullish
+    🟡 Yellow for neutral
+    🔴 Red for negative/bearish
+    """
+    if value > threshold_high:
+        return '<span class="status-green">🟢</span>'
+    elif value < threshold_low:
+        return '<span class="status-red">🔴</span>'
+    else:
+        return '<span class="status-yellow">🟡</span>'
+
+def create_enhanced_section_header(title, icon="📊"):
+    """
+    Create enhanced section header with icon and styling
+    """
+    html = f"""
+    <div class="section-header">
+        <h3 style="margin: 0; color: #1f77b4; font-size: 1.5rem;">
+            {icon} {title}
+        </h3>
+    </div>
+    """
+    return html
+
+def create_metric_card(label, value, card_type="neutral"):
+    """
+    Create color-coded metric card
+    card_type: 'bullish', 'bearish', or 'neutral'
+    """
+    class_name = f"metric-card-{card_type}"
+    html = f"""
+    <div class="{class_name}">
+        <div style="font-size: 0.9rem; color: #666; margin-bottom: 0.3rem;">{label}</div>
+        <div style="font-size: 1.5rem; font-weight: bold; color: #333;">{value}</div>
+    </div>
+    """
+    return html
+
+def create_market_overview_panel(indices_data, deltas):
+    """
+    Create compact Market Overview Panel showing key metrics at a glance
+    """
+    # Calculate aggregate metrics
+    total_ce = sum(idx.get('ce_flow', 0) for idx in indices_data.values())
+    total_pe = sum(idx.get('pe_flow', 0) for idx in indices_data.values())
+    net_flow = total_ce - total_pe
+
+    # Get delta metrics
+    indices_ce_1min = deltas.get('indices_ce_1min', 0)
+    indices_pe_1min = deltas.get('indices_pe_1min', 0)
+    net_1min = indices_ce_1min - indices_pe_1min
+
+    # Determine market sentiment
+    if net_flow > 0 and net_1min > 0:
+        sentiment = "🟢 BULLISH"
+        sentiment_color = "#28a745"
+    elif net_flow < 0 and net_1min < 0:
+        sentiment = "🔴 BEARISH"
+        sentiment_color = "#dc3545"
+    else:
+        sentiment = "🟡 NEUTRAL"
+        sentiment_color = "#ffc107"
+
+    # Calculate PCR (Put-Call Ratio)
+    pcr = (total_pe / total_ce) if total_ce > 0 else 0
+
+    html = f"""
+    <div class="overview-panel">
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1rem; margin-bottom: 1rem;">
+            <div style="text-align: center;">
+                <div style="font-size: 0.9rem; opacity: 0.9;">Market Sentiment</div>
+                <div style="font-size: 1.8rem; font-weight: bold; color: {sentiment_color};">{sentiment}</div>
+            </div>
+            <div style="text-align: center;">
+                <div style="font-size: 0.9rem; opacity: 0.9;">Net Flow</div>
+                <div style="font-size: 1.8rem; font-weight: bold;">{format_number(net_flow)}</div>
+            </div>
+            <div style="text-align: center;">
+                <div style="font-size: 0.9rem; opacity: 0.9;">1min Δ</div>
+                <div style="font-size: 1.8rem; font-weight: bold;">{format_number(net_1min)}</div>
+            </div>
+            <div style="text-align: center;">
+                <div style="font-size: 0.9rem; opacity: 0.9;">PCR</div>
+                <div style="font-size: 1.8rem; font-weight: bold;">{pcr:.2f}</div>
+            </div>
+        </div>
+        <div style="margin-top: 1rem;">
+            {create_cepe_progress_bar(total_ce, total_pe, show_labels=True)}
+        </div>
+    </div>
+    """
+    return html
+
+def create_stock_card(stock_name, price, change_pct, net_flow, card_type="neutral"):
+    """
+    Create color-coded stock card for gainers/losers
+    card_type: 'gainer', 'loser', or 'neutral'
+    """
+    if card_type == "gainer":
+        bg_color = "linear-gradient(135deg, #d4edda 0%, #c3e6cb 100%)"
+        border_color = "#28a745"
+    elif card_type == "loser":
+        bg_color = "linear-gradient(135deg, #f8d7da 0%, #f5c6cb 100%)"
+        border_color = "#dc3545"
+    else:
+        bg_color = "linear-gradient(135deg, #fff3cd 0%, #ffeaa7 100%)"
+        border_color = "#ffc107"
+
+    flow_color = "#28a745" if net_flow > 0 else "#dc3545"
+    flow_emoji = "🟢" if net_flow > 0 else "🔴"
+    change_emoji = "🟢" if change_pct > 0 else "🔴"
+    price_str = f"₹{price:,.2f}" if price else "N/A"
+
+    html = f"""<div style="background: {bg_color}; border-left: 4px solid {border_color}; padding: 0.8rem; border-radius: 8px; margin: 0.5rem 0; box-shadow: 0 2px 4px rgba(0,0,0,0.1);"><div style="font-size: 1.1rem; font-weight: bold; color: #333; margin-bottom: 0.3rem;">{stock_name}</div><div style="font-size: 0.9rem; color: #666; margin-bottom: 0.3rem;">{price_str} <span style="color: {flow_color}; font-weight: bold;">{change_emoji} {change_pct:+.2f}%</span></div><div style="font-size: 0.85rem; color: #666;">{flow_emoji} Flow: {format_number(net_flow)}</div></div>"""
+    return html
+
+def create_stocks_market_overview_panel(stocks_data, deltas):
+    """
+    Create compact Stocks Market Overview Panel showing key metrics at a glance
+    """
+    if not stocks_data:
+        return ""
+
+    # Calculate aggregate metrics
+    total_stocks = len(stocks_data)
+    total_ce = sum(s.get('ce_flow', 0) for s in stocks_data.values())
+    total_pe = sum(s.get('pe_flow', 0) for s in stocks_data.values())
+    net_flow = total_ce - total_pe
+
+    # Get delta metrics
+    stocks_ce_1min = deltas.get('stocks_ce_1min', 0)
+    stocks_pe_1min = deltas.get('stocks_pe_1min', 0)
+    net_1min = stocks_ce_1min - stocks_pe_1min
+
+    # Count bullish/bearish stocks
+    bullish_count = sum(1 for s in stocks_data.values() if s.get('net_flow', 0) > 0)
+    bearish_count = sum(1 for s in stocks_data.values() if s.get('net_flow', 0) < 0)
+
+    # Determine market sentiment
+    if bullish_count > bearish_count:
+        sentiment = "🟢 BULLISH"
+        sentiment_color = "#28a745"
+    elif bearish_count > bullish_count:
+        sentiment = "🔴 BEARISH"
+        sentiment_color = "#dc3545"
+    else:
+        sentiment = "🟡 NEUTRAL"
+        sentiment_color = "#ffc107"
+
+    # Calculate breadth (bullish vs bearish ratio)
+    bullish_pct = (bullish_count / total_stocks * 100) if total_stocks > 0 else 50
+    bearish_pct = (bearish_count / total_stocks * 100) if total_stocks > 0 else 50
+
+    html = f"""
+    <div class="overview-panel">
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1rem; margin-bottom: 1rem;">
+            <div style="text-align: center;">
+                <div style="font-size: 0.9rem; opacity: 0.9;">Market Sentiment</div>
+                <div style="font-size: 1.8rem; font-weight: bold; color: {sentiment_color};">{sentiment}</div>
+            </div>
+            <div style="text-align: center;">
+                <div style="font-size: 0.9rem; opacity: 0.9;">Net Flow</div>
+                <div style="font-size: 1.8rem; font-weight: bold;">{format_number(net_flow)}</div>
+            </div>
+            <div style="text-align: center;">
+                <div style="font-size: 0.9rem; opacity: 0.9;">1min Δ</div>
+                <div style="font-size: 1.8rem; font-weight: bold;">{format_number(net_1min)}</div>
+            </div>
+            <div style="text-align: center;">
+                <div style="font-size: 0.9rem; opacity: 0.9;">Market Breadth</div>
+                <div style="font-size: 1.8rem; font-weight: bold;">{bullish_count}/{total_stocks}</div>
+            </div>
+        </div>
+        <div style="margin-top: 1rem;">
+            <div style="font-size: 0.85rem; margin-bottom: 0.3rem; color: #fff; opacity: 0.9;">Bullish vs Bearish Stocks</div>
+            {create_cepe_progress_bar(bullish_count, bearish_count, show_labels=True)}
+        </div>
+    </div>
+    """
+    return html
+
+def create_stock_performance_heatbar(stocks_data):
+    """
+    Create stock performance heat bar showing distribution across price change ranges
+    """
+    if not stocks_data:
+        return ""
+
+    # Get stocks with price data
+    stocks_with_price = [s for s in stocks_data.values() if s.get('change_pct') is not None]
+
+    if not stocks_with_price:
+        return ""
+
+    total_stocks = len(stocks_with_price)
+
+    # Define ranges and count stocks in each
+    ranges = {
+        'dark_red': {'min': float('-inf'), 'max': -2.0, 'count': 0, 'color': '#dc3545', 'label': 'Below -2%'},
+        'med_red': {'min': -2.0, 'max': -1.0, 'count': 0, 'color': '#e74c3c', 'label': '-2% to -1%'},
+        'light_red': {'min': -1.0, 'max': 0.0, 'count': 0, 'color': '#f8d7da', 'label': '-1% to 0%'},
+        'light_green': {'min': 0.0, 'max': 1.0, 'count': 0, 'color': '#d4edda', 'label': '0% to 1%'},
+        'med_green': {'min': 1.0, 'max': 2.0, 'count': 0, 'color': '#28a745', 'label': '1% to 2%'},
+        'dark_green': {'min': 2.0, 'max': float('inf'), 'count': 0, 'color': '#218838', 'label': 'Above 2%'}
+    }
+
+    # Count stocks in each range
+    for stock in stocks_with_price:
+        change_pct = stock.get('change_pct', 0)
+
+        if change_pct < -2.0:
+            ranges['dark_red']['count'] += 1
+        elif -2.0 <= change_pct < -1.0:
+            ranges['med_red']['count'] += 1
+        elif -1.0 <= change_pct < 0.0:
+            ranges['light_red']['count'] += 1
+        elif 0.0 <= change_pct < 1.0:
+            ranges['light_green']['count'] += 1
+        elif 1.0 <= change_pct < 2.0:
+            ranges['med_green']['count'] += 1
+        else:  # >= 2.0
+            ranges['dark_green']['count'] += 1
+
+    # Calculate percentages
+    for range_data in ranges.values():
+        range_data['pct'] = (range_data['count'] / total_stocks * 100) if total_stocks > 0 else 0
+
+    # Count bearish vs bullish
+    bearish_count = ranges['dark_red']['count'] + ranges['med_red']['count'] + ranges['light_red']['count']
+    bullish_count = ranges['light_green']['count'] + ranges['med_green']['count'] + ranges['dark_green']['count']
+
+    # Build segments HTML first
+    segments_html = ""
+    for key in ['dark_red', 'med_red', 'light_red', 'light_green', 'med_green', 'dark_green']:
+        range_data = ranges[key]
+        if range_data['count'] > 0:
+            text_color = '#fff' if key in ['dark_red', 'med_red', 'med_green', 'dark_green'] else '#333'
+            segments_html += f'<div style="flex: {range_data["pct"]}; background-color: {range_data["color"]}; display: flex; flex-direction: column; justify-content: center; align-items: center; color: {text_color}; font-weight: bold; font-size: 0.85rem; border-right: 1px solid rgba(255,255,255,0.3);"><div style="font-size: 1.1rem;">{range_data["count"]}</div><div style="font-size: 0.7rem; opacity: 0.9;">{range_data["label"]}</div></div>'
+
+    # Summary stats
+    bearish_pct = (bearish_count / total_stocks * 100) if total_stocks > 0 else 0
+    bullish_pct = (bullish_count / total_stocks * 100) if total_stocks > 0 else 0
+
+    # Build complete HTML as single compact string
+    html = f'<div style="background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); border-radius: 10px; padding: 1.5rem; margin: 1rem 0; box-shadow: 0 2px 4px rgba(0,0,0,0.1);"><div style="text-align: center; font-size: 1.2rem; font-weight: bold; color: #333; margin-bottom: 1rem;">📊 STOCK PERFORMANCE DISTRIBUTION ({total_stocks} Stocks)</div><div style="display: flex; height: 60px; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 6px rgba(0,0,0,0.15); margin-bottom: 1rem;">{segments_html}</div><div style="display: flex; justify-content: space-between; font-size: 0.9rem; color: #666;"><div style="text-align: left;"><span style="color: #dc3545; font-weight: bold;">◄ Bearish: {bearish_count} stocks ({bearish_pct:.1f}%)</span></div><div style="text-align: right;"><span style="color: #28a745; font-weight: bold;">Bullish: {bullish_count} stocks ({bullish_pct:.1f}%) ►</span></div></div></div>'
+
+    return html
+
+# ============================================
+# VWAP & SUPERTREND STRATEGY FUNCTIONS
+# ============================================
+
+def calculate_vwap(candles):
+    """
+    Calculate VWAP (Volume Weighted Average Price)
+    VWAP = Cumulative(Typical Price * Volume) / Cumulative(Volume)
+    Typical Price = (High + Low + Close) / 3
+    """
+    if not candles or len(candles) == 0:
+        return None
+
+    cumulative_tp_volume = 0
+    cumulative_volume = 0
+
+    for candle in candles:
+        typical_price = (candle['high'] + candle['low'] + candle['close']) / 3
+        volume = candle['volume']
+        cumulative_tp_volume += typical_price * volume
+        cumulative_volume += volume
+
+    if cumulative_volume == 0:
+        return None
+
+    vwap = cumulative_tp_volume / cumulative_volume
+    return vwap
+
+def calculate_atr(candles, period=7):
+    """
+    Calculate ATR (Average True Range)
+    TR = max(high - low, abs(high - prev_close), abs(low - prev_close))
+    ATR = average of TR over period
+    """
+    if not candles or len(candles) < period + 1:
+        return None
+
+    true_ranges = []
+
+    for i in range(1, len(candles)):
+        high = candles[i]['high']
+        low = candles[i]['low']
+        prev_close = candles[i-1]['close']
+
+        tr = max(
+            high - low,
+            abs(high - prev_close),
+            abs(low - prev_close)
+        )
+        true_ranges.append(tr)
+
+    if len(true_ranges) < period:
+        return None
+
+    # Average of last 'period' true ranges
+    atr = sum(true_ranges[-period:]) / period
+    return atr
+
+def calculate_supertrend(candles, atr_period=7, multiplier=3.0):
+    """
+    Calculate SuperTrend indicator
+    Basic Band = (High + Low) / 2
+    Upper Band = Basic Band + (Multiplier × ATR)
+    Lower Band = Basic Band - (Multiplier × ATR)
+
+    Returns: (supertrend_value, trend_direction)
+    trend_direction: 'green' (bullish) or 'red' (bearish)
+    """
+    if not candles or len(candles) < atr_period + 1:
+        return None, None
+
+    atr = calculate_atr(candles, atr_period)
+    if atr is None:
+        return None, None
+
+    # Get last candle
+    last_candle = candles[-1]
+    basic_band = (last_candle['high'] + last_candle['low']) / 2
+
+    upper_band = basic_band + (multiplier * atr)
+    lower_band = basic_band - (multiplier * atr)
+
+    close_price = last_candle['close']
+
+    # Determine trend direction
+    if close_price > upper_band:
+        trend = 'green'
+        supertrend_value = lower_band
+    elif close_price < lower_band:
+        trend = 'red'
+        supertrend_value = upper_band
+    else:
+        # Price between bands - use previous trend or default to red
+        # For simplicity, if price is near lower band, it's bullish
+        if close_price > basic_band:
+            trend = 'green'
+            supertrend_value = lower_band
+        else:
+            trend = 'red'
+            supertrend_value = upper_band
+
+    return supertrend_value, trend
+
+def detect_vwap_supertrend_signal(candles, vwap, supertrend_value, supertrend_trend):
+    """
+    Detect VWAP + SuperTrend strategy signal
+
+    Bullish Signal:
+    - SuperTrend is GREEN (bullish)
+    - VWAP is ABOVE SuperTrend
+    - Last candle is GREEN (close > open)
+    - Candle closes ABOVE VWAP
+
+    Bearish Signal:
+    - SuperTrend is RED (bearish)
+    - VWAP is BELOW SuperTrend
+    - Last candle is RED (close < open)
+    - Candle closes BELOW VWAP
+
+    Returns: ('BULLISH', 'BEARISH', or 'NEUTRAL')
+    """
+    if not candles or vwap is None or supertrend_value is None or supertrend_trend is None:
+        return 'NEUTRAL'
+
+    last_candle = candles[-1]
+    candle_close = last_candle['close']
+    candle_open = last_candle['open']
+
+    # Check if candle is green or red
+    is_green_candle = candle_close > candle_open
+    is_red_candle = candle_close < candle_open
+
+    # Bullish conditions
+    if (supertrend_trend == 'green' and
+        vwap > supertrend_value and
+        is_green_candle and
+        candle_close > vwap):
+        return 'BULLISH'
+
+    # Bearish conditions
+    if (supertrend_trend == 'red' and
+        vwap < supertrend_value and
+        is_red_candle and
+        candle_close < vwap):
+        return 'BEARISH'
+
+    return 'NEUTRAL'
+
+def fetch_nifty_futures_15min_candles():
+    """
+    Fetch 15-minute candles for Nifty Futures from 9:15 AM to current time
+    Returns list of candle dictionaries
+    """
+    try:
+        if not hasattr(engine, 'nifty_fut_token') or not engine.nifty_fut_token:
+            print("❌ Nifty Futures token not available")
+            return None
+
+        current_time = datetime.now()
+
+        # Market hours check
+        if current_time.time() < dt_time(9, 15):
+            print("⏰ Market not open yet")
+            return None
+
+        # From 9:15 AM today
+        from_date = current_time.replace(hour=9, minute=15, second=0, microsecond=0)
+        # To current time
+        to_date = current_time
+
+        print(f"📊 Fetching 15-min candles for Nifty Futures from {from_date.strftime('%H:%M')} to {to_date.strftime('%H:%M')}")
+
+        historical_data = engine.kite.historical_data(
+            instrument_token=engine.nifty_fut_token,
+            from_date=from_date,
+            to_date=to_date,
+            interval="15minute"
+        )
+
+        if historical_data and len(historical_data) > 0:
+            print(f"✅ Fetched {len(historical_data)} candles for Nifty Futures")
+            return historical_data
+        else:
+            print("⚠️ No historical data received")
+            return None
+
+    except Exception as e:
+        print(f"❌ Error fetching 15-min candles: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+def create_vwap_supertrend_card(vwap, supertrend_value, supertrend_trend, signal, last_candle, ltp):
+    """
+    Create compact HTML card for VWAP & SuperTrend strategy (Option 1)
+    """
+    if vwap is None or supertrend_value is None:
+        # Show placeholder card with structure when data is not available
+        placeholder_html = '<div style="background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); border-radius: 10px; padding: 1.5rem; margin: 1rem 0; box-shadow: 0 2px 4px rgba(0,0,0,0.1);"><div style="text-align: center; font-size: 1.3rem; font-weight: bold; color: #1f77b4; margin-bottom: 1rem;">📈 VWAP & SUPERTREND STRATEGY (15-min)</div><div style="background: #fff3cd; border-left: 4px solid #ffc107; padding: 1rem; border-radius: 5px; margin-bottom: 1rem;"><p style="margin: 0; color: #856404; font-weight: bold;">⏳ Waiting for market data... (requires at least 8 candles after 9:15 AM)</p></div><div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-bottom: 1rem;"><div style="background: linear-gradient(135deg, #fff3cd 0%, #ffeaa7 100%); border-radius: 8px; padding: 1rem; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.1); opacity: 0.6;"><div style="font-size: 0.85rem; color: #666; margin-bottom: 0.5rem;">SIGNAL</div><div style="font-size: 1.5rem; font-weight: bold; color: #ffc107;">🟡 NEUTRAL</div></div><div style="background: #fff; border-radius: 8px; padding: 1rem; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.1); opacity: 0.6;"><div style="font-size: 0.85rem; color: #666; margin-bottom: 0.5rem;">VWAP</div><div style="font-size: 1.1rem; font-weight: bold; color: #999;">Waiting...</div></div><div style="background: #fff; border-radius: 8px; padding: 1rem; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.1); opacity: 0.6;"><div style="font-size: 0.85rem; color: #666; margin-bottom: 0.5rem;">SUPERTREND</div><div style="font-size: 1.1rem; font-weight: bold; color: #999;">Waiting...</div></div></div><div style="background: #fff; border-radius: 8px; padding: 1rem; margin-bottom: 1rem; box-shadow: 0 2px 4px rgba(0,0,0,0.05); opacity: 0.6;"><div style="font-size: 0.85rem; font-weight: bold; color: #333; margin-bottom: 0.75rem;">📊 Visual Stack Preview:</div><div style="font-family: monospace; font-size: 0.8rem; line-height: 1.8;"><div style="color: #999;">🟢 Candle Close: Waiting...</div><div style="color: #999;">══ VWAP: Waiting...</div><div style="color: #999;">── SuperTrend: Waiting...</div></div></div><div style="text-align: center; font-size: 0.75rem; color: #999;">⏰ Strategy will activate once market opens and sufficient candles are available</div></div>'
+        return placeholder_html
+
+    # Determine signal color and emoji
+    if signal == 'BULLISH':
+        signal_color = '#28a745'
+        signal_bg = 'linear-gradient(135deg, #d4edda 0%, #c3e6cb 100%)'
+        signal_emoji = '🟢'
+        signal_text = 'BULLISH'
+    elif signal == 'BEARISH':
+        signal_color = '#dc3545'
+        signal_bg = 'linear-gradient(135deg, #f8d7da 0%, #f5c6cb 100%)'
+        signal_emoji = '🔴'
+        signal_text = 'BEARISH'
+    else:
+        signal_color = '#ffc107'
+        signal_bg = 'linear-gradient(135deg, #fff3cd 0%, #ffeaa7 100%)'
+        signal_emoji = '🟡'
+        signal_text = 'NEUTRAL'
+
+    # SuperTrend color
+    st_color = '#28a745' if supertrend_trend == 'green' else '#dc3545'
+    st_text = '🟢 GREEN' if supertrend_trend == 'green' else '🔴 RED'
+
+    # Candle info
+    candle_close = last_candle['close'] if last_candle else ltp
+    candle_open = last_candle['open'] if last_candle else ltp
+    is_green = candle_close > candle_open
+    candle_color = '#28a745' if is_green else '#dc3545'
+    candle_emoji = '🟢' if is_green else '🔴'
+
+    # Position check
+    close_vs_vwap = "Above VWAP" if candle_close > vwap else "Below VWAP"
+    close_vs_vwap_icon = "✅" if (signal == 'BULLISH' and candle_close > vwap) or (signal == 'BEARISH' and candle_close < vwap) else "⚠️"
+
+    # Visual stack
+    vwap_vs_st = vwap - supertrend_value
+    close_vs_vwap_diff = candle_close - vwap
+
+    # Last updated time
+    last_update = datetime.now().strftime('%H:%M:%S')
+
+    html = f'<div style="background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); border-radius: 10px; padding: 1.5rem; margin: 1rem 0; box-shadow: 0 2px 4px rgba(0,0,0,0.1);"><div style="text-align: center; font-size: 1.3rem; font-weight: bold; color: #1f77b4; margin-bottom: 1rem;">📈 VWAP & SUPERTREND STRATEGY (15-min)</div><div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-bottom: 1rem;"><div style="background: {signal_bg}; border-radius: 8px; padding: 1rem; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.1);"><div style="font-size: 0.85rem; color: #666; margin-bottom: 0.5rem;">SIGNAL</div><div style="font-size: 1.5rem; font-weight: bold; color: {signal_color};">{signal_emoji} {signal_text}</div></div><div style="background: #fff; border-radius: 8px; padding: 1rem; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.1);"><div style="font-size: 0.85rem; color: #666; margin-bottom: 0.5rem;">VWAP</div><div style="font-size: 1.3rem; font-weight: bold; color: #333;">₹{vwap:.2f}</div></div><div style="background: #fff; border-radius: 8px; padding: 1rem; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.1);"><div style="font-size: 0.85rem; color: #666; margin-bottom: 0.5rem;">SUPERTREND</div><div style="font-size: 1.3rem; font-weight: bold; color: {st_color};">₹{supertrend_value:.2f}</div><div style="font-size: 0.75rem; color: {st_color}; margin-top: 0.25rem;">{st_text}</div></div></div><div style="background: #fff; border-radius: 8px; padding: 1rem; margin-bottom: 1rem; box-shadow: 0 2px 4px rgba(0,0,0,0.05);"><div style="font-size: 0.9rem; font-weight: bold; color: #333; margin-bottom: 0.5rem;">Last 15-min Candle: {candle_emoji} Close: ₹{candle_close:.2f}</div><div style="font-size: 0.85rem; color: #666;">Candle Position: {close_vs_vwap_icon} {close_vs_vwap} ({abs(close_vs_vwap_diff):+.2f})</div></div><div style="background: #fff; border-radius: 8px; padding: 1rem; margin-bottom: 1rem; box-shadow: 0 2px 4px rgba(0,0,0,0.05);"><div style="font-size: 0.85rem; font-weight: bold; color: #333; margin-bottom: 0.75rem;">📊 Visual Stack:</div><div style="font-family: monospace; font-size: 0.8rem; line-height: 1.8;"><div style="color: {candle_color};">🟢 Candle Close: ₹{candle_close:.2f}</div><div style="color: #1f77b4;">══ VWAP: ₹{vwap:.2f} ({vwap_vs_st:+.2f} vs ST)</div><div style="color: {st_color};">── SuperTrend: ₹{supertrend_value:.2f} ({st_text})</div></div></div><div style="text-align: center; font-size: 0.75rem; color: #999;">⏰ Last Updated: {last_update}</div></div>'
+
+    return html
+
+# ============================================
+# MOMENTUM STOCKS TRACKING FUNCTIONS
+# ============================================
+
+def get_stock_weekly_ohlc(stock_name):
+    """
+    Fetch current week's OHLC for a stock (from Monday/start of week to now)
+    Returns: (high, low, close) or (None, None, None)
+    """
+    try:
+        # Get stock futures token
+        fut_rows = engine.token_meta[
+            (engine.token_meta["name"] == stock_name) &
+            (engine.token_meta.get("type") == "FUT") &
+            (engine.token_meta.get("category") == "STOCK")
+        ]
+
+        if fut_rows.empty:
+            return None, None, None
+
+        fut_token = int(fut_rows.iloc[0]["instrument_token"])
+
+        # Get start of current week (Monday)
+        today = datetime.now()
+        start_of_week = today - timedelta(days=today.weekday())  # Monday
+        start_of_week = start_of_week.replace(hour=9, minute=15, second=0, microsecond=0)
+
+        # Fetch weekly candle data
+        weekly_data = engine.kite.historical_data(
+            instrument_token=fut_token,
+            from_date=start_of_week,
+            to_date=today,
+            interval="week"
+        )
+
+        if weekly_data and len(weekly_data) > 0:
+            current_week = weekly_data[-1]
+            return current_week['high'], current_week['low'], current_week['close']
+
+        return None, None, None
+
+    except Exception as e:
+        # print(f"Error fetching weekly OHLC for {stock_name}: {e}")
+        return None, None, None
+
+def get_stock_daily_ohlc(stock_name):
+    """
+    Fetch today's OHLC for a stock (from 9:15 AM to now)
+    Returns: (high, low, close) or (None, None, None)
+    """
+    try:
+        # Get stock futures token
+        fut_rows = engine.token_meta[
+            (engine.token_meta["name"] == stock_name) &
+            (engine.token_meta.get("type") == "FUT") &
+            (engine.token_meta.get("category") == "STOCK")
+        ]
+
+        if fut_rows.empty:
+            return None, None, None
+
+        fut_token = int(fut_rows.iloc[0]["instrument_token"])
+
+        # Get today's start (9:15 AM)
+        today = datetime.now()
+        today_start = today.replace(hour=9, minute=15, second=0, microsecond=0)
+
+        # Fetch daily candle data
+        daily_data = engine.kite.historical_data(
+            instrument_token=fut_token,
+            from_date=today_start,
+            to_date=today,
+            interval="day"
+        )
+
+        if daily_data and len(daily_data) > 0:
+            today_candle = daily_data[-1]
+            return today_candle['high'], today_candle['low'], today_candle['close']
+
+        return None, None, None
+
+    except Exception as e:
+        # print(f"Error fetching daily OHLC for {stock_name}: {e}")
+        return None, None, None
+
+def check_momentum_conditions(stock_name, ltp):
+    """
+    Check if stock meets bullish or bearish momentum conditions
+
+    Bullish: Weekly Close = Weekly High AND Daily Close = Daily High
+    Bearish: Weekly Close = Weekly Low AND Daily Close = Daily Low
+
+    Returns: ('BULLISH', 'BEARISH', or None)
+    """
+    try:
+        # Fetch weekly and daily OHLC
+        weekly_high, weekly_low, weekly_close = get_stock_weekly_ohlc(stock_name)
+        daily_high, daily_low, daily_close = get_stock_daily_ohlc(stock_name)
+
+        if None in [weekly_high, weekly_low, weekly_close, daily_high, daily_low, daily_close]:
+            return None
+
+        # Use LTP as current close
+        current_close = ltp
+
+        # Check BULLISH conditions (exact match)
+        if (current_close == weekly_high and
+            current_close == daily_high and
+            weekly_close == weekly_high and
+            daily_close == daily_high):
+            return 'BULLISH'
+
+        # Check BEARISH conditions (exact match)
+        if (current_close == weekly_low and
+            current_close == daily_low and
+            weekly_close == weekly_low and
+            daily_close == daily_low):
+            return 'BEARISH'
+
+        return None
+
+    except Exception as e:
+        # print(f"Error checking momentum for {stock_name}: {e}")
+        return None
+
+def load_momentum_tracking():
+    """
+    Load today's momentum tracking from CSV
+    Returns: dict with structure {stock_name: {'bullish': count, 'bearish': count}}
+    """
+    try:
+        today = datetime.now().date()
+        momentum_file = HISTORICAL_DIR / f"momentum_{today}.csv"
+
+        if not momentum_file.exists():
+            return {}
+
+        import csv
+        tracking = {}
+
+        with open(momentum_file, 'r') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                stock_name = row['stock_name']
+                tracking[stock_name] = {
+                    'bullish': int(row.get('bullish_count', 0)),
+                    'bearish': int(row.get('bearish_count', 0))
+                }
+
+        return tracking
+
+    except Exception as e:
+        print(f"Error loading momentum tracking: {e}")
+        return {}
+
+def save_momentum_tracking(tracking):
+    """
+    Save momentum tracking to today's CSV file
+    tracking: dict with structure {stock_name: {'bullish': count, 'bearish': count}}
+    """
+    try:
+        today = datetime.now().date()
+        HISTORICAL_DIR.mkdir(parents=True, exist_ok=True)
+        momentum_file = HISTORICAL_DIR / f"momentum_{today}.csv"
+
+        import csv
+
+        with open(momentum_file, 'w', newline='') as f:
+            fieldnames = ['stock_name', 'bullish_count', 'bearish_count', 'last_updated']
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+
+            writer.writeheader()
+            for stock_name, counts in tracking.items():
+                writer.writerow({
+                    'stock_name': stock_name,
+                    'bullish_count': counts['bullish'],
+                    'bearish_count': counts['bearish'],
+                    'last_updated': datetime.now().isoformat()
+                })
+
+        print(f"✅ Momentum tracking saved: {len(tracking)} stocks")
+
+    except Exception as e:
+        print(f"Error saving momentum tracking: {e}")
+
+# ============================================
+# SMART SCORING & ALERT SYSTEM
+# ============================================
+
+def calculate_stock_score(stock_name, top_10_stocks, volume_spikes, momentum_tracking, stocks_data):
+    """
+    Calculate smart score for a stock based on confluence across 3 lists
+
+    Returns: {
+        'total_score': int,
+        'breakdown': {
+            'top10_score': int,
+            'volume_score': int,
+            'momentum_score': int,
+            'confluence_bonus': int
+        },
+        'signal_strength': str,
+        'lists_present': list,
+        'stock_data': dict
+    }
+    """
+    score_breakdown = {
+        'top10_score': 0,
+        'volume_score': 0,
+        'momentum_score': 0,
+        'confluence_bonus': 0
+    }
+    lists_present = []
+
+    # 1. Check Top 10 Stocks (by Net Flow)
+    top10_scores = {1: 30, 2: 25, 3: 25, 4: 20, 5: 20, 6: 15, 7: 15, 8: 10, 9: 10, 10: 10}
+    for rank, (name, data) in enumerate(top_10_stocks, 1):
+        if name == stock_name:
+            score_breakdown['top10_score'] = top10_scores.get(rank, 10)
+            lists_present.append('Top 10 Stocks')
+            break
+
+    # 2. Check Volume Spikes (by Total Activity)
+    volume_scores = {1: 30, 2: 25, 3: 25, 4: 20, 5: 20, 6: 15, 7: 15, 8: 10, 9: 10, 10: 10}
+    for rank, (name, data) in enumerate(volume_spikes, 1):
+        if name == stock_name:
+            score_breakdown['volume_score'] = volume_scores.get(rank, 10)
+            lists_present.append('Volume Spikes')
+            break
+
+    # 3. Check Momentum Stocks
+    if stock_name in momentum_tracking:
+        bullish_count = momentum_tracking[stock_name].get('bullish', 0)
+        bearish_count = momentum_tracking[stock_name].get('bearish', 0)
+        max_count = max(bullish_count, bearish_count)
+
+        if max_count >= 5:
+            score_breakdown['momentum_score'] = 30
+        elif max_count >= 3:
+            score_breakdown['momentum_score'] = 25
+        elif max_count == 2:
+            score_breakdown['momentum_score'] = 20
+        elif max_count == 1:
+            score_breakdown['momentum_score'] = 15
+
+        if max_count > 0:
+            lists_present.append('Momentum')
+
+    # 4. Calculate Confluence Bonus
+    num_lists = len(lists_present)
+    if num_lists == 3:
+        score_breakdown['confluence_bonus'] = 50  # ALL 3 LISTS!
+    elif num_lists == 2:
+        score_breakdown['confluence_bonus'] = 20  # 2 LISTS
+
+    # 5. Calculate Total Score
+    total_score = (score_breakdown['top10_score'] +
+                   score_breakdown['volume_score'] +
+                   score_breakdown['momentum_score'] +
+                   score_breakdown['confluence_bonus'])
+
+    # 6. Determine Signal Strength
+    if total_score >= 100:
+        signal_strength = '🚨🔥 SUPER STRONG'
+    elif total_score >= 70:
+        signal_strength = '⚡💪 VERY STRONG'
+    elif total_score >= 50:
+        signal_strength = '💪 STRONG'
+    else:
+        signal_strength = '✅ GOOD'
+
+    # 7. Get stock data
+    stock_data = stocks_data.get(stock_name, {})
+
+    return {
+        'total_score': total_score,
+        'breakdown': score_breakdown,
+        'signal_strength': signal_strength,
+        'lists_present': lists_present,
+        'stock_data': stock_data,
+        'num_lists': num_lists
+    }
+
+def calculate_entry_exit_levels(stock_price, change_pct, signal_strength, net_flow):
+    """
+    Calculate entry/exit levels based on signal strength and price action
+
+    Returns: {
+        'entry': float,
+        'target': float,
+        'stop_loss': float,
+        'risk_reward': str
+    }
+    """
+    if stock_price is None:
+        return None
+
+    # Determine direction
+    is_bullish = net_flow > 0
+
+    # Calculate levels based on signal strength and price
+    if signal_strength == '🚨🔥 SUPER STRONG':
+        # Aggressive levels for super strong signals
+        sl_percent = 1.0  # 1% stop loss
+        target_percent = 3.0 if is_bullish else -3.0  # 3% target
+    elif signal_strength == '⚡💪 VERY STRONG':
+        sl_percent = 1.2  # 1.2% stop loss
+        target_percent = 2.5 if is_bullish else -2.5  # 2.5% target
+    else:  # STRONG
+        sl_percent = 1.5  # 1.5% stop loss
+        target_percent = 2.0 if is_bullish else -2.0  # 2% target
+
+    if is_bullish:
+        entry = stock_price
+        target = stock_price * (1 + target_percent / 100)
+        stop_loss = stock_price * (1 - sl_percent / 100)
+    else:
+        entry = stock_price
+        target = stock_price * (1 + target_percent / 100)  # Lower for bearish
+        stop_loss = stock_price * (1 + sl_percent / 100)  # Higher for bearish
+
+    # Calculate risk-reward ratio
+    risk = abs(entry - stop_loss)
+    reward = abs(target - entry)
+    rr_ratio = reward / risk if risk > 0 else 0
+
+    return {
+        'entry': entry,
+        'target': target,
+        'stop_loss': stop_loss,
+        'risk_reward': f"1:{rr_ratio:.1f}"
+    }
+
+def create_smart_alert_message(stock_name, score_result, momentum_data, volume_spike_data, top10_rank):
+    """
+    Create comprehensive Telegram alert message with scoring and levels
+    """
+    stock_data = score_result['stock_data']
+    breakdown = score_result['breakdown']
+
+    price = stock_data.get('price')
+    change_pct = stock_data.get('change_pct')
+    net_flow = stock_data.get('net_flow', 0)
+
+    if price is None:
+        return None
+
+    # Price formatting
+    change_emoji = "🟢" if change_pct and change_pct > 0 else "🔴" if change_pct and change_pct < 0 else "⚪"
+    change_str = f"{change_pct:+.2f}%" if change_pct is not None else "N/A"
+
+    # Direction
+    direction = "BULLISH" if net_flow > 0 else "BEARISH"
+    direction_emoji = "🟢" if net_flow > 0 else "🔴"
+
+    # Calculate entry/exit levels
+    levels = calculate_entry_exit_levels(price, change_pct, score_result['signal_strength'], net_flow)
+
+    # Build message
+    message = f"<b>{score_result['signal_strength']} SIGNAL (Score: {score_result['total_score']}/140)</b>\n\n"
+    message += f"<b>{stock_name}</b> - ₹{price:,.2f} {change_emoji} {change_str}\n\n"
+
+    # List presence with scores
+    if breakdown['top10_score'] > 0:
+        message += f"✅ Top 10 Stocks: #{top10_rank} ({breakdown['top10_score']} pts)\n"
+    else:
+        message += f"❌ Top 10 Stocks: Not in list (0 pts)\n"
+
+    if breakdown['volume_score'] > 0:
+        vol_rank = "N/A"  # Will be filled by caller
+        message += f"✅ Volume Spikes: #{vol_rank} ({breakdown['volume_score']} pts)\n"
+    else:
+        message += f"❌ Volume Spikes: Not in list (0 pts)\n"
+
+    if breakdown['momentum_score'] > 0:
+        bullish_count = momentum_data.get('bullish', 0)
+        bearish_count = momentum_data.get('bearish', 0)
+        mom_type = "Bullish" if bullish_count > bearish_count else "Bearish"
+        mom_count = max(bullish_count, bearish_count)
+        message += f"✅ Momentum: {mom_type}({mom_count}) ({breakdown['momentum_score']} pts)\n"
+    else:
+        message += f"❌ Momentum: Not in list (0 pts)\n"
+
+    # Confluence bonus
+    if score_result['num_lists'] == 3:
+        message += f"🎯 <b>Confluence Bonus: +{breakdown['confluence_bonus']} pts (ALL 3 LISTS!)</b>\n\n"
+    elif score_result['num_lists'] == 2:
+        message += f"🎯 Confluence Bonus: +{breakdown['confluence_bonus']} pts (2 LISTS)\n\n"
+    else:
+        message += f"\n"
+
+    # Analysis section
+    message += f"📊 <b>Analysis:</b>\n"
+    message += f"• Direction: {direction_emoji} <b>{direction}</b>\n"
+    message += f"• Net Flow: {net_flow:+,.0f}\n"
+
+    if volume_spike_data:
+        ce_flow = volume_spike_data.get('ce_flow', 0)
+        pe_flow = volume_spike_data.get('pe_flow', 0)
+        total_vol = ce_flow + pe_flow
+        message += f"• Total Volume: {total_vol:,.0f} (CE: {ce_flow:,.0f}, PE: {pe_flow:,.0f})\n"
+
+    # Entry/Exit Levels
+    if levels:
+        message += f"\n💰 <b>Trade Levels:</b>\n"
+        message += f"• Entry: ₹{levels['entry']:,.2f}\n"
+        message += f"• Target: ₹{levels['target']:,.2f}\n"
+        message += f"• Stop Loss: ₹{levels['stop_loss']:,.2f}\n"
+        message += f"• Risk:Reward = {levels['risk_reward']}\n"
+
+    # Recommendation
+    message += f"\n💡 <b>Recommendation:</b> "
+    if score_result['total_score'] >= 100:
+        message += f"SUPER STRONG {direction} SIGNAL\n"
+        message += f"High conviction trade setup. Consider immediate action.\n"
+    elif score_result['total_score'] >= 70:
+        message += f"VERY STRONG {direction} SIGNAL\n"
+        message += f"Strong setup with good confluence. Recommended trade.\n"
+    else:
+        message += f"STRONG {direction} SIGNAL\n"
+        message += f"Good setup. Wait for confirmation or scale in.\n"
+
+    # Hashtags
+    hashtag_strength = score_result['signal_strength'].split()[0].replace('🚨🔥', 'SuperStrong').replace('⚡💪', 'VeryStrong').replace('💪', 'Strong')
+    message += f"\n#{hashtag_strength} #{stock_name} #{direction}"
+
+    return message
+
+def generate_daily_summary(all_scores, stocks_data):
+    """
+    Generate end-of-day summary of top scoring stocks
+    """
+    if not all_scores:
+        return None
+
+    # Sort by score
+    sorted_scores = sorted(all_scores, key=lambda x: x['score'], reverse=True)[:5]
+
+    current_time = datetime.now().strftime('%I:%M %p')
+
+    message = f"<b>📊 DAILY SUMMARY - {datetime.now().strftime('%d %b %Y')}</b>\n"
+    message += f"<b>Market Close Report - {current_time}</b>\n\n"
+    message += f"<b>🏆 TOP 5 HIGH-SCORING STOCKS TODAY:</b>\n\n"
+
+    for i, score_data in enumerate(sorted_scores, 1):
+        stock_name = score_data['stock_name']
+        total_score = score_data['score']
+        signal_strength = score_data['signal_strength']
+
+        stock_info = stocks_data.get(stock_name, {})
+        price = stock_info.get('price')
+        change_pct = stock_info.get('change_pct')
+        net_flow = stock_info.get('net_flow', 0)
+
+        change_emoji = "🟢" if change_pct and change_pct > 0 else "🔴"
+        change_str = f"{change_pct:+.2f}%" if change_pct is not None else "N/A"
+        direction = "Bullish" if net_flow > 0 else "Bearish"
+
+        message += f"<b>{i}. {stock_name}</b> - Score: {total_score}/140\n"
+        message += f"   {signal_strength}\n"
+        message += f"   ₹{price:,.2f} {change_emoji} {change_str} | {direction}\n"
+        message += f"   Lists: {score_data['num_lists']}/3\n\n"
+
+    message += f"<b>Market Statistics:</b>\n"
+    message += f"• Total stocks analyzed: {len(stocks_data)}\n"
+    message += f"• Stocks with score ≥50: {len([s for s in all_scores if s['score'] >= 50])}\n"
+    message += f"• Triple confluence: {len([s for s in all_scores if s['num_lists'] == 3])}\n\n"
+
+    message += f"#DailySummary #MarketClose #TopScorers"
+
+    return message
+
+# =========================
+# NIFTY MOMENTUM SCORING SYSTEM
+# =========================
+
+def calculate_nifty_momentum_score(indices_data, stocks_data, volume_state, vwap_st_strategy):
+    """
+    Calculate comprehensive NIFTY momentum score (0-100 scale, can be negative)
+    Combines multiple parameters for precise market momentum classification
+
+    Returns: {
+        'total_score': int (-100 to +100),
+        'breakdown': dict of individual scores,
+        'momentum_class': str (STRONG BULLISH, BULLISH, SIDEWAYS, BEARISH, STRONG BEARISH),
+        'confidence': str (HIGH, MEDIUM, LOW)
+    }
+    """
+    score_breakdown = {
+        'ce_pe_flow': 0,          # 10 points
+        'session_spikes': 0,      # 15 points
+        'ce_pe_race': 0,          # 10 points
+        'live_sentiment': 0,      # 10 points
+        'nifty_net_flow': 0,      # 10 points
+        'indices_net_flow': 0,    # 10 points
+        'indices_performance': 0, # 10 points
+        'vwap_supertrend': 0,     # 15 points
+        'stocks_performance': 0   # 10 points
+    }
+
+    # 1. CE/PE Flow Ratio (10 points)
+    nifty_data = indices_data.get('NIFTY', {})
+    ce_flow = nifty_data.get('ce_flow', 0)
+    pe_flow = nifty_data.get('pe_flow', 0)
+
+    if ce_flow > pe_flow:
+        score_breakdown['ce_pe_flow'] = 10
+    elif pe_flow > ce_flow:
+        score_breakdown['ce_pe_flow'] = -10
+
+    # 2. Session Summary - Spikes (15 points)
+    # Check spike queue for CE vs PE spikes since 9:15 AM
+    ce_spikes = 0
+    pe_spikes = 0
+    ce_total_vol = 0
+    pe_total_vol = 0
+    ce_largest = 0
+    pe_largest = 0
+
+    if hasattr(volume_state, 'spike_queue') and volume_state.spike_queue:
+        for spike in volume_state.spike_queue:
+            if spike.option_type == 'CE':
+                ce_spikes += 1
+                ce_total_vol += spike.volume
+                ce_largest = max(ce_largest, spike.spike_ratio)
+            elif spike.option_type == 'PE':
+                pe_spikes += 1
+                pe_total_vol += spike.volume
+                pe_largest = max(pe_largest, spike.spike_ratio)
+
+    # CE vs PE spike analysis
+    spike_score = 0
+    if ce_spikes > pe_spikes:
+        spike_score += 4
+    elif pe_spikes > ce_spikes:
+        spike_score -= 4
+
+    if ce_total_vol > pe_total_vol:
+        spike_score += 4
+    elif pe_total_vol > ce_total_vol:
+        spike_score -= 4
+
+    # Average volume
+    ce_avg_vol = ce_total_vol / ce_spikes if ce_spikes > 0 else 0
+    pe_avg_vol = pe_total_vol / pe_spikes if pe_spikes > 0 else 0
+    if ce_avg_vol > pe_avg_vol:
+        spike_score += 4
+    elif pe_avg_vol > ce_avg_vol:
+        spike_score -= 4
+
+    if ce_largest > pe_largest:
+        spike_score += 3
+    elif pe_largest > ce_largest:
+        spike_score -= 3
+
+    score_breakdown['session_spikes'] = spike_score
+
+    # 3. CE vs PE Race (10 points)
+    race_data = create_ce_pe_race_chart()
+    if race_data:
+        if race_data['bias'] == 'BULLISH':
+            score_breakdown['ce_pe_race'] = 10
+        elif race_data['bias'] == 'BEARISH':
+            score_breakdown['ce_pe_race'] = -10
+
+    # 4. Live Momentum Tracker Sentiment (10 points)
+    # Get from composite score calculation
+    total_indices_ce = sum(d.get("ce_flow", 0) for d in indices_data.values())
+    total_indices_pe = sum(d.get("pe_flow", 0) for d in indices_data.values())
+    total_stocks_ce = sum(d.get("ce_flow", 0) for d in stocks_data.values())
+    total_stocks_pe = sum(d.get("pe_flow", 0) for d in stocks_data.values())
+    total_ce = total_indices_ce + total_stocks_ce
+    total_pe = total_indices_pe + total_stocks_pe
+    net_flow = total_ce - total_pe
+
+    if abs(net_flow) < 10000:
+        score_breakdown['live_sentiment'] = 0  # Sideways
+    elif net_flow > 0:
+        composite_score = min(100, 50 + (net_flow / 1000))
+        if composite_score > 65:
+            score_breakdown['live_sentiment'] = 10  # Bullish
+        else:
+            score_breakdown['live_sentiment'] = 5   # Mild Bullish
+    else:
+        composite_score = max(0, 50 - (abs(net_flow) / 1000))
+        if composite_score < 35:
+            score_breakdown['live_sentiment'] = -10  # Bearish
+        else:
+            score_breakdown['live_sentiment'] = -5   # Mild Bearish
+
+    # 5. NIFTY Net Flow (10 points)
+    nifty_net = nifty_data.get('net_flow', 0)
+    if nifty_net > 100000:
+        score_breakdown['nifty_net_flow'] = 10
+    elif nifty_net > 50000:
+        score_breakdown['nifty_net_flow'] = 7
+    elif nifty_net > 0:
+        score_breakdown['nifty_net_flow'] = 3
+    elif nifty_net < -100000:
+        score_breakdown['nifty_net_flow'] = -10
+    elif nifty_net < -50000:
+        score_breakdown['nifty_net_flow'] = -7
+    elif nifty_net < 0:
+        score_breakdown['nifty_net_flow'] = -3
+
+    # 6. Other Indices Net Flow (10 points)
+    indices_positive = 0
+    indices_negative = 0
+    for idx_name, idx_data in indices_data.items():
+        if idx_name != 'NIFTY':
+            idx_net = idx_data.get('net_flow', 0)
+            if idx_net > 0:
+                indices_positive += 1
+            elif idx_net < 0:
+                indices_negative += 1
+
+    total_other_indices = indices_positive + indices_negative
+    if total_other_indices > 0:
+        positive_pct = (indices_positive / total_other_indices) * 100
+        if positive_pct > 70:
+            score_breakdown['indices_net_flow'] = 10
+        elif positive_pct > 60:
+            score_breakdown['indices_net_flow'] = 7
+        elif positive_pct > 50:
+            score_breakdown['indices_net_flow'] = 3
+        elif positive_pct < 30:
+            score_breakdown['indices_net_flow'] = -10
+        elif positive_pct < 40:
+            score_breakdown['indices_net_flow'] = -7
+        elif positive_pct < 50:
+            score_breakdown['indices_net_flow'] = -3
+
+    # 7. Indices-Wide Performance (% change) (10 points)
+    indices_up = 0
+    indices_down = 0
+    for idx_name, idx_data in indices_data.items():
+        change_pct = idx_data.get('change_pct')
+        if change_pct is not None:
+            if change_pct > 0:
+                indices_up += 1
+            elif change_pct < 0:
+                indices_down += 1
+
+    total_indices = indices_up + indices_down
+    if total_indices > 0:
+        up_pct = (indices_up / total_indices) * 100
+        if up_pct > 60:
+            score_breakdown['indices_performance'] = 10
+        elif up_pct > 50:
+            score_breakdown['indices_performance'] = 5
+        elif up_pct < 40:
+            score_breakdown['indices_performance'] = -10
+        elif up_pct < 50:
+            score_breakdown['indices_performance'] = -5
+
+    # 8. VWAP & SuperTrend Strategy (15 points)
+    if vwap_st_strategy:
+        signal = vwap_st_strategy.get('signal', 'NEUTRAL')
+        if signal == 'BULLISH':
+            score_breakdown['vwap_supertrend'] = 15
+        elif signal == 'BEARISH':
+            score_breakdown['vwap_supertrend'] = -15
+
+    # 9. Market-Wide Stock Performance (10 points)
+    stocks_up = 0
+    stocks_down = 0
+    for stock_name, stock_data in stocks_data.items():
+        change_pct = stock_data.get('change_pct')
+        if change_pct is not None:
+            if change_pct > 0:
+                stocks_up += 1
+            elif change_pct < 0:
+                stocks_down += 1
+
+    total_stocks = stocks_up + stocks_down
+    if total_stocks > 0:
+        stocks_up_pct = (stocks_up / total_stocks) * 100
+        if stocks_up_pct > 65:
+            score_breakdown['stocks_performance'] = 10
+        elif stocks_up_pct > 55:
+            score_breakdown['stocks_performance'] = 7
+        elif stocks_up_pct > 50:
+            score_breakdown['stocks_performance'] = 3
+        elif stocks_up_pct < 35:
+            score_breakdown['stocks_performance'] = -10
+        elif stocks_up_pct < 45:
+            score_breakdown['stocks_performance'] = -7
+        elif stocks_up_pct < 50:
+            score_breakdown['stocks_performance'] = -3
+
+    # Calculate total score
+    total_score = sum(score_breakdown.values())
+
+    # Classify momentum
+    if total_score >= 70:
+        momentum_class = 'STRONG BULLISH'
+        confidence = 'HIGH'
+    elif total_score >= 40:
+        momentum_class = 'BULLISH'
+        confidence = 'MEDIUM' if total_score >= 55 else 'LOW'
+    elif total_score > -40:
+        momentum_class = 'SIDEWAYS'
+        confidence = 'LOW'
+    elif total_score > -70:
+        momentum_class = 'BEARISH'
+        confidence = 'MEDIUM' if total_score <= -55 else 'LOW'
+    else:
+        momentum_class = 'STRONG BEARISH'
+        confidence = 'HIGH'
+
+    return {
+        'total_score': total_score,
+        'breakdown': score_breakdown,
+        'momentum_class': momentum_class,
+        'confidence': confidence,
+        'nifty_price': nifty_data.get('price'),
+        'nifty_change_pct': nifty_data.get('change_pct'),
+        'stocks_up_pct': (stocks_up / total_stocks * 100) if total_stocks > 0 else 0,
+        'indices_up_pct': (indices_up / total_indices * 100) if total_indices > 0 else 0
+    }
+
+def create_nifty_momentum_alert(score_result, is_reversal=False, previous_class=None):
+    """
+    Create comprehensive NIFTY momentum alert message
+    """
+    momentum_class = score_result['momentum_class']
+    total_score = score_result['total_score']
+    confidence = score_result['confidence']
+    breakdown = score_result['breakdown']
+    nifty_price = score_result['nifty_price']
+    nifty_change_pct = score_result['nifty_change_pct']
+
+    # Emoji based on momentum
+    if 'STRONG BULLISH' in momentum_class:
+        emoji = '🚀🟢'
+        color = 'GREEN'
+    elif 'BULLISH' in momentum_class:
+        emoji = '🟢'
+        color = 'GREEN'
+    elif 'SIDEWAYS' in momentum_class:
+        emoji = '⚪'
+        color = 'YELLOW'
+    elif 'STRONG BEARISH' in momentum_class:
+        emoji = '📉🔴'
+        color = 'RED'
+    else:
+        emoji = '🔴'
+        color = 'RED'
+
+    # Header
+    message = ""
+    if is_reversal:
+        message = f"<b>🔄 NIFTY MOMENTUM REVERSAL ALERT</b>\n"
+        message += f"<b>{previous_class}</b> → <b>{emoji} {momentum_class}</b>\n\n"
+    else:
+        message = f"<b>{emoji} NIFTY MOMENTUM ALERT</b>\n"
+        message += f"<b>Status: {momentum_class}</b>\n\n"
+
+    # Score and confidence
+    message += f"📊 <b>Momentum Score: {total_score:+d}/100</b>\n"
+    message += f"🎯 <b>Confidence: {confidence}</b>\n\n"
+
+    # NIFTY price
+    if nifty_price and nifty_change_pct is not None:
+        change_emoji = "🟢" if nifty_change_pct > 0 else "🔴"
+        message += f"💹 <b>NIFTY: ₹{nifty_price:,.2f} {change_emoji} {nifty_change_pct:+.2f}%</b>\n\n"
+
+    # Score breakdown
+    message += f"<b>📈 Score Breakdown:</b>\n"
+    message += f"• CE/PE Flow: {breakdown['ce_pe_flow']:+d}/10\n"
+    message += f"• Session Spikes: {breakdown['session_spikes']:+d}/15\n"
+    message += f"• CE vs PE Race: {breakdown['ce_pe_race']:+d}/10\n"
+    message += f"• Live Sentiment: {breakdown['live_sentiment']:+d}/10\n"
+    message += f"• NIFTY Net Flow: {breakdown['nifty_net_flow']:+d}/10\n"
+    message += f"• Indices Net Flow: {breakdown['indices_net_flow']:+d}/10\n"
+    message += f"• Indices Performance: {breakdown['indices_performance']:+d}/10\n"
+    message += f"• VWAP+SuperTrend: {breakdown['vwap_supertrend']:+d}/15\n"
+    message += f"• Stocks Performance: {breakdown['stocks_performance']:+d}/10\n\n"
+
+    # Market statistics
+    message += f"<b>📊 Market Statistics:</b>\n"
+    message += f"• Stocks Up: {score_result['stocks_up_pct']:.1f}%\n"
+    message += f"• Indices Up: {score_result['indices_up_pct']:.1f}%\n\n"
+
+    # Trading recommendation
+    message += f"<b>💡 Trading Recommendation:</b>\n"
+    if 'STRONG BULLISH' in momentum_class:
+        message += f"🟢 <b>Strong Buy Signal</b>\n"
+        message += f"Consider aggressive long positions. High conviction setup.\n"
+        message += f"Focus on CE options with nearby strikes.\n"
+    elif 'BULLISH' in momentum_class:
+        message += f"🟢 <b>Buy Signal</b>\n"
+        message += f"Consider long positions with proper risk management.\n"
+        message += f"Watch for continuation signals.\n"
+    elif 'SIDEWAYS' in momentum_class:
+        message += f"⚪ <b>No Clear Direction</b>\n"
+        message += f"Stay cautious. Wait for clearer signals.\n"
+        message += f"Consider range-bound strategies or stay out.\n"
+    elif 'STRONG BEARISH' in momentum_class:
+        message += f"🔴 <b>Strong Sell Signal</b>\n"
+        message += f"Consider aggressive short positions. High conviction setup.\n"
+        message += f"Focus on PE options with nearby strikes.\n"
+    else:
+        message += f"🔴 <b>Sell Signal</b>\n"
+        message += f"Consider short positions with proper risk management.\n"
+        message += f"Watch for breakdown continuation.\n"
+
+    # Timestamp and hashtags
+    message += f"\n⏰ {datetime.now().strftime('%I:%M:%S %p')}\n"
+    message += f"\n#{momentum_class.replace(' ', '')} #NIFTY #MomentumAlert #{confidence}Confidence"
+
+    return message
 
 def save_historical_data(index_name, data_row):
     """
@@ -1176,6 +2520,395 @@ def detect_spike(deltas, avg_delta, threshold=3.0):
         return False
     return abs(deltas) > (threshold * abs(avg_delta))
 
+# =========================
+# CHARTINK GMAIL INTEGRATION
+# =========================
+
+class StockNameParser(HTMLParser):
+    """HTML parser to extract stock names from Chartink email body"""
+    def __init__(self):
+        super().__init__()
+        self.stock_names = []
+        self.in_link = False
+
+    def handle_starttag(self, tag, attrs):
+        if tag == 'a':
+            self.in_link = True
+
+    def handle_endtag(self, tag):
+        if tag == 'a':
+            self.in_link = False
+
+    def handle_data(self, data):
+        if self.in_link:
+            # Stock names are typically all caps and alphanumeric
+            cleaned = data.strip()
+            if cleaned and cleaned.isupper() and cleaned.isalnum():
+                self.stock_names.append(cleaned)
+
+def connect_gmail():
+    """Connect to Gmail via IMAP using credentials from .env"""
+    gmail_user = os.getenv('GMAIL_USER')
+    gmail_password = os.getenv('GMAIL_APP_PASSWORD')
+
+    if not gmail_user or not gmail_password:
+        print("❌ Gmail credentials not found in .env file")
+        print("   Required: GMAIL_USER and GMAIL_APP_PASSWORD")
+        return None
+
+    try:
+        # Connect to Gmail via IMAP SSL
+        mail = imaplib.IMAP4_SSL('imap.gmail.com', 993)
+        mail.login(gmail_user, gmail_password)
+        print(f"✅ Connected to Gmail: {gmail_user}")
+        return mail
+    except Exception as e:
+        print(f"❌ Gmail connection failed: {e}")
+        return None
+
+def classify_alert_direction(subject):
+    """
+    Classify alert direction based on subject (case-insensitive)
+
+    Returns:
+        'LONG' if bullish (Weekly close=high)
+        'SHORT' if bearish (Weekly close=low)
+        None if not a momentum alert
+    """
+    subject_lower = subject.lower()
+
+    if 'weekly close=high' in subject_lower:
+        return 'LONG'
+    elif 'weekly close=low' in subject_lower:
+        return 'SHORT'
+    else:
+        return None
+
+def parse_chartink_email(msg):
+    """
+    Parse Chartink email to extract stock names and metadata
+
+    Returns:
+        {
+            'stocks': [list of stock names],
+            'subject': email subject,
+            'date': email date,
+            'direction': 'LONG' or 'SHORT' or None
+        }
+    """
+    result = {
+        'stocks': [],
+        'subject': '',
+        'date': '',
+        'direction': None
+    }
+
+    # Get subject
+    subject = msg.get('Subject', '')
+    if subject:
+        # Decode if needed
+        decoded = decode_header(subject)
+        subject = ''.join([
+            part.decode(encoding or 'utf-8') if isinstance(part, bytes) else part
+            for part, encoding in decoded
+        ])
+    result['subject'] = subject
+
+    # Get date
+    result['date'] = msg.get('Date', '')
+
+    # Classify direction
+    result['direction'] = classify_alert_direction(subject)
+
+    # Parse email body for stock names
+    if msg.is_multipart():
+        for part in msg.walk():
+            content_type = part.get_content_type()
+            if content_type == 'text/html':
+                try:
+                    html_body = part.get_payload(decode=True).decode('utf-8', errors='ignore')
+                    parser = StockNameParser()
+                    parser.feed(html_body)
+                    result['stocks'] = parser.stock_names
+                    break
+                except Exception as e:
+                    print(f"⚠️ Error parsing HTML: {e}")
+    else:
+        # Single part message
+        try:
+            html_body = msg.get_payload(decode=True).decode('utf-8', errors='ignore')
+            parser = StockNameParser()
+            parser.feed(html_body)
+            result['stocks'] = parser.stock_names
+        except Exception as e:
+            print(f"⚠️ Error parsing HTML: {e}")
+
+    return result
+
+def fetch_chartink_alerts(mode='LIVE'):
+    """
+    Fetch and parse Chartink momentum alerts from Gmail
+
+    Args:
+        mode: 'LIVE' or 'TEST'
+
+    LIVE mode:
+        - Fetches only UNSEEN emails
+        - Marks processed emails as SEEN
+        - For real-time alert processing during market hours
+
+    TEST mode:
+        - Fetches emails from last 30 days
+        - Does NOT mark as seen
+        - For debugging/replaying historical alerts
+
+    Returns:
+        List of parsed alerts with structure:
+        [
+            {
+                'stocks': ['STOCK1', 'STOCK2'],
+                'subject': 'Alert for Weekly close=high',
+                'date': 'Wed, Dec 24, 9:16 AM',
+                'direction': 'LONG' or 'SHORT',
+                'timestamp': datetime object
+            },
+            ...
+        ]
+    """
+    # Create debug log file
+    debug_dir = Path(r'D:\Stocks Analysis\Apex Nifty Trading\Logs')
+    debug_dir.mkdir(parents=True, exist_ok=True)
+    debug_file = debug_dir / f"chartink_debug_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+
+    def log_debug(message):
+        """Write to both console and debug file"""
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        log_msg = f"[{timestamp}] {message}"
+        print(log_msg)
+        try:
+            with open(debug_file, 'a', encoding='utf-8') as f:
+                f.write(log_msg + '\n')
+        except Exception as e:
+            print(f"Failed to write to debug file: {e}")
+
+    log_debug("="*80)
+    log_debug(f"CHARTINK GMAIL INTEGRATION - {mode} MODE")
+    log_debug("="*80)
+
+    # Check credentials
+    gmail_user = os.getenv('GMAIL_USER')
+    gmail_password = os.getenv('GMAIL_APP_PASSWORD')
+
+    log_debug(f"Gmail User: {gmail_user if gmail_user else 'NOT SET'}")
+    log_debug(f"Gmail Password: {'SET (length={})'.format(len(gmail_password)) if gmail_password else 'NOT SET'}")
+
+    if not gmail_user or not gmail_password:
+        log_debug("❌ FAILED: Gmail credentials not found in .env file")
+        log_debug("Required: GMAIL_USER and GMAIL_APP_PASSWORD")
+        return []
+
+    # Connect to Gmail
+    log_debug("\n--- Connecting to Gmail ---")
+    mail = connect_gmail()
+    if not mail:
+        log_debug("❌ FAILED: Could not connect to Gmail")
+        return []
+
+    log_debug("✅ Connected to Gmail successfully")
+
+    alerts = []
+
+    try:
+        # Select inbox
+        log_debug("\n--- Selecting INBOX ---")
+        status, data = mail.select('INBOX')
+        log_debug(f"Select status: {status}")
+        log_debug(f"Mailbox data: {data}")
+
+        # Build search criteria based on mode
+        # IMPORTANT: Filter by SUBJECT at IMAP level (not in Python)
+        if mode == 'LIVE':
+            # LIVE: Only unseen emails with specific subjects
+            search_criteria_high = '(UNSEEN FROM "Chartink" SUBJECT "Weekly close=high")'
+            search_criteria_low = '(UNSEEN FROM "Chartink" SUBJECT "Weekly close=low")'
+            log_debug(f"\n🔴 LIVE MODE: Searching for UNSEEN momentum alerts (high/low)...")
+        else:  # TEST mode
+            # TEST: Last 30 days, matching specific subjects only
+            since_date = (datetime.now() - timedelta(days=30)).strftime("%d-%b-%Y")
+            search_criteria_high = f'(SINCE {since_date} FROM "Chartink" SUBJECT "Weekly close=high")'
+            search_criteria_low = f'(SINCE {since_date} FROM "Chartink" SUBJECT "Weekly close=low")'
+            log_debug(f"\n🧪 TEST MODE: Searching for momentum alerts (high/low) since {since_date}...")
+
+        log_debug(f"Search criteria HIGH: {search_criteria_high}")
+        log_debug(f"Search criteria LOW: {search_criteria_low}")
+
+        # Search emails - TWO searches (one for high, one for low)
+        log_debug("\n--- Searching emails ---")
+
+        # Search for "Weekly close=high"
+        status_high, message_ids_high = mail.search(None, search_criteria_high)
+        log_debug(f"Search HIGH status: {status_high}")
+        email_ids_high = message_ids_high[0].split() if status_high == 'OK' else []
+        log_debug(f"📬 Found {len(email_ids_high)} 'Weekly close=high' emails")
+
+        # Search for "Weekly close=low"
+        status_low, message_ids_low = mail.search(None, search_criteria_low)
+        log_debug(f"Search LOW status: {status_low}")
+        email_ids_low = message_ids_low[0].split() if status_low == 'OK' else []
+        log_debug(f"📬 Found {len(email_ids_low)} 'Weekly close=low' emails")
+
+        # Combine results (remove duplicates)
+        email_ids = list(set(email_ids_high + email_ids_low))
+        log_debug(f"📬 Total momentum alerts: {len(email_ids)}")
+        log_debug(f"Email IDs: {email_ids}")
+
+        if len(email_ids) == 0:
+            log_debug("\n⚠️ No emails found matching criteria")
+            log_debug("Possible reasons:")
+            log_debug("  1. No Chartink emails in last 30 days")
+            log_debug("  2. All emails already read (in LIVE mode)")
+            log_debug("  3. Sender name in Gmail is different (not 'Chartink')")
+
+            # Try broader search to debug
+            log_debug("\n--- Trying broader search (all Chartink emails) ---")
+            status2, message_ids2 = mail.search(None, 'FROM "Chartink"')
+            email_ids2 = message_ids2[0].split()
+            log_debug(f"Total Chartink emails (all time): {len(email_ids2)}")
+
+            if len(email_ids2) > 0:
+                log_debug("Found Chartink emails! Issue might be:")
+                log_debug("  - In LIVE mode: All emails already marked as READ")
+                log_debug("  - In TEST mode: No emails in last 30 days")
+            else:
+                log_debug("No Chartink emails found at all!")
+                log_debug("Possible issues:")
+                log_debug("  - Sender name might be different (check actual sender)")
+                log_debug("  - Wrong Gmail account")
+                log_debug("  - No Chartink alerts received yet")
+
+        # Process each email
+        log_debug("\n--- Processing emails ---")
+        for idx, email_id in enumerate(email_ids, 1):
+            try:
+                log_debug(f"\n[Email {idx}/{len(email_ids)}] Processing ID: {email_id}")
+
+                # Fetch email
+                status, msg_data = mail.fetch(email_id, '(RFC822)')
+                log_debug(f"  Fetch status: {status}")
+
+                if status != 'OK':
+                    log_debug(f"  ⚠️ Failed to fetch email")
+                    continue
+
+                # Parse email
+                raw_email = msg_data[0][1]
+                msg = email.message_from_bytes(raw_email)
+
+                # Get subject and sender for debugging
+                subject = msg.get('Subject', '')
+                sender = msg.get('From', '')
+                date = msg.get('Date', '')
+
+                log_debug(f"  From: {sender}")
+                log_debug(f"  Subject: {subject}")
+                log_debug(f"  Date: {date}")
+
+                # Parse Chartink email
+                parsed = parse_chartink_email(msg)
+                log_debug(f"  Parsed stocks: {parsed['stocks']}")
+                log_debug(f"  Direction: {parsed['direction']}")
+
+                # Safety check (should never be None since IMAP already filtered by subject)
+                if parsed['direction'] is None:
+                    log_debug(f"  ⚠️ WARNING: IMAP returned an email but direction is None!")
+                    log_debug(f"  ⚠️ This shouldn't happen - IMAP filter may not be working correctly")
+                    continue
+
+                log_debug(f"  ✅ Momentum alert confirmed | Direction: {parsed['direction']}")
+
+                # Add timestamp
+                try:
+                    parsed['timestamp'] = email.utils.parsedate_to_datetime(parsed['date'])
+                except Exception as e:
+                    log_debug(f"  ⚠️ Could not parse date: {e}")
+                    parsed['timestamp'] = datetime.now()
+
+                # Add to alerts list
+                alerts.append(parsed)
+                log_debug(f"  ✅ Alert added!")
+
+                # Print to console
+                direction_emoji = "🟢" if parsed['direction'] == 'LONG' else "🔴"
+                stocks_str = ', '.join(parsed['stocks']) if parsed['stocks'] else 'None'
+                summary = f"{direction_emoji} {parsed['direction']:5s} | {parsed['date'][:25]:25s} | Stocks: {stocks_str}"
+                log_debug(f"  {summary}")
+
+                # Mark as seen ONLY in LIVE mode
+                if mode == 'LIVE':
+                    mail.store(email_id, '+FLAGS', '\\Seen')
+                    log_debug(f"  📧 Marked as SEEN (LIVE mode)")
+
+            except Exception as e:
+                log_debug(f"  ❌ Error processing email {email_id}: {e}")
+                import traceback
+                log_debug(f"  Traceback: {traceback.format_exc()}")
+                continue
+
+        # Close connection
+        log_debug("\n--- Closing connection ---")
+        mail.close()
+        mail.logout()
+        log_debug("✅ Connection closed")
+
+        log_debug(f"\n{'='*80}")
+        log_debug(f"SUMMARY: Processed {len(alerts)} momentum alerts")
+        log_debug(f"{'='*80}")
+        log_debug(f"\nDebug log saved to: {debug_file}")
+
+        # SAVE TO JSON FILE immediately (before returning)
+        # This ensures alerts persist even if page reloads before st.rerun()
+        import json
+        alerts_dir = Path(r'D:\Stocks Analysis\Apex Nifty Trading\Logs')
+        alerts_file = alerts_dir / "chartink_alerts.json"
+        try:
+            # Convert datetime to string for JSON serialization
+            alerts_json = []
+            for alert in alerts:
+                alert_copy = alert.copy()
+                if 'timestamp' in alert_copy and hasattr(alert_copy['timestamp'], 'strftime'):
+                    alert_copy['timestamp'] = alert_copy['timestamp'].strftime('%Y-%m-%d %H:%M:%S')
+                alerts_json.append(alert_copy)
+
+            alerts_dir.mkdir(parents=True, exist_ok=True)
+            with open(alerts_file, 'w', encoding='utf-8') as f:
+                json.dump({
+                    'alerts': alerts_json,
+                    'last_fetch': datetime.now().strftime('%Y-%m-%d %I:%M:%S %p'),
+                    'count': len(alerts_json),
+                    'mode': mode
+                }, f, indent=2)
+            log_debug(f"\n✅ SAVED {len(alerts)} alerts to: {alerts_file}")
+        except Exception as e:
+            log_debug(f"\n❌ ERROR saving JSON: {e}")
+            import traceback
+            log_debug(f"Traceback: {traceback.format_exc()}")
+
+    except Exception as e:
+        log_debug(f"\n❌ CRITICAL ERROR: {e}")
+        import traceback
+        log_debug(f"Traceback:\n{traceback.format_exc()}")
+        try:
+            mail.close()
+            mail.logout()
+        except:
+            pass
+
+    return alerts
+
+# =========================
+# TELEGRAM ALERTS
+# =========================
+
 def send_telegram_alert(message):
     """Send alert to Telegram"""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -1202,93 +2935,78 @@ def send_telegram_alert(message):
         print(f"Telegram exception: {str(e)}")
         return False
 
-def add_alert(message, alert_type="info"):
-    """Add alert to alert queue and send to Telegram"""
+def add_alert(message, alert_type="info", cooldown_minutes=10):
+    """Add alert to alert queue and send to Telegram with cooldown"""
     timestamp = datetime.now().strftime("%H:%M:%S")
     alerts.appendleft({
         "time": timestamp,
         "message": message,
         "type": alert_type
     })
-    
+
+    # Add cooldown for alerts to prevent spam
+    # Use message hash as key to track unique alerts
+    import hashlib
+    message_hash = hashlib.md5(message.encode()).hexdigest()[:8]
+
+    now = datetime.now()
+    if message_hash in engine.last_stock_alert:
+        last_time = engine.last_stock_alert[message_hash]
+        minutes_passed = (now - last_time).total_seconds() / 60
+        if minutes_passed < cooldown_minutes:
+            # Skip telegram alert if within cooldown
+            return
+
     telegram_message = f"<b>🚨 ALERT - {timestamp}</b>\n\n{message}"
     send_telegram_alert(telegram_message)
+    engine.last_stock_alert[message_hash] = now
 
 
 def send_stock_alert(stock_name, alert_type, price, change_pct, net_flow, volume_ratio=None):
     """
     Send stock alerts via Telegram with cooldown logic
-    
+
     Alert Types & Cooldowns:
-    - DIVERGENCE: No cooldown (immediate)
-    - VOLUME_SPIKE: 30-min cooldown per stock
-    - MOMENTUM: 15-min cooldown per stock
+    - BULLISH: 60-min cooldown per stock
+    - BEARISH: 60-min cooldown per stock
     """
     now = datetime.now()
-    
+
     # Check cooldown based on alert type
     cooldown_key = f"{stock_name}_{alert_type}"
-    
+
     if cooldown_key in engine.last_stock_alert:
         last_alert_time = engine.last_stock_alert[cooldown_key]
         time_diff = (now - last_alert_time).total_seconds() / 60  # minutes
-        
-        # Apply cooldown rules
-        if alert_type == "DIVERGENCE":
-            cooldown = 0  # No cooldown - always send!
-        elif alert_type == "VOLUME_SPIKE":
-            cooldown = 30  # 30 minutes
-        elif alert_type == "MOMENTUM":
-            cooldown = 15  # 15 minutes
-        else:
-            cooldown = 15  # Default
-        
-        if time_diff < cooldown:
+
+        # Apply 60-minute cooldown
+        if time_diff < 60:
             return False
-    
+
     # Format alert message (Hybrid format - 2-3 lines)
-    if alert_type == "DIVERGENCE":
-        if change_pct < 0 and net_flow > 0:
-            emoji = "⚠️"
-            signal = "BULLISH DIVERGENCE"
-            interpretation = "Smart money accumulating - watch for bounce"
-        else:
-            emoji = "⚠️"
-            signal = "BEARISH DIVERGENCE"
-            interpretation = "Smart money hedging - potential top"
-    elif alert_type == "VOLUME_SPIKE":
-        emoji = "🔥"
-        signal = "VOLUME SPIKE"
-        if volume_ratio:
-            interpretation = f"Unusual activity {volume_ratio:.1f}x normal volume"
-        else:
-            interpretation = "Unusual activity detected"
-    elif alert_type == "MOMENTUM":
-        if change_pct > 0:
-            emoji = "🚀"
-            signal = "STRONG BULLISH"
-            interpretation = "Sustained upward momentum"
-        else:
-            emoji = "📉"
-            signal = "STRONG BEARISH"
-            interpretation = "Sustained downward momentum"
+    if alert_type == "BULLISH":
+        emoji = "🟢"
+        signal = "STRONG BULLISH"
+        interpretation = "Price rising + Strong call buying"
+    elif alert_type == "BEARISH":
+        emoji = "🔴"
+        signal = "STRONG BEARISH"
+        interpretation = "Price falling + Strong put buying"
     else:
-        emoji = "📊"
-        signal = "ALERT"
-        interpretation = "Check dashboard"
-    
+        return False  # Only BULLISH/BEARISH alerts allowed
+
     # Format price and flow
     price_str = f"₹{price:,.2f}"
     change_emoji = "🟢" if change_pct > 0 else "🔴"
     change_str = f"{change_emoji}{change_pct:+.2f}%"
     flow_emoji = "🟢" if net_flow > 0 else "🔴"
     flow_str = f"{flow_emoji}{format_number(net_flow)}"
-    
+
     # Hybrid format (2-3 lines)
     telegram_message = f"{emoji} {signal} - {stock_name}\n"
     telegram_message += f"{price_str} {change_str} | Flow {flow_str}\n"
     telegram_message += f"{interpretation}"
-    
+
     # Send to Telegram
     try:
         send_telegram_alert(telegram_message)
@@ -1297,6 +3015,152 @@ def send_stock_alert(stock_name, alert_type, price, change_pct, net_flow, volume
         return True
     except Exception as e:
         print(f"Error sending stock alert: {e}")
+        return False
+
+def send_nifty_comprehensive_alert(score_result):
+    """
+    Send comprehensive NIFTY alert based on 8-criteria scoring
+    Alert Threshold: +60 (BULLISH) / -60 (BEARISH)
+    Confidence: Medium (60-69), High (70-84), Very High (85-100)
+    Cooldown: 15 minutes per signal type
+    """
+    total_score = score_result['total_score']
+    breakdown = score_result['breakdown']
+
+    # Check if score meets threshold
+    if abs(total_score) < 60:
+        return False  # Not strong enough to alert
+
+    now = datetime.now()
+    signal_type = 'BULLISH' if total_score > 0 else 'BEARISH'
+    cooldown_key = f"NIFTY_COMPREHENSIVE_{signal_type}"
+
+    # Check cooldown (15 minutes)
+    if cooldown_key in engine.last_stock_alert:
+        last_alert_time = engine.last_stock_alert[cooldown_key]
+        time_diff = (now - last_alert_time).total_seconds() / 60
+        if time_diff < 15:
+            return False
+
+    # Determine confidence level
+    abs_score = abs(total_score)
+    if abs_score >= 85:
+        confidence = "🔴 VERY HIGH"
+        confidence_text = "EXTREMELY STRONG"
+    elif abs_score >= 70:
+        confidence = "🟠 HIGH"
+        confidence_text = "STRONG"
+    else:  # 60-69
+        confidence = "🟡 MEDIUM"
+        confidence_text = ""
+
+    # Format alert message
+    if signal_type == 'BULLISH':
+        emoji = "🟢"
+        direction = "BULLISH"
+        full_signal = f"{confidence_text} {direction}".strip()
+    else:
+        emoji = "🔴"
+        direction = "BEARISH"
+        full_signal = f"{confidence_text} {direction}".strip()
+
+    telegram_message = f"🚨 <b>NIFTY COMPREHENSIVE SIGNAL {emoji}</b>\n\n"
+    telegram_message += f"📊 <b>{full_signal} MOMENTUM</b>\n"
+    telegram_message += f"Score: <b>{total_score:+d}/100</b> {confidence}\n\n"
+
+    # List conditions with check marks
+    telegram_message += "✅ <b>Key Conditions:</b>\n"
+
+    # CE/PE Flow
+    if breakdown['ce_pe_flow'] > 0:
+        telegram_message += "• CE Flow dominance ✓\n"
+    elif breakdown['ce_pe_flow'] < 0:
+        telegram_message += "• PE Flow dominance ✓\n"
+
+    # Session Spikes
+    spike_score = breakdown['session_spikes']
+    if abs(spike_score) >= 12:
+        telegram_message += f"• {'CE' if spike_score > 0 else 'PE'} Spikes: Strong dominance ✓\n"
+    elif abs(spike_score) >= 8:
+        telegram_message += f"• {'CE' if spike_score > 0 else 'PE'} Spikes: Ahead ✓\n"
+
+    # CE vs PE Race
+    if breakdown['ce_pe_race'] != 0:
+        telegram_message += f"• CE vs PE Race: {'BULLISH' if breakdown['ce_pe_race'] > 0 else 'BEARISH'} ✓\n"
+
+    # Live Sentiment
+    if abs(breakdown['live_sentiment']) >= 8:
+        telegram_message += f"• Market Sentiment: {'BULLISH' if breakdown['live_sentiment'] > 0 else 'BEARISH'} ✓\n"
+
+    # Nifty Net Flow
+    if abs(breakdown['nifty_net_flow']) >= 7:
+        nifty_flow_text = f"+ve (Strong)" if breakdown['nifty_net_flow'] > 0 else "-ve (Strong)"
+        telegram_message += f"• Nifty Net Flow: {nifty_flow_text} ✓\n"
+
+    # Indices metrics
+    indices_up_pct = score_result.get('indices_up_pct', 0)
+    stocks_up_pct = score_result.get('stocks_up_pct', 0)
+
+    if abs(breakdown['indices_net_flow']) >= 7:
+        telegram_message += f"• Indices: {indices_up_pct:.0f}% positive ✓\n"
+
+    if abs(breakdown['stocks_performance']) >= 7:
+        telegram_message += f"• F&O Stocks: {stocks_up_pct:.0f}% positive ✓\n"
+
+    # Add price info if available
+    nifty_price = score_result.get('nifty_price')
+    nifty_change = score_result.get('nifty_change_pct')
+    if nifty_price:
+        change_emoji = "🟢" if nifty_change and nifty_change > 0 else "🔴"
+        telegram_message += f"\n💰 <b>Nifty:</b> ₹{nifty_price:.2f} {change_emoji}{nifty_change:+.2f}%\n"
+
+    # Timestamp
+    telegram_message += f"\n⏰ {now.strftime('%I:%M:%S %p')}\n"
+    telegram_message += f"#Nifty #{direction}"
+
+    # Send alert
+    try:
+        send_telegram_alert(telegram_message)
+        print(f"📱 NIFTY Comprehensive Alert: {full_signal} (Score: {total_score:+d})")
+        engine.last_stock_alert[cooldown_key] = now
+        return True
+    except Exception as e:
+        print(f"Error sending NIFTY comprehensive alert: {e}")
+        return False
+
+def send_stock_confluence_alert(confluence_stocks):
+    """
+    Send comprehensive stock confluence alert
+    confluence_stocks: dict of {stock_name: count}
+    Sends alert on ANY change to the list
+    """
+    if not confluence_stocks:
+        return False
+
+    telegram_message = "🔥 <b>STOCK CONFLUENCE ALERTS</b>\n\n"
+    telegram_message += f"✅ <b>Stocks in ALL 3 Systems:</b>\n"
+
+    # Sort by count (highest first), then alphabetically
+    sorted_stocks = sorted(confluence_stocks.items(), key=lambda x: (-x[1], x[0]))
+
+    for stock_name, count in sorted_stocks:
+        if count >= 4:
+            telegram_message += f"• <b>{stock_name}</b> ({count}) ⚡ VERY STRONG\n"
+        elif count >= 2:
+            telegram_message += f"• <b>{stock_name}</b> ({count}) - Sustained\n"
+        else:  # count == 1
+            telegram_message += f"• <b>{stock_name}</b> (1) - NEW\n"
+
+    telegram_message += f"\n📊 {len(confluence_stocks)} stock(s) with full alignment\n"
+    telegram_message += f"⏰ {datetime.now().strftime('%I:%M:%S %p')}"
+
+    # Send alert
+    try:
+        send_telegram_alert(telegram_message)
+        print(f"📱 Stock Confluence Alert: {len(confluence_stocks)} stocks")
+        return True
+    except Exception as e:
+        print(f"Error sending stock confluence alert: {e}")
         return False
 
 def get_momentum_signal(delta_1min, delta_5min):
@@ -1738,7 +3602,8 @@ def load_dashboard_cache():
             cached_at = cached_at.replace(tzinfo=None)
         if now.tzinfo:
             now = now.replace(tzinfo=None)
-        if (now - cached_at).total_seconds() < 86400:
+        # Cache valid for 7 days (604800 seconds) to show historical data when markets closed
+        if (now - cached_at).total_seconds() < 604800:
             return data
     except Exception as e:
         print(f"Error loading cache: {e}")
@@ -1772,11 +3637,38 @@ def ensure_instruments(kite: KiteConnect) -> pd.DataFrame:
     return df
 
 def discover_indices_with_fo(ins_df: pd.DataFrame) -> list:
+    """
+    Discover all whitelisted indices from instruments data.
+    Includes indices with F&O, options only, or spot data.
+    """
+    discovered_indices = set()
+
+    # Check futures segments (for F&O indices)
     fut = ins_df[ins_df["segment"].isin(DERIV_FUT_SEGMENTS)].copy()
-    if fut.empty: 
-        return []
-    names = sorted(set(fut["name"].dropna().unique().tolist()))
-    return [n for n in names if n in INDEX_NAME_WHITELIST]
+    if not fut.empty:
+        fut_names = set(fut["name"].dropna().unique().tolist())
+        discovered_indices.update(fut_names)
+
+    # Check options segments (for indices with only options)
+    opt = ins_df[ins_df["segment"].isin(DERIV_OPT_SEGMENTS)].copy()
+    if not opt.empty:
+        # Get index names from options data
+        opt_names = set(opt["name"].dropna().unique().tolist())
+        discovered_indices.update(opt_names)
+
+    # Check spot/index segments (for indices without derivatives)
+    spot_segments = {"NSE", "BSE", "INDICES"}
+    spot = ins_df[ins_df["segment"].isin(spot_segments)].copy()
+    if not spot.empty:
+        spot_names = set(spot["name"].dropna().unique().tolist())
+        discovered_indices.update(spot_names)
+
+    # Filter to only whitelisted indices
+    whitelisted = [n for n in discovered_indices if n in INDEX_NAME_WHITELIST]
+
+    print(f"📊 Discovered {len(whitelisted)} indices from whitelist: {sorted(whitelisted)}")
+
+    return sorted(whitelisted)
 
 def discover_stocks_with_fo(ins_df: pd.DataFrame) -> list:
     """Load F&O stocks from fno_master.json file"""
@@ -2020,14 +3912,101 @@ def build_subscriptions(kite: KiteConnect, ins_df: pd.DataFrame):
     print("="*50 + "\n")
     return result
 
+def auto_backup_after_market_close():
+    """
+    Automatically create backup after market closes
+    - Runs once per day after 3:30 PM
+    - Only on weekdays (Monday-Friday)
+    - Checks if backup already exists for today
+    """
+    now = datetime.now()
+
+    # Only on weekdays (0=Monday, 4=Friday)
+    if now.weekday() > 4:
+        return False
+
+    # Only after 3:30 PM (market closes at 3:30 PM)
+    if now.hour < 15 or (now.hour == 15 and now.minute < 30):
+        return False
+
+    # Check if backup already exists for today
+    backup_dir = Path.home() / "trading_backups"
+    today_str = now.strftime("%Y-%m-%d")
+
+    if backup_dir.exists():
+        # Check if any backup exists for today
+        existing_backups = list(backup_dir.glob(f"trading_backup_{today_str}_*.tar.gz"))
+        if existing_backups:
+            # Backup already done today
+            return False
+
+    # Create backup
+    try:
+        print("\n" + "="*50)
+        print("🤖 AUTO-BACKUP: Market closed, creating backup...")
+        print("="*50)
+
+        # Create backup directory
+        backup_dir.mkdir(parents=True, exist_ok=True)
+
+        # Timestamp for filename
+        timestamp = now.strftime("%Y-%m-%d_%H-%M-%S")
+        backup_file = backup_dir / f"trading_backup_{timestamp}.tar.gz"
+
+        # Items to backup
+        backup_items = []
+        data_dir = Path("data")
+        cache_dir = Path(".cache")
+
+        if data_dir.exists():
+            backup_items.append("data")
+        if cache_dir.exists():
+            backup_items.append(".cache")
+
+        if not backup_items:
+            print("⚠️ No data to backup yet")
+            return False
+
+        # Create backup using tar
+        import subprocess
+        cmd = ["tar", "-czf", str(backup_file)] + backup_items
+        result = subprocess.run(cmd, capture_output=True, text=True)
+
+        if result.returncode == 0:
+            backup_size = backup_file.stat().st_size / (1024 * 1024)  # MB
+            print(f"✅ Backup created successfully!")
+            print(f"   Location: {backup_file}")
+            print(f"   Size: {backup_size:.1f} MB")
+
+            # Clean up old backups (keep last 30)
+            all_backups = sorted(backup_dir.glob("trading_backup_*.tar.gz"), key=lambda p: p.stat().st_mtime, reverse=True)
+            if len(all_backups) > 30:
+                for old_backup in all_backups[30:]:
+                    old_backup.unlink()
+                    print(f"🗑️ Removed old backup: {old_backup.name}")
+
+            print(f"📊 Total backups: {min(len(all_backups), 30)}")
+            print("="*50 + "\n")
+            return True
+        else:
+            print(f"❌ Backup failed: {result.stderr}")
+            return False
+
+    except Exception as e:
+        print(f"❌ Auto-backup error: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
 def polling_loop():
     print("\n" + "="*50)
     print("STARTING LIVE MOMENTUM TRACKER")
     print("Polling every 10 seconds with actionable alerts")
     print("="*50 + "\n")
-    
+
     current_date = datetime.now().date()
-    
+    daily_summary_sent = False  # Track if daily summary sent today
+
     while not engine.stop_flag:
         try:
             if datetime.now().date() != current_date:
@@ -2039,10 +4018,19 @@ def polling_loop():
                 import gc
                 gc.collect()
                 print("✅ Memory cleanup - garbage collection done")
-                
+
                 engine.futures_volume_history.clear()
                 engine.chart_update_counter = 0
                 reset_volume_data()  # Reset volume charts  # PHASE 1: Reset chart counter
+
+                # Reset smart alert tracking for new day
+                engine.alert_cooldowns.clear()
+                engine.daily_score_history.clear()
+                engine.nifty_momentum_state = None
+                engine.nifty_momentum_last_alert = None
+                daily_summary_sent = False
+                print("✅ Smart alert tracking reset for new day")
+
                 current_date = datetime.now().date()
             
             if not engine.subscribe_tokens or engine.token_meta.empty:
@@ -2306,13 +4294,45 @@ def polling_loop():
                         if fut_token_str in all_quotes:
                             fut_quote = all_quotes[fut_token_str]
                             stock_price = fut_quote.get("last_price", None)
-                            
-                            # Calculate change %
-                            net_change = fut_quote.get("net_change", None)
-                            if net_change is not None and stock_price:
-                                prev_close = stock_price - net_change
-                                if prev_close > 0:
-                                    stock_change_pct = (net_change / prev_close) * 100
+
+                            # Calculate change % - Try multiple methods
+                            stock_change_pct = None
+
+                            # Method 1: Direct change percentage from Kite (most reliable)
+                            # BUT: Skip if it's exactly 0 (likely market closed or no data)
+                            change_value = fut_quote.get("change")
+                            if change_value is not None and change_value != 0:
+                                stock_change_pct = change_value
+
+                            # Method 2: Calculate from net_change
+                            if stock_change_pct is None and stock_price:
+                                net_change = fut_quote.get("net_change")
+                                if net_change is not None and net_change != 0:
+                                    prev_close = stock_price - net_change
+                                    if prev_close > 0:
+                                        stock_change_pct = (net_change / prev_close) * 100
+
+                            # Method 3: Use OHLC data (works even when market closed)
+                            if stock_change_pct is None and stock_price:
+                                ohlc = fut_quote.get("ohlc", {})
+                                if isinstance(ohlc, dict):
+                                    # Try different previous close fields
+                                    prev_close = (ohlc.get("previous_close") or
+                                                 ohlc.get("prev_close") or
+                                                 ohlc.get("close"))
+
+                                    # If prev_close is same as current price, it's likely today's close
+                                    # So check if there's an open price different from close
+                                    if prev_close and prev_close > 0:
+                                        # If close == last_price, use open as reference (intraday change)
+                                        open_price = ohlc.get("open")
+                                        if abs(prev_close - stock_price) < 0.01 and open_price:
+                                            # Market might be closed, calculate from open
+                                            if abs(open_price - stock_price) > 0.01:
+                                                stock_change_pct = ((stock_price - open_price) / open_price) * 100
+                                        else:
+                                            # Normal case: calculate from previous close
+                                            stock_change_pct = ((stock_price - prev_close) / prev_close) * 100
                     
                     # Calculate CE/PE flows from options
                     for _, row in stock_meta.iterrows():
@@ -2338,7 +4358,289 @@ def polling_loop():
                         "pe_flow": pe_flow,
                         "net_flow": ce_flow - pe_flow
                     }
-                
+
+                # Log stock data collection with sample
+                if stocks_data:
+                    print(f"✅ Collected data for {len(stocks_data)} stocks")
+                    # Show sample with change % to verify it's working
+                    sample_stocks = list(stocks_data.items())[:3]
+                    for name, data in sample_stocks:
+                        chg = data.get('change_pct')
+                        if chg is not None:
+                            print(f"   {name}: ₹{data.get('price'):.2f} ({chg:+.2f}%)")
+                        else:
+                            print(f"   {name}: ₹{data.get('price'):.2f} (change% = None)")
+
+                    # DEBUG: Show what raw data looks like for first stock
+                    if len(stocks_data) > 0:
+                        first_stock = list(stocks_data.keys())[0]
+                        fut_rows_debug = engine.token_meta[
+                            (engine.token_meta["name"] == first_stock) &
+                            (engine.token_meta.get("type") == "FUT")
+                        ]
+                        if not fut_rows_debug.empty:
+                            fut_token_debug = str(int(fut_rows_debug.iloc[0]["instrument_token"]))
+                            if fut_token_debug in all_quotes:
+                                quote_debug = all_quotes[fut_token_debug]
+                                print(f"   DEBUG {first_stock} quote: change={quote_debug.get('change')}, net_change={quote_debug.get('net_change')}")
+                                ohlc_debug = quote_debug.get('ohlc', {})
+                                if ohlc_debug:
+                                    print(f"   DEBUG {first_stock} OHLC: open={ohlc_debug.get('open')}, close={ohlc_debug.get('close')}, prev_close={ohlc_debug.get('previous_close')}")
+
+                # ====================
+                # MOMENTUM STOCKS TRACKING
+                # ====================
+                momentum_tracking = load_momentum_tracking()
+
+                # Check each stock for momentum conditions
+                for stock_name, stock_data in stocks_data.items():
+                    stock_price = stock_data.get('price')
+                    if stock_price is None:
+                        continue
+
+                    # Check momentum condition
+                    momentum_signal = check_momentum_conditions(stock_name, stock_price)
+
+                    if momentum_signal:
+                        # Initialize tracking for this stock if needed
+                        if stock_name not in momentum_tracking:
+                            momentum_tracking[stock_name] = {'bullish': 0, 'bearish': 0}
+
+                        # Increment count based on signal
+                        if momentum_signal == 'BULLISH':
+                            momentum_tracking[stock_name]['bullish'] += 1
+                            print(f"🟢 MOMENTUM: {stock_name} Bullish count = {momentum_tracking[stock_name]['bullish']}")
+                        elif momentum_signal == 'BEARISH':
+                            momentum_tracking[stock_name]['bearish'] += 1
+                            print(f"🔴 MOMENTUM: {stock_name} Bearish count = {momentum_tracking[stock_name]['bearish']}")
+
+                # Save updated tracking
+                if momentum_tracking:
+                    save_momentum_tracking(momentum_tracking)
+
+                # Store in session state for UI
+                st.session_state.momentum_tracking = momentum_tracking
+
+                # ====================
+                # SMART SCORING ALERT SYSTEM
+                # ====================
+                # Build Top 10 Stocks list (sorted by net_flow)
+                top_10_stocks = sorted(
+                    [(name, data) for name, data in stocks_data.items() if data.get('net_flow') is not None],
+                    key=lambda x: abs(x[1]['net_flow']),
+                    reverse=True
+                )[:10]
+
+                # Build Volume Spikes list (stocks by total activity: ce_flow + pe_flow)
+                volume_spikes = sorted(
+                    [(name, data) for name, data in stocks_data.items()
+                     if data.get('ce_flow') is not None and data.get('pe_flow') is not None],
+                    key=lambda x: x[1]['ce_flow'] + x[1]['pe_flow'],
+                    reverse=True
+                )[:10]
+
+                # ============================================
+                # STOCK CONFLUENCE TRACKING (3/3 Sections)
+                # ============================================
+                # Initialize confluence tracking in session state
+                if 'stock_confluence_counts' not in st.session_state:
+                    st.session_state.stock_confluence_counts = {}
+
+                # Get stocks in all 3 sections
+                top_10_names = set([name for name, _ in top_10_stocks])
+                volume_spike_names = set([name for name, _ in volume_spikes])
+
+                # Get Chartink alert stocks (from Gmail)
+                chartink_stocks = set()
+                if hasattr(st.session_state, 'chartink_alerts') and st.session_state.chartink_alerts:
+                    for alert in st.session_state.chartink_alerts:
+                        # Each alert has 'stocks' field which is a list
+                        if 'stocks' in alert and alert['stocks']:
+                            chartink_stocks.update(alert['stocks'])
+
+                # Find stocks in ALL 3 sections
+                confluence_stocks = top_10_names & volume_spike_names & chartink_stocks
+
+                # Update counts
+                current_counts = {}
+                for stock_name in confluence_stocks:
+                    if stock_name in st.session_state.stock_confluence_counts:
+                        # Increment count
+                        current_counts[stock_name] = st.session_state.stock_confluence_counts[stock_name] + 1
+                    else:
+                        # New stock
+                        current_counts[stock_name] = 1
+
+                # Check if list has changed
+                list_changed = (set(current_counts.keys()) != set(st.session_state.stock_confluence_counts.keys())) or \
+                               any(current_counts.get(s) != st.session_state.stock_confluence_counts.get(s) for s in current_counts)
+
+                # Update session state
+                st.session_state.stock_confluence_counts = current_counts
+
+                # Send alert if list changed (Option 1: Alert on EVERY change)
+                if list_changed and current_counts:
+                    send_stock_confluence_alert(current_counts)
+
+                # Calculate scores for all stocks
+                all_scores = []
+                now = datetime.now()
+
+                for stock_name, stock_data in stocks_data.items():
+                    # Skip if missing price or change_pct
+                    if stock_data.get('price') is None or stock_data.get('change_pct') is None:
+                        continue
+
+                    # Calculate score
+                    score_result = calculate_stock_score(
+                        stock_name,
+                        top_10_stocks,
+                        volume_spikes,
+                        momentum_tracking,
+                        stocks_data
+                    )
+
+                    # Store score for daily summary
+                    all_scores.append({
+                        'stock_name': stock_name,
+                        'score': score_result['total_score'],
+                        'signal_strength': score_result['signal_strength'],
+                        'num_lists': score_result['num_lists'],
+                        'timestamp': now
+                    })
+
+                    # Check if score meets alert threshold (≥50)
+                    if score_result['total_score'] >= 50:
+                        # Check cooldown (5 minutes = 300 seconds)
+                        last_alert_time = engine.alert_cooldowns.get(stock_name)
+                        if last_alert_time:
+                            time_since_alert = (now - last_alert_time).total_seconds()
+                            if time_since_alert < 300:  # 5 minutes
+                                continue  # Skip - still in cooldown
+
+                        # Get momentum data for this stock
+                        momentum_data = momentum_tracking.get(stock_name, {'bullish': 0, 'bearish': 0})
+
+                        # Get volume spike data if present
+                        volume_spike_data = None
+                        for name, data in volume_spikes:
+                            if name == stock_name:
+                                volume_spike_data = data
+                                break
+
+                        # Get rank in top 10 stocks
+                        top10_rank = None
+                        for idx, (name, _) in enumerate(top_10_stocks, 1):
+                            if name == stock_name:
+                                top10_rank = idx
+                                break
+
+                        # Create alert message
+                        alert_message = create_smart_alert_message(
+                            stock_name,
+                            score_result,
+                            momentum_data,
+                            volume_spike_data,
+                            top10_rank
+                        )
+
+                        # Send Telegram alert
+                        try:
+                            send_telegram_message(alert_message, parse_mode='HTML')
+                            print(f"📢 SMART ALERT: {stock_name} - Score: {score_result['total_score']:.0f} ({score_result['signal_strength']})")
+
+                            # Update cooldown
+                            engine.alert_cooldowns[stock_name] = now
+                        except Exception as e:
+                            print(f"❌ Failed to send smart alert for {stock_name}: {e}")
+
+                # Store scores in session state and engine
+                st.session_state.smart_scores = all_scores
+                engine.daily_score_history.extend(all_scores)
+
+                # ====================
+                # DAILY SUMMARY AT MARKET CLOSE
+                # ====================
+                # Send daily summary at 3:30 PM (market close) - only once per day
+                if not daily_summary_sent and now.hour == 15 and now.minute >= 30:
+                    if engine.daily_score_history:
+                        try:
+                            summary_message = generate_daily_summary(engine.daily_score_history, stocks_data)
+                            send_telegram_message(summary_message, parse_mode='HTML')
+                            print(f"📊 DAILY SUMMARY sent at {now.strftime('%H:%M:%S')}")
+                            daily_summary_sent = True
+                        except Exception as e:
+                            print(f"❌ Failed to send daily summary: {e}")
+
+                # ====================
+                # NIFTY MOMENTUM ALERT SYSTEM
+                # ====================
+                # Calculate NIFTY momentum score and send alerts for state changes
+                try:
+                    # Get VWAP/SuperTrend strategy data
+                    vwap_st_strategy = st.session_state.get('vwap_st_strategy', None)
+
+                    # Calculate momentum score
+                    momentum_score = calculate_nifty_momentum_score(
+                        indices_data,
+                        stocks_data,
+                        volume_state,
+                        vwap_st_strategy
+                    )
+
+                    current_momentum_class = momentum_score['momentum_class']
+                    previous_momentum_class = engine.nifty_momentum_state
+
+                    # Check if momentum changed (reversal detection)
+                    is_reversal = False
+                    if previous_momentum_class and previous_momentum_class != current_momentum_class:
+                        is_reversal = True
+
+                    # Check cooldown (15 minutes for momentum alerts)
+                    should_send_alert = False
+                    if engine.nifty_momentum_last_alert:
+                        time_since_alert = (now - engine.nifty_momentum_last_alert).total_seconds()
+                        # For reversals, send immediately. For same state, wait 15 minutes
+                        if is_reversal:
+                            should_send_alert = True
+                        elif time_since_alert >= 900:  # 15 minutes
+                            should_send_alert = True
+                    else:
+                        # First alert
+                        should_send_alert = True
+
+                    # Send alert if conditions met
+                    if should_send_alert:
+                        alert_message = create_nifty_momentum_alert(
+                            momentum_score,
+                            is_reversal=is_reversal,
+                            previous_class=previous_momentum_class
+                        )
+
+                        try:
+                            send_telegram_message(alert_message, parse_mode='HTML')
+                            print(f"📢 NIFTY MOMENTUM: {current_momentum_class} (Score: {momentum_score['total_score']:+d}/100)")
+                            if is_reversal:
+                                print(f"   🔄 REVERSAL: {previous_momentum_class} → {current_momentum_class}")
+
+                            # Update state
+                            engine.nifty_momentum_state = current_momentum_class
+                            engine.nifty_momentum_last_alert = now
+                        except Exception as e:
+                            print(f"❌ Failed to send NIFTY momentum alert: {e}")
+                    else:
+                        # Just update state, no alert
+                        engine.nifty_momentum_state = current_momentum_class
+                        print(f"📊 NIFTY Momentum: {current_momentum_class} (Score: {momentum_score['total_score']:+d}/100) [Cooldown: {int(900 - time_since_alert)}s]")
+
+                    # Store in session state for UI
+                    st.session_state.nifty_momentum_score = momentum_score
+
+                except Exception as e:
+                    print(f"❌ Error in NIFTY momentum calculation: {e}")
+                    import traceback
+                    traceback.print_exc()
+
                 total_indices_ce = sum(d["ce_flow"] for d in indices_data.values())
                 total_indices_pe = sum(d["pe_flow"] for d in indices_data.values())
                 total_stocks_ce = sum(d["ce_flow"] for d in stocks_data.values())
@@ -2387,13 +4689,45 @@ def polling_loop():
                             if fut_token_str in all_quotes:
                                 fut_quote = all_quotes[fut_token_str]
                                 stock_price = fut_quote.get("last_price", None)
-                                
-                                # Get change %
-                                net_change = fut_quote.get("net_change", None)
-                                if net_change is not None and stock_price:
-                                    prev_close = stock_price - net_change
-                                    if prev_close > 0:
-                                        stock_change_pct = (net_change / prev_close) * 100
+
+                                # Calculate change % - Try multiple methods
+                                stock_change_pct = None
+
+                                # Method 1: Direct change percentage from Kite (most reliable)
+                                # BUT: Skip if it's exactly 0 (likely market closed or no data)
+                                change_value = fut_quote.get("change")
+                                if change_value is not None and change_value != 0:
+                                    stock_change_pct = change_value
+
+                                # Method 2: Calculate from net_change
+                                if stock_change_pct is None and stock_price:
+                                    net_change = fut_quote.get("net_change")
+                                    if net_change is not None and net_change != 0:
+                                        prev_close = stock_price - net_change
+                                        if prev_close > 0:
+                                            stock_change_pct = (net_change / prev_close) * 100
+
+                                # Method 3: Use OHLC data (works even when market closed)
+                                if stock_change_pct is None and stock_price:
+                                    ohlc = fut_quote.get("ohlc", {})
+                                    if isinstance(ohlc, dict):
+                                        # Try different previous close fields
+                                        prev_close = (ohlc.get("previous_close") or
+                                                     ohlc.get("prev_close") or
+                                                     ohlc.get("close"))
+
+                                        # If prev_close is same as current price, it's likely today's close
+                                        # So check if there's an open price different from close
+                                        if prev_close and prev_close > 0:
+                                            # If close == last_price, use open as reference (intraday change)
+                                            open_price = ohlc.get("open")
+                                            if abs(prev_close - stock_price) < 0.01 and open_price:
+                                                # Market might be closed, calculate from open
+                                                if abs(open_price - stock_price) > 0.01:
+                                                    stock_change_pct = ((stock_price - open_price) / open_price) * 100
+                                            else:
+                                                # Normal case: calculate from previous close
+                                                stock_change_pct = ((stock_price - prev_close) / prev_close) * 100
                         
                         # Calculate CE/PE flows
                         for _, row in stock_meta.iterrows():
@@ -2417,6 +4751,11 @@ def polling_loop():
                         }
                     except Exception as e:
                         pass
+
+                # Log top stocks by net flow
+                if stocks_data and len(stocks_data) > 0:
+                    top_5 = sorted(stocks_data.items(), key=lambda x: abs(x[1].get("net_flow", 0)), reverse=True)[:5]
+                    print(f"📊 Top 5 stocks by net flow: {', '.join([s[0] for s in top_5])}")
                 
                 
                 flow_snapshot = {
@@ -2480,52 +4819,195 @@ def polling_loop():
                         print(f"✓ Futures: {engine.nifty_fut_symbol} Price={fut_price:.2f} Change={fut_change_pct:+.2f}% OI={fut_oi}")
 
                 # ============================================
-                # STOCK ALERTS DETECTION
+                # VWAP & SUPERTREND STRATEGY CALCULATION
+                # ============================================
+                vwap_st_strategy = None
+                try:
+                    # Fetch 15-min candles for strategy
+                    candles_15min = fetch_nifty_futures_15min_candles()
+
+                    if candles_15min and len(candles_15min) >= 8:
+                        # Calculate VWAP
+                        vwap = calculate_vwap(candles_15min)
+
+                        # Calculate SuperTrend (ATR=7, Multiplier=3.0)
+                        supertrend_value, supertrend_trend = calculate_supertrend(candles_15min, atr_period=7, multiplier=3.0)
+
+                        # Detect signal
+                        signal = detect_vwap_supertrend_signal(candles_15min, vwap, supertrend_value, supertrend_trend)
+
+                        # Get last candle and current price
+                        last_candle = candles_15min[-1]
+                        ltp = nifty_futures_data['price'] if nifty_futures_data else last_candle['close']
+
+                        vwap_st_strategy = {
+                            'vwap': vwap,
+                            'supertrend_value': supertrend_value,
+                            'supertrend_trend': supertrend_trend,
+                            'signal': signal,
+                            'last_candle': last_candle,
+                            'ltp': ltp,
+                            'candles_count': len(candles_15min)
+                        }
+
+                        # Store in session state
+                        st.session_state.vwap_st_strategy = vwap_st_strategy
+
+                        print(f"✓ VWAP & SuperTrend: Signal={signal}, VWAP=₹{vwap:.2f}, ST=₹{supertrend_value:.2f} ({supertrend_trend})")
+
+                        # Check for signal change and send Telegram alert
+                        previous_signal = st.session_state.get('vwap_st_previous_signal', 'NEUTRAL')
+
+                        if signal != previous_signal and signal != 'NEUTRAL':
+                            # Signal changed to BULLISH or BEARISH
+                            st.session_state.vwap_st_previous_signal = signal
+
+                            # Send Telegram alert
+                            if signal == 'BULLISH':
+                                telegram_msg = (
+                                    "🚨 <b>NIFTY FUTURES - BULLISH SIGNAL 🟢</b>\n\n"
+                                    f"📈 <b>Strategy:</b> VWAP + SuperTrend (15-min)\n"
+                                    f"⏰ <b>Time:</b> {datetime.now().strftime('%H:%M:%S')}\n\n"
+                                    "<b>✅ Entry Conditions Met:</b>\n"
+                                    f"• SuperTrend: 🟢 GREEN (₹{supertrend_value:.2f})\n"
+                                    f"• VWAP: ₹{vwap:.2f} (Above ST)\n"
+                                    f"• Candle: 🟢 GREEN (₹{last_candle['close']:.2f})\n"
+                                    f"• Position: Above VWAP ✓\n\n"
+                                    f"💡 <b>Recommendation:</b> GO LONG\n"
+                                    f"📊 <b>LTP:</b> ₹{ltp:.2f}\n"
+                                    f"🎯 <b>Watch for:</b> Price sustaining above VWAP\n\n"
+                                    "#NiftyFutures #Bullish #VWAP #SuperTrend"
+                                )
+                            else:  # BEARISH
+                                telegram_msg = (
+                                    "🚨 <b>NIFTY FUTURES - BEARISH SIGNAL 🔴</b>\n\n"
+                                    f"📉 <b>Strategy:</b> VWAP + SuperTrend (15-min)\n"
+                                    f"⏰ <b>Time:</b> {datetime.now().strftime('%H:%M:%S')}\n\n"
+                                    "<b>✅ Entry Conditions Met:</b>\n"
+                                    f"• SuperTrend: 🔴 RED (₹{supertrend_value:.2f})\n"
+                                    f"• VWAP: ₹{vwap:.2f} (Below ST)\n"
+                                    f"• Candle: 🔴 RED (₹{last_candle['close']:.2f})\n"
+                                    f"• Position: Below VWAP ✓\n\n"
+                                    f"💡 <b>Recommendation:</b> GO SHORT\n"
+                                    f"📊 <b>LTP:</b> ₹{ltp:.2f}\n"
+                                    f"🎯 <b>Watch for:</b> Price sustaining below VWAP\n\n"
+                                    "#NiftyFutures #Bearish #VWAP #SuperTrend"
+                                )
+
+                            send_telegram_alert(telegram_msg)
+                            print(f"📱 Telegram Alert Sent: {signal} Signal")
+
+                    else:
+                        print("⏳ VWAP & SuperTrend: Waiting for sufficient candles (need 8+)")
+
+                except Exception as e:
+                    print(f"❌ Error calculating VWAP & SuperTrend strategy: {e}")
+                    import traceback
+                    traceback.print_exc()
+
+                # ============================================
+                # NIFTY COMPREHENSIVE ALERT (8 Criteria Scoring)
+                # ============================================
+                try:
+                    # Calculate comprehensive score using all 8 criteria
+                    score_result = calculate_comprehensive_score(
+                        indices_data=indices_data,
+                        stocks_data=stocks_data,
+                        vwap_st_strategy=vwap_st_strategy
+                    )
+
+                    # Send alert if score >= +60 or <= -60
+                    send_nifty_comprehensive_alert(score_result)
+
+                except Exception as e:
+                    print(f"❌ Error calculating NIFTY comprehensive alert: {e}")
+                    import traceback
+                    traceback.print_exc()
+
+                # ============================================
+                # TOP 10 STOCKS TRACKING & NEW ENTRY ALERTS
                 # ============================================
                 if stocks_data:
                     # Sort by absolute net flow to get top stocks
                     sorted_stocks = sorted(stocks_data.items(), key=lambda x: abs(x[1].get("net_flow", 0)), reverse=True)
-                    top_20_stocks = sorted_stocks[:20]  # Only monitor top 20
-                    
-                    for stock_name, stock_data in top_20_stocks:
+
+                    # Get current Top 10 stocks
+                    current_top_10 = set([stock[0] for stock in sorted_stocks[:10]])
+
+                    # Find NEW entries (stocks that just entered Top 10)
+                    new_entries = current_top_10 - engine.top_10_stocks
+
+                    # Alert ONLY for NEW stocks entering Top 10
+                    if new_entries:
+                        for stock_name in new_entries:
+                            # Find this stock's data
+                            stock_data = stocks_data.get(stock_name)
+                            if not stock_data:
+                                continue
+
+                            stock_price = stock_data.get("price")
+                            change_pct = stock_data.get("change_pct")
+                            net_flow = stock_data.get("net_flow", 0)
+
+                            # Skip if missing critical data
+                            if stock_price is None or abs(net_flow) < 50000:
+                                continue
+
+                            # Find rank in Top 10
+                            rank = next((i+1 for i, (name, _) in enumerate(sorted_stocks[:10]) if name == stock_name), None)
+
+                            # Send "NEW TOP 10 ENTRY" alert
+                            emoji = "🔥" if rank <= 3 else "⭐"
+                            signal = f"NEW TOP {rank} ENTRY"
+
+                            flow_direction = "BULLISH" if net_flow > 0 else "BEARISH"
+                            flow_emoji = "🟢" if net_flow > 0 else "🔴"
+
+                            price_str = f"₹{stock_price:,.2f}"
+                            change_emoji = "🟢" if change_pct and change_pct > 0 else "🔴"
+                            change_str = f"{change_emoji}{change_pct:+.2f}%" if change_pct else ""
+                            flow_str = f"{flow_emoji}{format_number(net_flow)}"
+
+                            telegram_message = f"{emoji} {signal} - {stock_name}\n"
+                            telegram_message += f"{price_str} {change_str} | Flow {flow_str}\n"
+                            telegram_message += f"📊 Rank #{rank} | {flow_direction} momentum"
+
+                            try:
+                                # DISABLED: Stock alerts temporarily disabled
+                                # send_telegram_alert(telegram_message)
+                                print(f"🔕 ALERT DISABLED - NEW Top 10 Entry: #{rank} {stock_name} (Net Flow: {format_number(net_flow)})")
+                            except Exception as e:
+                                print(f"Error sending Top 10 alert: {e}")
+
+                    # Update Top 10 tracking
+                    engine.top_10_stocks = current_top_10
+
+                    # ============================================
+                    # BULLISH/BEARISH ALERTS FOR TOP 10 STOCKS
+                    # ============================================
+                    # Check each Top 10 stock for BULLISH or BEARISH conditions
+                    for stock_name, _ in sorted_stocks[:10]:
+                        stock_data = stocks_data.get(stock_name)
+                        if not stock_data:
+                            continue
+
                         stock_price = stock_data.get("price")
                         change_pct = stock_data.get("change_pct")
                         net_flow = stock_data.get("net_flow", 0)
-                        
-                        # Skip if missing critical data or flow too small
-                        if stock_price is None or change_pct is None or abs(net_flow) < 100000:
+
+                        # Skip if missing critical data
+                        if stock_price is None or change_pct is None:
                             continue
-                        
-                        # ===== ALERT 1: DIVERGENCE DETECTION (No cooldown) =====
-                        # Bullish Divergence: Price down but flow positive
-                        if change_pct < -0.3 and net_flow > 150000:
-                            send_stock_alert(stock_name, "DIVERGENCE", stock_price, change_pct, net_flow)
-                        
-                        # Bearish Divergence: Price up but flow negative
-                        elif change_pct > 0.3 and net_flow < -150000:
-                            send_stock_alert(stock_name, "DIVERGENCE", stock_price, change_pct, net_flow)
-                        
-                        # ===== ALERT 2: VOLUME SPIKE (30-min cooldown) =====
-                        stock_volume = stock_data.get("volume", 0)
-                        avg_volume = stock_data.get("avg_volume", 0)
-                        
-                        if stock_volume > 0 and avg_volume > 0:
-                            volume_ratio = stock_volume / avg_volume
-                            
-                            # Volume spike >= 3x with significant flow
-                            if volume_ratio >= 3.0 and abs(net_flow) > 200000:
-                                send_stock_alert(stock_name, "VOLUME_SPIKE", stock_price, change_pct, net_flow, volume_ratio)
-                        
-                        # ===== ALERT 3: STRONG MOMENTUM (15-min cooldown) =====
-                        # Bullish: Price up >1.5%, Flow positive >200K
-                        if change_pct > 1.5 and net_flow > 200000:
-                            send_stock_alert(stock_name, "MOMENTUM", stock_price, change_pct, net_flow)
-                        
-                        # Bearish: Price down >1.5%, Flow negative <-200K
-                        elif change_pct < -1.5 and net_flow < -200000:
-                            send_stock_alert(stock_name, "MOMENTUM", stock_price, change_pct, net_flow)
-                
-                
+
+                        # BULLISH Alert: Price > +1% AND Net Flow > +100M
+                        if change_pct > 1.0 and net_flow > 100:
+                            send_stock_alert(stock_name, "BULLISH", stock_price, change_pct, net_flow)
+
+                        # BEARISH Alert: Price < -1% AND Net Flow < -100M
+                        elif change_pct < -1.0 and net_flow < -100:
+                            send_stock_alert(stock_name, "BEARISH", stock_price, change_pct, net_flow)
+
+
                 cache_data = {
                     "composite_score": composite_score,
                     "signal_band": signal_band,
@@ -2537,10 +5019,11 @@ def polling_loop():
                     "stocks_ce_cod": total_stocks_ce,
                     "stocks_pe_cod": total_stocks_pe,
                     "indices_data": indices_data,
-                    # MEMORY FIX: Don't cache stocks_data (200+ stocks = huge!)
-                    # "stocks_data": stocks_data,
+                    # Include all 209 F&O stocks for heat bar analysis
+                    "stocks_data": stocks_data if stocks_data else {},
                     "deltas": deltas,
                     "nifty_futures_data": nifty_futures_data,
+                    "vwap_st_strategy": vwap_st_strategy,
                     "last_update": datetime.now().isoformat()
                 }
                 save_dashboard_cache(cache_data)
@@ -2628,8 +5111,9 @@ def polling_loop():
                                             idx_data['change_pct']
                                         )
                                         if alert_msg:
-                                            add_alert(alert_msg, "warning")
-                                
+                                            pass  # DISABLED: Stock alerts temporarily disabled
+                                            # add_alert(alert_msg, "warning")
+
                                 if detect_spike(pe_delta, avg_pe / 5, threshold=2.0):
                                     if idx_data.get('price') and idx_data.get('change_pct') is not None:
                                         alert_msg = create_actionable_alert_index(
@@ -2640,8 +5124,9 @@ def polling_loop():
                                             idx_data['change_pct']
                                         )
                                         if alert_msg:
-                                            add_alert(alert_msg, "warning")
-                    
+                                            pass  # DISABLED: Stock alerts temporarily disabled
+                                            # add_alert(alert_msg, "warning")
+
                     stock_items = sorted(stocks_data.items(), key=lambda x: abs(x[1]["net_flow"]), reverse=True)[:20]
                     sector_mapping = load_sector_mapping()
                     
@@ -2670,18 +5155,20 @@ def polling_loop():
                                     sector
                                 )
                                 if alert_msg:
-                                    add_alert(alert_msg, "warning")
-                            
+                                    pass  # DISABLED: Stock alerts temporarily disabled
+                                    # add_alert(alert_msg, "warning")
+
                             if detect_spike(pe_delta, avg_pe / 5, threshold=2.5):
                                 alert_msg = create_actionable_alert_stock(
                                     stock_name, 
                                     "PE", 
-                                    pe_delta, 
+                                    pe_delta,
                                     sector
                                 )
                                 if alert_msg:
-                                    add_alert(alert_msg, "warning")
-                
+                                    pass  # DISABLED: Stock alerts temporarily disabled
+                                    # add_alert(alert_msg, "warning")
+
                 # ============================================
                 # HYBRID PATTERN MATCHING (REQUIREMENT 3)
                 # Pattern Detection + OI Filtering
@@ -2719,9 +5206,15 @@ def polling_loop():
                     poll_msg += f" | Î”1m: Collecting baseline..."
                 
                 print(poll_msg)
-            
+
+            # AUTO-BACKUP: Check if we need to backup after market close
+            try:
+                auto_backup_after_market_close()
+            except Exception as e:
+                print(f"Auto-backup check failed: {e}")
+
             time.sleep(10)
-            
+
             # MEMORY FIX: Periodic garbage collection
             import gc
             gc.collect()
@@ -2806,15 +5299,166 @@ def stop_polling():
 # =========================
 # STREAMLIT UI
 # =========================
-st.set_page_config(page_title="Live Momentum Trading System", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="APEX AI TRADING", layout="wide", initial_sidebar_state="expanded")
 
 if AUTOREFRESH_AVAILABLE and st.session_state.get("auto_refresh_toggle", True) and st.session_state.get("polling_running", False):
     st.session_state.refresh_count += 1
-    count = st_autorefresh(interval=10 * 1000, key="auto_refresh_counter")
+    count = st_autorefresh(interval=30 * 1000, key="auto_refresh_counter")  # Changed from 10s to 30s to reduce memory usage
 
 st.markdown("""
 <style>
-.main-header {font-size: 2.5rem; font-weight: bold; color: #1f77b4;}
+.main-header {
+    font-size: 4.5rem;
+    font-weight: bold;
+    color: #1f77b4;
+    text-align: center;
+    padding: 1.5rem 0;
+    margin-bottom: 1.5rem;
+    background: linear-gradient(90deg, #1f77b4, #2ca02c);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    text-shadow: 2px 2px 4px rgba(0,0,0,0.1);
+}
+
+/* Color-Coded Metric Cards */
+.metric-card-bullish {
+    background: linear-gradient(135deg, #d4edda 0%, #c3e6cb 100%);
+    border-left: 4px solid #28a745;
+    padding: 1rem;
+    border-radius: 8px;
+    margin: 0.5rem 0;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+.metric-card-bearish {
+    background: linear-gradient(135deg, #f8d7da 0%, #f5c6cb 100%);
+    border-left: 4px solid #dc3545;
+    padding: 1rem;
+    border-radius: 8px;
+    margin: 0.5rem 0;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+.metric-card-neutral {
+    background: linear-gradient(135deg, #fff3cd 0%, #ffeaa7 100%);
+    border-left: 4px solid #ffc107;
+    padding: 1rem;
+    border-radius: 8px;
+    margin: 0.5rem 0;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+/* CE/PE Progress Bars */
+.cepe-bar-container {
+    width: 100%;
+    height: 30px;
+    background-color: #f0f0f0;
+    border-radius: 15px;
+    overflow: hidden;
+    position: relative;
+    border: 2px solid #ddd;
+}
+.cepe-bar-ce {
+    height: 100%;
+    background: linear-gradient(90deg, #28a745, #20c997);
+    float: left;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    font-weight: bold;
+    font-size: 0.85rem;
+}
+.cepe-bar-pe {
+    height: 100%;
+    background: linear-gradient(90deg, #dc3545, #e74c3c);
+    float: left;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    font-weight: bold;
+    font-size: 0.85rem;
+}
+
+/* Market Overview Panel */
+.overview-panel {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    padding: 2rem;
+    border-radius: 15px;
+    margin: 1rem 0;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.2);
+}
+.overview-metric {
+    text-align: center;
+    padding: 1rem;
+}
+
+/* Sentiment Gauge */
+.sentiment-gauge {
+    width: 200px;
+    height: 100px;
+    position: relative;
+    margin: 0 auto;
+}
+.gauge-arrow {
+    width: 4px;
+    height: 80px;
+    background-color: #333;
+    position: absolute;
+    bottom: 0;
+    left: 50%;
+    transform-origin: bottom center;
+}
+
+/* Enhanced Section Headers */
+.section-header {
+    background: linear-gradient(90deg, #f8f9fa 0%, #e9ecef 100%);
+    border-left: 5px solid #1f77b4;
+    padding: 1rem 1.5rem;
+    border-radius: 8px;
+    margin: 1.5rem 0 1rem 0;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+}
+
+/* Status Indicators */
+.status-green { color: #28a745; font-size: 1.5rem; }
+.status-yellow { color: #ffc107; font-size: 1.5rem; }
+.status-red { color: #dc3545; font-size: 1.5rem; }
+
+/* Stock Cards */
+.stock-card {
+    border-radius: 10px;
+    padding: 1rem;
+    margin: 0.5rem 0;
+    transition: transform 0.2s;
+}
+.stock-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+}
+
+.part-container {
+    border: 4px solid #000000;
+    border-radius: 10px;
+    padding: 1.5rem;
+    margin: 1.5rem 0;
+    background-color: #fafafa;
+}
+.section-box-green {
+    border: 2px solid #28a745;
+    border-radius: 8px;
+    padding: 1rem;
+    margin: 1rem 0;
+    background-color: #ffffff;
+}
+.section-box-blue {
+    border: 2px solid #1f77b4;
+    border-radius: 8px;
+    padding: 1rem;
+    margin: 1rem 0;
+    background-color: #ffffff;
+}
 .alert-box {padding: 0.5rem; border-radius: 0.3rem; margin-bottom: 0.3rem; font-size: 0.9rem;}
 .alert-warning {background-color: #fff3cd; border-left: 4px solid #ffc107;}
 .alert-success {background-color: #d4edda; border-left: 4px solid #28a745;}
@@ -2884,7 +5528,7 @@ with st.sidebar:
         st.warning("⚠️ Pattern modules not loaded")
 
 
-st.markdown('<p class="main-header">🔥 Live Momentum Trading System</p>', unsafe_allow_html=True)
+st.markdown('<p class="main-header">🚀 APEX AI TRADING</p>', unsafe_allow_html=True)
 
 if not API_KEY or not API_SECRET:
     st.error("❌ Missing credentials in .env file")
@@ -2954,17 +5598,6 @@ if DASHBOARD_CACHE_FILE.exists():
     except:
         pass
 
-if alerts:
-    st.subheader("🚨 Live Alerts")
-    for alert in list(alerts)[:5]:
-        alert_class = "alert-warning" if alert["type"] == "warning" else "alert-success"
-        st.markdown(f"""
-        <div class="alert-box {alert_class}">
-            <strong>{alert['time']}</strong> - {alert['message']}
-        </div>
-        """, unsafe_allow_html=True)
-    st.markdown("---")
-
 # ============================================
 # PHASE 1: NIFTY FLOW ANALYSIS CHARTS
 # ============================================
@@ -3028,7 +5661,19 @@ if len(nifty_chart_data) <= 1:
 
 if len(nifty_chart_data) > 1:
     st.markdown("---")
-    st.subheader("📊 NIFTY Flow Analysis Charts")
+    st.markdown("")
+
+    # PART 1 Header with border
+    st.markdown("""
+    <div style="border: 4px solid #000000; border-radius: 10px; padding: 1.5rem; margin: 1.5rem 0; background-color: #fafafa;">
+        <h1 style="text-align: center; margin: 0;">📊 PART 1: INDICES ANALYSIS</h1>
+        <p style="text-align: center; font-style: italic; margin: 0.5rem 0;">Comprehensive analysis of all tracked indices (NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, SENSEX)</p>
+        <hr style="border: 1px solid #ddd; margin: 1rem 0;">
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Section box for NIFTY Flow Analysis
+    st.markdown('<div style="border: 2px solid #28a745; border-radius: 8px; padding: 1rem; margin: 1rem 0; background-color: #ffffff;"><h3>📊 NIFTY Flow Analysis Charts</h3></div>', unsafe_allow_html=True)
     
     # Prepare data
     chart_list = list(nifty_chart_data)
@@ -3170,8 +5815,7 @@ st.markdown("---")
 # =========================
 # NIFTY OPTIONS VOLUME ANALYSIS CHARTS (REQUIREMENT 4)
 # =========================
-
-st.subheader("🔥 NIFTY Options Volume Analysis")
+st.markdown('<div style="border: 2px solid #28a745; border-radius: 8px; padding: 1rem; margin: 1rem 0; background-color: #ffffff;"><h3>🔥 NIFTY Options Volume Analysis</h3></div>', unsafe_allow_html=True)
 
 # Automatic diagnostic logging for volume charts when empty
 if len(volume_state.ce_pe_history) == 0 or len(volume_state.spike_queue) == 0:
@@ -3218,7 +5862,7 @@ if len(volume_state.ce_pe_history) == 0 or len(volume_state.spike_queue) == 0:
 heatmap_df = create_volume_spike_heatmap()
 
 if heatmap_df is not None and not heatmap_df.empty:
-    st.markdown("### 🔥 Volume Spike Monitor (Last 10 Spikes)")
+    st.markdown(create_enhanced_section_header("Volume Spike Monitor (Last 10 Spikes)", "🔥"), unsafe_allow_html=True)
     st.dataframe(
         heatmap_df,
         use_container_width=True,
@@ -3227,7 +5871,7 @@ if heatmap_df is not None and not heatmap_df.empty:
     st.caption("🔥 >3x = Strong Signal | 🟡 2-3x = Moderate | 🟢 <2x = Normal")
 else:
     # Show blank heatmap table
-    st.markdown("### 🔥 Volume Spike Monitor (Last 10 Spikes)")
+    st.markdown(create_enhanced_section_header("Volume Spike Monitor (Last 10 Spikes)", "🔥"), unsafe_allow_html=True)
     blank_df = pd.DataFrame({
         'Time': ['—'] * 5,
         'Strike': ['—'] * 5,
@@ -3239,92 +5883,105 @@ else:
     st.dataframe(blank_df, use_container_width=True, hide_index=True)
     st.caption("⏳ Waiting for data - spikes will appear after 5 minutes of polling")
 
-# Volume Spike Session Summary (Option B)
+# Volume Spike Session Summary (Always Visible)
+st.markdown("")
+st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+st.markdown(create_enhanced_section_header("SESSION SUMMARY (Since 9:15 AM)", "📊"), unsafe_allow_html=True)
+st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
 if volume_state.spike_queue and len(volume_state.spike_queue) > 0:
-    st.markdown("")
-    st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    st.markdown("### 📊 SESSION SUMMARY (Since 9:15 AM)")
-    st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    
-    # Calculate statistics
+    # Calculate statistics from actual data
     all_spikes = list(volume_state.spike_queue)
     ce_spikes = [s for s in all_spikes if s.option_type == "CE"]
     pe_spikes = [s for s in all_spikes if s.option_type == "PE"]
-    
+
     # CE Stats
     ce_count = len(ce_spikes)
     ce_total_volume = sum(s.volume for s in ce_spikes)
     ce_avg_volume = ce_total_volume / ce_count if ce_count > 0 else 0
     ce_largest = max(ce_spikes, key=lambda s: s.volume) if ce_spikes else None
-    
+
     # PE Stats
     pe_count = len(pe_spikes)
     pe_total_volume = sum(s.volume for s in pe_spikes)
     pe_avg_volume = pe_total_volume / pe_count if pe_count > 0 else 0
     pe_largest = max(pe_spikes, key=lambda s: s.volume) if pe_spikes else None
-    
-    # Display in two columns
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.markdown("#### 🟢 CE Spikes")
-        st.markdown("─────────────────────────────────────")
-        st.metric("Total Spikes", f"{ce_count} spikes")
-        st.metric("Total Volume", format_number(ce_total_volume))
-        st.metric("Avg Volume", format_number(ce_avg_volume) + "/spike")
-        if ce_largest:
-            largest_time = ce_largest.timestamp.strftime("%I:%M %p")
-            st.metric("Largest Spike", f"{format_number(ce_largest.volume)} ({largest_time})")
-        else:
-            st.metric("Largest Spike", "—")
-    
-    with col2:
-        st.markdown("#### 🔴 PE Spikes")
-        st.markdown("─────────────────────────────────────")
-        st.metric("Total Spikes", f"{pe_count} spikes")
-        st.metric("Total Volume", format_number(pe_total_volume))
-        st.metric("Avg Volume", format_number(pe_avg_volume) + "/spike")
-        if pe_largest:
-            largest_time = pe_largest.timestamp.strftime("%I:%M %p")
-            st.metric("Largest Spike", f"{format_number(pe_largest.volume)} ({largest_time})")
-        else:
-            st.metric("Largest Spike", "—")
-    
-    # Race Summary
-    st.markdown("")
-    st.markdown("#### Race Summary")
-    
-    total_spikes = ce_count + pe_count
-    if total_spikes > 0:
-        ce_pct = (ce_count / total_spikes) * 100
-        pe_pct = 100 - ce_pct
-        
-        # Create visual race bar
-        ce_blocks = int(round(ce_pct / 10))
-        pe_blocks = 10 - ce_blocks
-        race_bar = f"[🟢{'▓' * ce_blocks}🔴{'▓' * pe_blocks}]"
-        
-        # Determine signal
-        if ce_pct >= 60:
-            signal = "🚀 BULLS AGGRESSIVE - More CE spikes today"
-            signal_color = "success"
-        elif pe_pct >= 60:
-            signal = "📉 BEARS AGGRESSIVE - More PE spikes today"
-            signal_color = "error"
-        else:
-            signal = "⚖️ BALANCED - CE and PE spikes roughly equal"
-            signal_color = "info"
-        
-        st.markdown(f"**CE Dominance: {ce_pct:.0f}%**  {race_bar}  {ce_pct:.0f}% CE | {pe_pct:.0f}% PE")
-        
-        if signal_color == "success":
-            st.success(f"**Signal:** {signal}")
-        elif signal_color == "error":
-            st.error(f"**Signal:** {signal}")
-        else:
-            st.info(f"**Signal:** {signal}")
-    
-    st.markdown("")
+else:
+    # Show empty structure with zero values
+    ce_count = 0
+    ce_total_volume = 0
+    ce_avg_volume = 0
+    ce_largest = None
+
+    pe_count = 0
+    pe_total_volume = 0
+    pe_avg_volume = 0
+    pe_largest = None
+
+# Always display the structure
+col1, col2 = st.columns(2)
+
+with col1:
+    st.markdown("#### 🟢 CE Spikes")
+    st.markdown("─────────────────────────────────────")
+    st.metric("Total Spikes", f"{ce_count} spikes")
+    st.metric("Total Volume", format_number(ce_total_volume))
+    st.metric("Avg Volume", format_number(ce_avg_volume) + "/spike")
+    if ce_largest:
+        largest_time = ce_largest.timestamp.strftime("%I:%M %p")
+        st.metric("Largest Spike", f"{format_number(ce_largest.volume)} ({largest_time})")
+    else:
+        st.metric("Largest Spike", "—")
+
+with col2:
+    st.markdown("#### 🔴 PE Spikes")
+    st.markdown("─────────────────────────────────────")
+    st.metric("Total Spikes", f"{pe_count} spikes")
+    st.metric("Total Volume", format_number(pe_total_volume))
+    st.metric("Avg Volume", format_number(pe_avg_volume) + "/spike")
+    if pe_largest:
+        largest_time = pe_largest.timestamp.strftime("%I:%M %p")
+        st.metric("Largest Spike", f"{format_number(pe_largest.volume)} ({largest_time})")
+    else:
+        st.metric("Largest Spike", "—")
+
+# Race Summary
+st.markdown("")
+st.markdown("#### Race Summary")
+
+total_spikes = ce_count + pe_count
+if total_spikes > 0:
+    ce_pct = (ce_count / total_spikes) * 100
+    pe_pct = 100 - ce_pct
+
+    # Determine signal
+    if ce_pct >= 60:
+        signal = "🚀 BULLS AGGRESSIVE - More CE spikes today"
+        signal_color = "success"
+    elif pe_pct >= 60:
+        signal = "📉 BEARS AGGRESSIVE - More PE spikes today"
+        signal_color = "error"
+    else:
+        signal = "⚖️ BALANCED - CE and PE spikes roughly equal"
+        signal_color = "info"
+
+    st.markdown(f"**CE Dominance: {ce_pct:.0f}%**  {ce_pct:.0f}% CE | {pe_pct:.0f}% PE")
+
+    # Add modern CE/PE progress bar
+    st.markdown(create_cepe_progress_bar(ce_count, pe_count, show_labels=True), unsafe_allow_html=True)
+
+    if signal_color == "success":
+        st.success(f"**Signal:** {signal}")
+    elif signal_color == "error":
+        st.error(f"**Signal:** {signal}")
+    else:
+        st.info(f"**Signal:** {signal}")
+else:
+    # Show waiting message for race summary
+    st.info("⏳ **BALANCED - CE and PE spikes roughly equal**")
+    st.caption("Waiting for volume spikes to be detected...")
+
+st.markdown("")
 
 
 st.markdown("")
@@ -3337,24 +5994,27 @@ with col1:
     race_data = create_ce_pe_race_chart()
     
     if race_data:
-        st.markdown("### 📈 CE vs PE Race")
+        st.markdown(create_enhanced_section_header("CE vs PE Race", "📈"), unsafe_allow_html=True)
         st.markdown("**10-Minute Window**")
-        
-        # CE Bar
-        st.markdown(f"**CE Volume:** {format_number(race_data['ce_total'])} ({race_data['ce_pct']:.1f}%)")
-        st.progress(race_data['ce_pct'] / 100)
-        
-        # PE Bar
-        st.markdown(f"**PE Volume:** {format_number(race_data['pe_total'])} ({race_data['pe_pct']:.1f}%)")
-        st.progress(race_data['pe_pct'] / 100)
-        
-        # Net Bias
+
+        # Volume metrics
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.markdown(f"**CE:** {format_number(race_data['ce_total'])}")
+        with col_b:
+            st.markdown(f"**PE:** {format_number(race_data['pe_total'])}")
+
+        # Enhanced progress bar
+        st.markdown(create_cepe_progress_bar(race_data['ce_total'], race_data['pe_total']), unsafe_allow_html=True)
+
+        # Net Bias with status indicator
+        status_icon = get_status_indicator(race_data['net_flow'], threshold_high=1000, threshold_low=-1000)
         if race_data['bias'] == 'BULLISH':
-            st.success(f"**Net {race_data['bias']}:** +{format_number(race_data['net_flow'])}")
+            st.markdown(f"{status_icon} **Net {race_data['bias']}:** +{format_number(race_data['net_flow'])}", unsafe_allow_html=True)
         elif race_data['bias'] == 'BEARISH':
-            st.error(f"**Net {race_data['bias']}:** {format_number(race_data['net_flow'])}")
+            st.markdown(f"{status_icon} **Net {race_data['bias']}:** {format_number(race_data['net_flow'])}", unsafe_allow_html=True)
         else:
-            st.info(f"**Net {race_data['bias']}:** {format_number(race_data['net_flow'])}")
+            st.markdown(f"{status_icon} **Net {race_data['bias']}:** {format_number(race_data['net_flow'])}", unsafe_allow_html=True)
         
         # 10-Min Change
         st.markdown("**10-Min Change:**")
@@ -3637,8 +6297,17 @@ st.subheader("🔥 Live Momentum Tracker")
 
 if cached_data and cached_data.get("deltas"):
     deltas = cached_data["deltas"]
-    
-    st.markdown("### 📊 Indices Momentum")
+    indices_data = cached_data.get("indices_data", {})
+
+    # ============================================
+    # MARKET OVERVIEW PANEL
+    # ============================================
+    if indices_data:
+        st.markdown(create_market_overview_panel(indices_data, deltas), unsafe_allow_html=True)
+        st.markdown("---")
+
+    # Enhanced section header
+    st.markdown(create_enhanced_section_header("Indices Momentum", "📊"), unsafe_allow_html=True)
     
     indices_ce = cached_data.get("indices_ce_cod", 0.0)
     indices_pe = cached_data.get("indices_pe_cod", 0.0)
@@ -3655,13 +6324,18 @@ if cached_data and cached_data.get("deltas"):
     momentum_signal, momentum_color = get_momentum_signal(indices_net_1min, indices_net_5min)
     
     col1, col2, col3, col4 = st.columns(4)
-    
+
     with col1:
         st.markdown("**Cumulative**")
         st.metric("CE Flow", format_number(indices_ce))
         st.metric("PE Flow", format_number(indices_pe))
-        net_emoji = "🟢" if indices_net > 0 else ("🔴" if indices_net < 0 else "⚪")
-        st.metric(f"{net_emoji} Net", format_number(indices_net))
+
+        # Add CE/PE progress bar
+        st.markdown(create_cepe_progress_bar(indices_ce, indices_pe), unsafe_allow_html=True)
+
+        # Status indicator with net flow
+        status_icon = get_status_indicator(indices_net, threshold_high=1000, threshold_low=-1000)
+        st.markdown(f"{status_icon} **Net:** {format_number(indices_net)}", unsafe_allow_html=True)
     
     with col2:
         st.markdown("**Δ 1 Minute**")
@@ -3704,29 +6378,34 @@ if cached_data and cached_data.get("deltas"):
     
     # NIFTY Momentum Section
     if "NIFTY" in indices_data:
-        st.markdown("### 📈 NIFTY Momentum")
-        
+        st.markdown(create_enhanced_section_header("NIFTY Momentum", "📈"), unsafe_allow_html=True)
+
         nifty = indices_data["NIFTY"]
         ce_flow = nifty.get('ce_flow', 0)
         pe_flow = nifty.get('pe_flow', 0)
         net_flow = ce_flow - pe_flow
-        
+
         ce_1min = deltas.get('NIFTY_ce_1min', 0)
         pe_1min = deltas.get('NIFTY_pe_1min', 0)
         net_1min = ce_1min - pe_1min
-        
+
         ce_5min = deltas.get('NIFTY_ce_5min')
         pe_5min = deltas.get('NIFTY_pe_5min')
         net_5min = (ce_5min - pe_5min) if ce_5min is not None and pe_5min is not None else None
-        
+
         col1, col2, col3, col4 = st.columns(4)
-        
+
         with col1:
             st.markdown("**Cumulative**")
             st.metric("CE Flow", format_number(ce_flow))
             st.metric("PE Flow", format_number(pe_flow))
-            net_emoji = "🟢" if net_flow > 0 else ("🔴" if net_flow < 0 else "⚪")
-            st.metric(f"{net_emoji} Net", format_number(net_flow))
+
+            # Add CE/PE progress bar
+            st.markdown(create_cepe_progress_bar(ce_flow, pe_flow), unsafe_allow_html=True)
+
+            # Status indicator with net flow
+            status_icon = get_status_indicator(net_flow, threshold_high=500, threshold_low=-500)
+            st.markdown(f"{status_icon} **Net:** {format_number(net_flow)}", unsafe_allow_html=True)
         
         with col2:
             st.markdown("**Δ 1 Minute**")
@@ -3760,22 +6439,22 @@ if cached_data and cached_data.get("deltas"):
     
     # BANKNIFTY Momentum Section
     if "BANKNIFTY" in indices_data:
-        st.markdown("### 📈 BANKNIFTY Momentum")
-        
+        st.markdown(create_enhanced_section_header("BANKNIFTY Momentum", "📈"), unsafe_allow_html=True)
+
         banknifty = indices_data["BANKNIFTY"]
         ce_flow = banknifty.get('ce_flow', 0)
         pe_flow = banknifty.get('pe_flow', 0)
         net_flow = ce_flow - pe_flow
-        
+
         ce_1min = deltas.get('BANKNIFTY_ce_1min', 0)
         pe_1min = deltas.get('BANKNIFTY_pe_1min', 0)
         net_1min = ce_1min - pe_1min
-        
+
         ce_5min = deltas.get('BANKNIFTY_ce_5min')
         pe_5min = deltas.get('BANKNIFTY_pe_5min')
         net_5min = (ce_5min - pe_5min) if ce_5min is not None and pe_5min is not None else None
-        
-        # CE vs PE Race
+
+        # Calculate dominance
         total_flow = ce_flow + pe_flow
         if total_flow > 0:
             ce_pct = (ce_flow / total_flow) * 100
@@ -3783,12 +6462,7 @@ if cached_data and cached_data.get("deltas"):
         else:
             ce_pct = 50
             pe_pct = 50
-        
-        # Create visual race bar (10 blocks)
-        ce_blocks = int(round(ce_pct / 10))
-        pe_blocks = 10 - ce_blocks
-        race_bar = f"[🟢{'▓' * ce_blocks}🔴{'▓' * pe_blocks}] {ce_pct:.0f}%"
-        
+
         # Dominance indicator
         if ce_pct >= 75:
             dominance = "🚀 CE DOMINATING"
@@ -3796,20 +6470,22 @@ if cached_data and cached_data.get("deltas"):
             dominance = "📉 PE DOMINATING"
         else:
             dominance = "⚖️ Balanced"
-        
+
         col1, col2, col3, col4 = st.columns(4)
-        
+
         with col1:
             st.markdown("**Cumulative**")
             st.metric("CE Flow", format_number(ce_flow))
             st.metric("PE Flow", format_number(pe_flow))
-            net_emoji = "🟢" if net_flow > 0 else ("🔴" if net_flow < 0 else "⚪")
-            st.metric(f"{net_emoji} Net", format_number(net_flow))
-        
-            
+
+            # Add CE/PE progress bar
             st.markdown("**CE vs PE Race**")
-            st.markdown(race_bar)
+            st.markdown(create_cepe_progress_bar(ce_flow, pe_flow), unsafe_allow_html=True)
             st.caption(dominance)
+
+            # Status indicator with net flow
+            status_icon = get_status_indicator(net_flow, threshold_high=500, threshold_low=-500)
+            st.markdown(f"{status_icon} **Net:** {format_number(net_flow)}", unsafe_allow_html=True)
         with col2:
             st.markdown("**Δ 1 Minute**")
             st.metric("CE Δ", format_number(ce_1min))
@@ -3842,22 +6518,22 @@ if cached_data and cached_data.get("deltas"):
     
     # FINNIFTY Momentum Section
     if "FINNIFTY" in indices_data:
-        st.markdown("### 📈 FINNIFTY Momentum")
-        
+        st.markdown(create_enhanced_section_header("FINNIFTY Momentum", "📈"), unsafe_allow_html=True)
+
         finnifty = indices_data["FINNIFTY"]
         ce_flow = finnifty.get('ce_flow', 0)
         pe_flow = finnifty.get('pe_flow', 0)
         net_flow = ce_flow - pe_flow
-        
+
         ce_1min = deltas.get('FINNIFTY_ce_1min', 0)
         pe_1min = deltas.get('FINNIFTY_pe_1min', 0)
         net_1min = ce_1min - pe_1min
-        
+
         ce_5min = deltas.get('FINNIFTY_ce_5min')
         pe_5min = deltas.get('FINNIFTY_pe_5min')
         net_5min = (ce_5min - pe_5min) if ce_5min is not None and pe_5min is not None else None
-        
-        # CE vs PE Race
+
+        # Calculate dominance
         total_flow = ce_flow + pe_flow
         if total_flow > 0:
             ce_pct = (ce_flow / total_flow) * 100
@@ -3865,12 +6541,7 @@ if cached_data and cached_data.get("deltas"):
         else:
             ce_pct = 50
             pe_pct = 50
-        
-        # Create visual race bar (10 blocks)
-        ce_blocks = int(round(ce_pct / 10))
-        pe_blocks = 10 - ce_blocks
-        race_bar = f"[🟢{'▓' * ce_blocks}🔴{'▓' * pe_blocks}] {ce_pct:.0f}%"
-        
+
         # Dominance indicator
         if ce_pct >= 75:
             dominance = "🚀 CE DOMINATING"
@@ -3878,20 +6549,22 @@ if cached_data and cached_data.get("deltas"):
             dominance = "📉 PE DOMINATING"
         else:
             dominance = "⚖️ Balanced"
-        
+
         col1, col2, col3, col4 = st.columns(4)
-        
+
         with col1:
             st.markdown("**Cumulative**")
             st.metric("CE Flow", format_number(ce_flow))
             st.metric("PE Flow", format_number(pe_flow))
-            net_emoji = "🟢" if net_flow > 0 else ("🔴" if net_flow < 0 else "⚪")
-            st.metric(f"{net_emoji} Net", format_number(net_flow))
-        
-            
+
+            # Add CE/PE progress bar
             st.markdown("**CE vs PE Race**")
-            st.markdown(race_bar)
+            st.markdown(create_cepe_progress_bar(ce_flow, pe_flow), unsafe_allow_html=True)
             st.caption(dominance)
+
+            # Status indicator with net flow
+            status_icon = get_status_indicator(net_flow, threshold_high=300, threshold_low=-300)
+            st.markdown(f"{status_icon} **Net:** {format_number(net_flow)}", unsafe_allow_html=True)
         with col2:
             st.markdown("**Δ 1 Minute**")
             st.metric("CE Δ", format_number(ce_1min))
@@ -3924,22 +6597,22 @@ if cached_data and cached_data.get("deltas"):
     
     # MIDCPNIFTY Momentum Section
     if "MIDCPNIFTY" in indices_data:
-        st.markdown("### 📈 MIDCPNIFTY Momentum")
-        
+        st.markdown(create_enhanced_section_header("MIDCPNIFTY Momentum", "📈"), unsafe_allow_html=True)
+
         midcpnifty = indices_data["MIDCPNIFTY"]
         ce_flow = midcpnifty.get('ce_flow', 0)
         pe_flow = midcpnifty.get('pe_flow', 0)
         net_flow = ce_flow - pe_flow
-        
+
         ce_1min = deltas.get('MIDCPNIFTY_ce_1min', 0)
         pe_1min = deltas.get('MIDCPNIFTY_pe_1min', 0)
         net_1min = ce_1min - pe_1min
-        
+
         ce_5min = deltas.get('MIDCPNIFTY_ce_5min')
         pe_5min = deltas.get('MIDCPNIFTY_pe_5min')
         net_5min = (ce_5min - pe_5min) if ce_5min is not None and pe_5min is not None else None
-        
-        # CE vs PE Race
+
+        # Calculate dominance
         total_flow = ce_flow + pe_flow
         if total_flow > 0:
             ce_pct = (ce_flow / total_flow) * 100
@@ -3947,12 +6620,7 @@ if cached_data and cached_data.get("deltas"):
         else:
             ce_pct = 50
             pe_pct = 50
-        
-        # Create visual race bar (10 blocks)
-        ce_blocks = int(round(ce_pct / 10))
-        pe_blocks = 10 - ce_blocks
-        race_bar = f"[🟢{'▓' * ce_blocks}🔴{'▓' * pe_blocks}] {ce_pct:.0f}%"
-        
+
         # Dominance indicator
         if ce_pct >= 75:
             dominance = "🚀 CE DOMINATING"
@@ -3960,20 +6628,22 @@ if cached_data and cached_data.get("deltas"):
             dominance = "📉 PE DOMINATING"
         else:
             dominance = "⚖️ Balanced"
-        
+
         col1, col2, col3, col4 = st.columns(4)
-        
+
         with col1:
             st.markdown("**Cumulative**")
             st.metric("CE Flow", format_number(ce_flow))
             st.metric("PE Flow", format_number(pe_flow))
-            net_emoji = "🟢" if net_flow > 0 else ("🔴" if net_flow < 0 else "⚪")
-            st.metric(f"{net_emoji} Net", format_number(net_flow))
-        
-            
+
+            # Add CE/PE progress bar
             st.markdown("**CE vs PE Race**")
-            st.markdown(race_bar)
+            st.markdown(create_cepe_progress_bar(ce_flow, pe_flow), unsafe_allow_html=True)
             st.caption(dominance)
+
+            # Status indicator with net flow
+            status_icon = get_status_indicator(net_flow, threshold_high=200, threshold_low=-200)
+            st.markdown(f"{status_icon} **Net:** {format_number(net_flow)}", unsafe_allow_html=True)
         with col2:
             st.markdown("**Δ 1 Minute**")
             st.metric("CE Δ", format_number(ce_1min))
@@ -4006,22 +6676,22 @@ if cached_data and cached_data.get("deltas"):
     
     # SENSEX Momentum Section
     if "SENSEX" in indices_data:
-        st.markdown("### 📈 SENSEX Momentum")
-        
+        st.markdown(create_enhanced_section_header("SENSEX Momentum", "📈"), unsafe_allow_html=True)
+
         sensex = indices_data["SENSEX"]
         ce_flow = sensex.get('ce_flow', 0)
         pe_flow = sensex.get('pe_flow', 0)
         net_flow = ce_flow - pe_flow
-        
+
         ce_1min = deltas.get('SENSEX_ce_1min', 0)
         pe_1min = deltas.get('SENSEX_pe_1min', 0)
         net_1min = ce_1min - pe_1min
-        
+
         ce_5min = deltas.get('SENSEX_ce_5min')
         pe_5min = deltas.get('SENSEX_pe_5min')
         net_5min = (ce_5min - pe_5min) if ce_5min is not None and pe_5min is not None else None
         
-        # CE vs PE Race
+        # Calculate dominance
         total_flow = ce_flow + pe_flow
         if total_flow > 0:
             ce_pct = (ce_flow / total_flow) * 100
@@ -4029,12 +6699,7 @@ if cached_data and cached_data.get("deltas"):
         else:
             ce_pct = 50
             pe_pct = 50
-        
-        # Create visual race bar (10 blocks)
-        ce_blocks = int(round(ce_pct / 10))
-        pe_blocks = 10 - ce_blocks
-        race_bar = f"[🟢{'▓' * ce_blocks}🔴{'▓' * pe_blocks}] {ce_pct:.0f}%"
-        
+
         # Dominance indicator
         if ce_pct >= 75:
             dominance = "🚀 CE DOMINATING"
@@ -4042,20 +6707,22 @@ if cached_data and cached_data.get("deltas"):
             dominance = "📉 PE DOMINATING"
         else:
             dominance = "⚖️ Balanced"
-        
+
         col1, col2, col3, col4 = st.columns(4)
-        
+
         with col1:
             st.markdown("**Cumulative**")
             st.metric("CE Flow", format_number(ce_flow))
             st.metric("PE Flow", format_number(pe_flow))
-            net_emoji = "🟢" if net_flow > 0 else ("🔴" if net_flow < 0 else "⚪")
-            st.metric(f"{net_emoji} Net", format_number(net_flow))
-        
-            
+
+            # Add CE/PE progress bar
             st.markdown("**CE vs PE Race**")
-            st.markdown(race_bar)
+            st.markdown(create_cepe_progress_bar(ce_flow, pe_flow), unsafe_allow_html=True)
             st.caption(dominance)
+
+            # Status indicator with net flow
+            status_icon = get_status_indicator(net_flow, threshold_high=500, threshold_low=-500)
+            st.markdown(f"{status_icon} **Net:** {format_number(net_flow)}", unsafe_allow_html=True)
         with col2:
             st.markdown("**Δ 1 Minute**")
             st.metric("CE Δ", format_number(ce_1min))
@@ -4083,65 +6750,341 @@ if cached_data and cached_data.get("deltas"):
                     st.success("🎯 BUY")
                 else:
                     st.error("🎯 SELL")
-        
+
         st.markdown("---")
-    
-    st.markdown("### 📈 Stocks Momentum")
-    
-    stocks_ce = cached_data.get("stocks_ce_cod", 0.0)
-    stocks_pe = cached_data.get("stocks_pe_cod", 0.0)
-    stocks_net = stocks_ce - stocks_pe
-    
-    stocks_ce_1min = deltas.get("stocks_ce_1min", 0)
-    stocks_pe_1min = deltas.get("stocks_pe_1min", 0)
-    stocks_net_1min = stocks_ce_1min - stocks_pe_1min
-    
-    stocks_ce_5min = deltas.get("stocks_ce_5min", 0)
-    stocks_pe_5min = deltas.get("stocks_pe_5min", 0)
-    stocks_net_5min = stocks_ce_5min - stocks_pe_5min
-    
-    momentum_signal_stocks, momentum_color_stocks = get_momentum_signal(stocks_net_1min, stocks_net_5min)
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.markdown("**Cumulative**")
-        st.metric("CE Flow", format_number(stocks_ce))
-        st.metric("PE Flow", format_number(stocks_pe))
-        net_emoji = "🟢" if stocks_net > 0 else ("🔴" if stocks_net < 0 else "⚪")
-        st.metric(f"{net_emoji} Net", format_number(stocks_net))
-    
-    with col2:
-        st.markdown("**Δ 1 Minute**")
-        st.metric("CE Δ", format_number(stocks_ce_1min))
-        st.metric("PE Δ", format_number(stocks_pe_1min))
-        net_emoji = "🟢" if stocks_net_1min > 0 else ("🔴" if stocks_net_1min < 0 else "⚪")
-        st.metric(f"{net_emoji} Net Δ", format_number(stocks_net_1min))
-    
-    with col3:
-        st.markdown("**Δ 5 Minutes**")
-        if stocks_ce_5min is not None:
-            st.metric("CE Δ", format_number(stocks_ce_5min))
-            st.metric("PE Δ", format_number(stocks_pe_5min))
-            net_emoji = "🟢" if stocks_net_5min > 0 else ("🔴" if stocks_net_5min < 0 else "⚪")
-            st.metric(f"{net_emoji} Net Δ", format_number(stocks_net_5min))
-        else:
-            st.info("Collecting...")
-    
-    with col4:
-        st.markdown("**Momentum**")
-        st.markdown(f"""
-        <div class="momentum-gauge" style="background-color: {momentum_color_stocks}; color: white;">
-            {momentum_signal_stocks}
-        </div>
-        """, unsafe_allow_html=True)
 
-else:
-    st.info("⏳ Start polling to see live momentum data")
+    
+    # Get indices data for INDICES-WIDE PERFORMANCE section
+        indices_data_perf = st.session_state.get('indices_data', {})
+    if not indices_data_perf:
+        cached_perf = load_dashboard_cache()
+        if cached_perf and 'indices_data' in cached_perf:
+            indices_data_perf = cached_perf['indices_data']
 
-st.markdown("---")
+    if indices_data_perf and len(indices_data_perf) > 0:
+        st.markdown("")
+        st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        st.markdown(create_enhanced_section_header(f"INDICES-WIDE PERFORMANCE ({len(indices_data_perf)} Indices Tracked)", "📊"), unsafe_allow_html=True)
+        st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
+        # Calculate performance stats
+        total_indices = len(indices_data_perf)
+        positive_indices = []
+        negative_indices = []
+        neutral_indices = []
 
+        for idx_name, idx_data in indices_data_perf.items():
+            # Get price change - try different keys
+            change_pct = 0
+            if "change_pct" in idx_data:
+                change_pct = idx_data["change_pct"]
+            elif "price" in idx_data and "prev_close" in idx_data:
+                if idx_data["prev_close"] and idx_data["prev_close"] > 0:
+                    change_pct = ((idx_data["price"] - idx_data["prev_close"]) / idx_data["prev_close"]) * 100
+
+            if change_pct > 0:
+                positive_indices.append((idx_name, change_pct))
+            elif change_pct < 0:
+                negative_indices.append((idx_name, change_pct))
+            else:
+                neutral_indices.append(idx_name)
+
+        pos_count = len(positive_indices)
+        neg_count = len(negative_indices)
+        neutral_count = len(neutral_indices)
+
+        pos_pct = (pos_count / total_indices * 100) if total_indices > 0 else 0
+        neg_pct = (neg_count / total_indices * 100) if total_indices > 0 else 0
+
+        # Breakdown by strength
+        very_strong_up = len([i for i in positive_indices if i[1] > 2])
+        strong_up = len([i for i in positive_indices if 1 <= i[1] <= 2])
+        weak_up = len([i for i in positive_indices if 0 < i[1] < 1])
+
+        weak_down = len([i for i in negative_indices if -1 < i[1] < 0])
+        strong_down = len([i for i in negative_indices if -2 <= i[1] <= -1])
+        very_strong_down = len([i for i in negative_indices if i[1] < -2])
+
+        # Display performance distribution - Compact vertical cards
+        st.markdown("**Index Performance Distribution:**")
+
+        # Use equal-width columns instead of proportional
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            st.metric(
+                label="🟢 POSITIVE",
+                value=f"{pos_count} indices",
+                delta=f"{pos_pct:.0f}% of market",
+                delta_color="normal"
+            )
+
+        with col2:
+            st.metric(
+                label="🔴 NEGATIVE",
+                value=f"{neg_count} indices",
+                delta=f"{neg_pct:.0f}% of market",
+                delta_color="inverse"
+            )
+
+        with col3:
+            # Market breadth indicator
+            if pos_pct >= 60:
+                st.metric("Market Breadth", "🚀 Strong", delta="Bullish")
+            elif neg_pct >= 60:
+                st.metric("Market Breadth", "📉 Weak", delta="Bearish", delta_color="inverse")
+            else:
+                st.metric("Market Breadth", "⚖️ Mixed", delta="Neutral", delta_color="off")
+
+        st.markdown("")
+
+        # Detailed breakdown
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.markdown("#### 🟢 Advancing Indices")
+            st.metric("Very Strong (> +2%)", f"{very_strong_up} indices")
+            st.metric("Strong (+1% to +2%)", f"{strong_up} indices")
+            st.metric("Weak (0% to +1%)", f"{weak_up} indices")
+
+        with col2:
+            st.markdown("#### 🔴 Declining Indices")
+            st.metric("Weak (0% to -1%)", f"{weak_down} indices")
+            st.metric("Strong (-1% to -2%)", f"{strong_down} indices")
+            st.metric("Very Strong (< -2%)", f"{very_strong_down} indices")
+
+        st.markdown("")
+
+        # ============================================
+        # AGGREGATE CE vs PE RACE (All Indices)
+        # ============================================
+        st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        st.markdown("### 🏁 ALL INDICES CE vs PE RACE (Aggregate Flow)")
+        st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        st.markdown("**Total Options Flow Across All Tracked Indices:**")
+
+        # Calculate aggregate
+        total_ce_flow_idx = sum(d.get("ce_flow", 0) for n, d in indices_data_perf.items())
+        total_pe_flow_idx = sum(d.get("pe_flow", 0) for n, d in indices_data_perf.items())
+        total_flow_idx = total_ce_flow_idx + total_pe_flow_idx
+
+        if total_flow_idx > 0:
+            ce_pct_idx = (total_ce_flow_idx / total_flow_idx) * 100
+            pe_pct_idx = 100 - ce_pct_idx
+
+            avg_ce_idx = total_ce_flow_idx / total_indices if total_indices > 0 else 0
+            avg_pe_idx = total_pe_flow_idx / total_indices if total_indices > 0 else 0
+
+            st.markdown(f"**CE vs PE Race:**")
+            st.markdown(f"## {ce_pct_idx:.0f}% CE | {pe_pct_idx:.0f}% PE")
+
+            # Enhanced progress bar (Green for CE, Red for PE)
+            st.markdown(create_cepe_progress_bar(total_ce_flow_idx, total_pe_flow_idx, show_labels=True), unsafe_allow_html=True)
+
+            st.markdown("")
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.markdown("#### 🟢 CE Flow (Calls)")
+                st.metric("Total CE Flow", format_number(total_ce_flow_idx))
+                st.metric("Average per Index", format_number(avg_ce_idx))
+                if ce_pct_idx >= 60:
+                    st.success("🚀 CE DOMINATING")
+                elif ce_pct_idx >= 55:
+                    st.info("🟢 CE Leading")
+                else:
+                    st.warning("⚖️ Balanced")
+
+            with col2:
+                st.markdown("#### 🔴 PE Flow (Puts)")
+                st.metric("Total PE Flow", format_number(total_pe_flow_idx))
+                st.metric("Average per Index", format_number(avg_pe_idx))
+                if pe_pct_idx >= 60:
+                    st.error("📉 PE DOMINATING")
+                elif pe_pct_idx >= 55:
+                    st.info("🔴 PE Leading")
+                else:
+                    st.warning("⚖️ Balanced")
+
+            st.markdown("")
+
+            # Signal
+            st.markdown("**Indices Options Signal:**")
+
+            if ce_pct_idx >= 65:
+                signal = "🚀 BULLS VERY AGGRESSIVE"
+                interpretation = "Smart money heavily buying calls across indices - strong bullish conviction"
+                st.success(f"**{signal}**")
+                st.caption(interpretation)
+            elif ce_pct_idx >= 55:
+                signal = "🟢 BULLS AGGRESSIVE"
+                interpretation = "More call buying than put buying - moderate bullish sentiment"
+                st.success(f"**{signal}**")
+                st.caption(interpretation)
+            elif pe_pct_idx >= 65:
+                signal = "📉 BEARS VERY AGGRESSIVE"
+                interpretation = "Smart money heavily buying puts across indices - strong bearish conviction"
+                st.error(f"**{signal}**")
+                st.caption(interpretation)
+            elif pe_pct_idx >= 55:
+                signal = "🔴 BEARS AGGRESSIVE"
+                interpretation = "More put buying than call buying - moderate bearish sentiment"
+                st.error(f"**{signal}**")
+                st.caption(interpretation)
+            else:
+                signal = "⚖️ BALANCED FLOW"
+                interpretation = "Call and put buying roughly equal - no clear directional bias"
+                st.info(f"**{signal}**")
+                st.caption(interpretation)
+
+            st.caption(f"📊 CE/PE Ratio: {(total_ce_flow_idx/total_pe_flow_idx):.2f}" if total_pe_flow_idx > 0 else "📊 CE/PE Ratio: N/A")
+
+        st.markdown("")
+
+        # ============================================
+        # SECTOR PERFORMANCE - SMART SORTING
+        # ============================================
+        st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        st.markdown(create_enhanced_section_header("SECTOR PERFORMANCE", "🎯"), unsafe_allow_html=True)
+        st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+        # Prepare data with CE percentage calculation
+        all_idx_with_data = []
+        for idx_name, idx_data in indices_data_perf.items():
+            change_pct = 0
+            if "change_pct" in idx_data:
+                change_pct = idx_data["change_pct"]
+            elif "price" in idx_data and "prev_close" in idx_data:
+                if idx_data["prev_close"] and idx_data["prev_close"] > 0:
+                    change_pct = ((idx_data["price"] - idx_data["prev_close"]) / idx_data["prev_close"]) * 100
+
+            ce_flow = idx_data.get("ce_flow", 0)
+            pe_flow = idx_data.get("pe_flow", 0)
+            total = ce_flow + pe_flow
+            ce_pct = (ce_flow / total * 100) if total > 0 else 50
+
+            all_idx_with_data.append({
+                'name': idx_name,
+                'change_pct': change_pct,
+                'ce_flow': ce_flow,
+                'pe_flow': pe_flow,
+                'ce_pct': ce_pct
+            })
+
+        # Create three columns for different perspectives
+        col1, col2, col3 = st.columns(3)
+
+        # Column 1: Top 5 by Price Change (Biggest Movers)
+        with col1:
+            st.markdown("#### 📈 Biggest Movers (Price)")
+            sorted_by_price = sorted(all_idx_with_data, key=lambda x: abs(x['change_pct']), reverse=True)[:5]
+
+            medals = ["🥇", "🥈", "🥉", "🏅", "🏅"]
+            for i, idx_data in enumerate(sorted_by_price):
+                name = idx_data['name']
+                change = idx_data['change_pct']
+                ce_pct = idx_data['ce_pct']
+
+                # Color based on direction
+                change_emoji = "🟢" if change > 0 else "🔴" if change < 0 else "⚪"
+
+                # Signal based on CE%
+                if ce_pct >= 70:
+                    signal = "🚀"
+                elif ce_pct >= 60:
+                    signal = "✅"
+                elif ce_pct >= 40:
+                    signal = "⚖️"
+                else:
+                    signal = "⚠️"
+
+                medal = medals[i]
+                st.markdown(f"{medal} **{name}**: {change_emoji}{change:+.2f}%")
+                st.caption(f"CE: {ce_pct:.0f}% {signal}")
+
+        # Column 2: Top 5 by Bullish Flow (Most Bullish Sentiment)
+        with col2:
+            st.markdown("#### 🟢 Most Bullish Flow")
+            sorted_by_flow = sorted(all_idx_with_data, key=lambda x: x['ce_pct'], reverse=True)[:5]
+
+            for i, idx_data in enumerate(sorted_by_flow):
+                name = idx_data['name']
+                change = idx_data['change_pct']
+                ce_pct = idx_data['ce_pct']
+
+                # Signal
+                if ce_pct >= 80:
+                    signal = "🔥 Extreme"
+                elif ce_pct >= 70:
+                    signal = "🚀 Strong"
+                else:
+                    signal = "✅ Bullish"
+
+                # Show price for context
+                change_emoji = "🟢" if change > 0 else "🔴" if change < 0 else "⚪"
+
+                st.markdown(f"**{i+1}. {name}**: {ce_pct:.0f}% CE {signal}")
+                st.caption(f"Price: {change_emoji}{change:+.2f}%")
+
+        # Column 3: Divergence Alerts (Reversal Opportunities)
+        with col3:
+            st.markdown("#### ⚠️ Divergence Alerts")
+
+            # Find divergences
+            divergences = []
+            for idx_data in all_idx_with_data:
+                name = idx_data['name']
+                change = idx_data['change_pct']
+                ce_pct = idx_data['ce_pct']
+
+                # Bullish divergence: Price down but flow bullish
+                if change < -0.3 and ce_pct > 65:
+                    divergences.append({
+                        'name': name,
+                        'change': change,
+                        'ce_pct': ce_pct,
+                        'type': 'BULLISH',
+                        'strength': ce_pct - 50  # How strong the divergence
+                    })
+
+                # Bearish divergence: Price up but flow bearish
+                elif change > 0.3 and ce_pct < 35:
+                    divergences.append({
+                        'name': name,
+                        'change': change,
+                        'ce_pct': ce_pct,
+                        'type': 'BEARISH',
+                        'strength': 50 - ce_pct
+                    })
+
+            # Sort by strength
+            divergences_sorted = sorted(divergences, key=lambda x: x['strength'], reverse=True)[:5]
+
+            if divergences_sorted:
+                for i, div in enumerate(divergences_sorted):
+                    name = div['name']
+                    change = div['change']
+                    ce_pct = div['ce_pct']
+                    div_type = div['type']
+
+                    if div_type == 'BULLISH':
+                        icon = "🎯"
+                        signal = "Dip Buy?"
+                        interpretation = f"Price {change:.2f}% but {ce_pct:.0f}% CE"
+                    else:
+                        icon = "⚠️"
+                        signal = "Top?"
+                        interpretation = f"Price +{change:.2f}% but {ce_pct:.0f}% CE"
+
+                    st.markdown(f"{icon} **{name}** {signal}")
+                    st.caption(interpretation)
+            else:
+                st.info("No strong divergences detected")
+
+        st.markdown("")
+
+    
 # ====================
 # NIFTY FUTURES CARD
 # ====================
@@ -4232,6 +7175,42 @@ else:
     st.info("⏳ Waiting for NIFTY Futures data...")
     st.caption("Data will appear once polling starts")
 
+# ============================================
+# VWAP & SUPERTREND STRATEGY CARD
+# ============================================
+# Get strategy data from session state or cache
+vwap_st_strategy_display = st.session_state.get('vwap_st_strategy', None)
+
+if not vwap_st_strategy_display:
+    cached = load_dashboard_cache()
+    if cached and 'vwap_st_strategy' in cached:
+        vwap_st_strategy_display = cached['vwap_st_strategy']
+        st.session_state.vwap_st_strategy = vwap_st_strategy_display
+
+# Always display the strategy card (shows placeholder when no data)
+if vwap_st_strategy_display:
+    # Display the strategy card with real data
+    strategy_html = create_vwap_supertrend_card(
+        vwap=vwap_st_strategy_display.get('vwap'),
+        supertrend_value=vwap_st_strategy_display.get('supertrend_value'),
+        supertrend_trend=vwap_st_strategy_display.get('supertrend_trend'),
+        signal=vwap_st_strategy_display.get('signal'),
+        last_candle=vwap_st_strategy_display.get('last_candle'),
+        ltp=vwap_st_strategy_display.get('ltp')
+    )
+else:
+    # Show placeholder card with structure
+    strategy_html = create_vwap_supertrend_card(
+        vwap=None,
+        supertrend_value=None,
+        supertrend_trend=None,
+        signal='NEUTRAL',
+        last_candle=None,
+        ltp=None
+    )
+
+st.markdown(strategy_html, unsafe_allow_html=True)
+
 
 st.subheader("💹 Combined CE/PE Summary")
 
@@ -4275,17 +7254,105 @@ if cached_data:
 else:
     st.info("Start polling to see data")
 
+
+
+st.markdown("---")
+st.markdown("")
+
+# PART 2 Header with border
+st.markdown("""
+<div style="border: 4px solid #000000; border-radius: 10px; padding: 1.5rem; margin: 1.5rem 0; background-color: #fafafa;">
+    <h1 style="text-align: center; margin: 0;">📈 PART 2: STOCKS ANALYSIS</h1>
+    <p style="text-align: center; font-style: italic; margin: 0.5rem 0;">Market-wide performance analysis of all 209 F&O stocks</p>
+    <hr style="border: 1px solid #ddd; margin: 1rem 0;">
+</div>
+""", unsafe_allow_html=True)
+
+# ============================================
+# STOCKS MARKET OVERVIEW PANEL
+# ============================================
+if cached_data and "stocks_data" in cached_data:
+    stocks_data_overview = cached_data.get("stocks_data", {})
+    if stocks_data_overview:
+        st.markdown(create_stocks_market_overview_panel(stocks_data_overview, deltas), unsafe_allow_html=True)
+        st.markdown("---")
+
+# ============================================
+# STOCKS MOMENTUM
+# ============================================
+st.markdown(create_enhanced_section_header("Stocks Momentum", "📈"), unsafe_allow_html=True)
+if cached_data:
+
+    stocks_ce = cached_data.get("stocks_ce_cod", 0.0)
+    stocks_pe = cached_data.get("stocks_pe_cod", 0.0)
+    stocks_net = stocks_ce - stocks_pe
+
+    stocks_ce_1min = deltas.get("stocks_ce_1min", 0)
+    stocks_pe_1min = deltas.get("stocks_pe_1min", 0)
+    stocks_net_1min = stocks_ce_1min - stocks_pe_1min
+
+    stocks_ce_5min = deltas.get("stocks_ce_5min", 0)
+    stocks_pe_5min = deltas.get("stocks_pe_5min", 0)
+    stocks_net_5min = stocks_ce_5min - stocks_pe_5min
+
+    momentum_signal_stocks, momentum_color_stocks = get_momentum_signal(stocks_net_1min, stocks_net_5min)
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        st.markdown("**Cumulative**")
+        st.metric("CE Flow", format_number(stocks_ce))
+        st.metric("PE Flow", format_number(stocks_pe))
+
+        # Add CE/PE progress bar
+        st.markdown(create_cepe_progress_bar(stocks_ce, stocks_pe), unsafe_allow_html=True)
+
+        # Status indicator with net flow
+        status_icon = get_status_indicator(stocks_net, threshold_high=1000, threshold_low=-1000)
+        st.markdown(f"{status_icon} **Net:** {format_number(stocks_net)}", unsafe_allow_html=True)
+
+    with col2:
+        st.markdown("**Δ 1 Minute**")
+        st.metric("CE Δ", format_number(stocks_ce_1min))
+        st.metric("PE Δ", format_number(stocks_pe_1min))
+        net_emoji = "🟢" if stocks_net_1min > 0 else ("🔴" if stocks_net_1min < 0 else "⚪")
+        st.metric(f"{net_emoji} Net Δ", format_number(stocks_net_1min))
+
+    with col3:
+        st.markdown("**Δ 5 Minutes**")
+        if stocks_ce_5min is not None:
+            st.metric("CE Δ", format_number(stocks_ce_5min))
+            st.metric("PE Δ", format_number(stocks_pe_5min))
+            net_emoji = "🟢" if stocks_net_5min > 0 else ("🔴" if stocks_net_5min < 0 else "⚪")
+            st.metric(f"{net_emoji} Net Δ", format_number(stocks_net_5min))
+        else:
+            st.info("Collecting...")
+
+    with col4:
+        st.markdown("**Momentum**")
+        st.markdown(f"""
+        <div class="momentum-gauge" style="background-color: {momentum_color_stocks}; color: white;">
+            {momentum_signal_stocks}
+        </div>
+        """, unsafe_allow_html=True)
+
+else:
+    st.info("⏳ Start polling to see live momentum data")
+
 st.markdown("---")
 
+# ============================================
+# TOP 10 STOCKS (Live Rankings)
+# ============================================
 with st.expander("📈 View Top 10 Stocks (Live Rankings)", expanded=False):
     # Try to get live data first, then cached data, then show available stocks
     stocks_data = {}
-    
+
     # Priority 1: Live polling data
     if cached_data and "stocks_data" in cached_data and cached_data["stocks_data"]:
         stocks_data = cached_data["stocks_data"]
         st.success("🟢 Live Data")
-    
+
     # Priority 2: Cached data from file (last session)
     elif DASHBOARD_CACHE_FILE.exists():
         try:
@@ -4297,67 +7364,32 @@ with st.expander("📈 View Top 10 Stocks (Live Rankings)", expanded=False):
                 st.info(f"📊 Cached Data (Last: {cache_time})")
         except:
             pass
-    
-    # Priority 3: Show tracked stocks and get quotes
-    if not stocks_data and hasattr(engine, 'stocks_with_fo') and engine.stocks_with_fo:
-        st.warning("⚠️ No cached data - showing live quotes for top stocks...")
-        
-        # Try to fetch current quotes for top 10 stocks
-        if engine.kite and engine.ins_df is not None and not engine.ins_df.empty:
-            try:
-                top_stocks = sorted(engine.stocks_with_fo)[:10]
-                temp_stocks_data = {}
-                
-                for stock in top_stocks:
-                    try:
-                        # Get futures token
-                        fut_df = engine.ins_df[
-                            (engine.ins_df['name'] == stock) &
-                            (engine.ins_df['instrument_type'] == 'FUT')
-                        ]
-                        
-                        if not fut_df.empty:
-                            fut_token = int(fut_df.iloc[0]['instrument_token'])
-                            quote = engine.kite.quote([fut_token])
-                            
-                            if quote and str(fut_token) in quote:
-                                q = quote[str(fut_token)]
-                                price = q.get('last_price')
-                                change_pct = q.get('change', 0)
-                                
-                                temp_stocks_data[stock] = {
-                                    'price': price,
-                                    'change_pct': change_pct,
-                                    'ce_flow': 0,
-                                    'pe_flow': 0,
-                                    'net_flow': 0
-                                }
-                    except:
-                        continue
-                
-                if temp_stocks_data:
-                    stocks_data = temp_stocks_data
-                    st.success(f"✅ Fetched quotes for {len(stocks_data)} stocks")
-            except Exception as e:
-                st.error(f"Could not fetch quotes: {e}")
-    
+
+    # Priority 3: Show message about waiting for data
+    if not stocks_data:
+        if hasattr(engine, 'stocks_with_fo') and engine.stocks_with_fo:
+            st.info(f"⏳ Tracking {len(engine.stocks_with_fo)} F&O stocks. Top 10 will appear after first data collection cycle (~10-20 seconds)")
+            st.caption("💡 The polling system is collecting live options flow data. Refresh page in a few moments.")
+        else:
+            st.warning("⚠️ No stocks configured for tracking. Check fno_master.json file.")
+
     # Display stocks data
     if stocks_data:
         # Show live rankings
         sorted_stocks = sorted(stocks_data.items(), key=lambda x: abs(x[1].get("net_flow", 0)), reverse=True)[:10]
-        
+
         if sorted_stocks:
             st.markdown("### 🔥 Top 10 by Net Flow")
-            
+
             for rank, (stock_name, data) in enumerate(sorted_stocks, 1):
                 ce_flow = data.get("ce_flow", 0)
                 pe_flow = data.get("pe_flow", 0)
                 net_flow = data.get("net_flow", 0)
                 stock_price = data.get("price")
                 change_pct = data.get("change_pct")
-                
+
                 sector = sector_mapping.get(stock_name.upper(), "N/A")
-                
+
                 # Calculate CE vs PE percentage
                 total_flow = ce_flow + pe_flow
                 if total_flow > 0:
@@ -4366,28 +7398,31 @@ with st.expander("📈 View Top 10 Stocks (Live Rankings)", expanded=False):
                 else:
                     ce_pct = 50
                     pe_pct = 50
-                
+
                 # Display
                 col1, col2 = st.columns([3, 1])
-                
+
                 with col1:
                     # Stock name and sector
                     price_str = f"₹{stock_price:,.2f}" if stock_price else "N/A"
                     change_str = f"({change_pct:+.2f}%)" if change_pct is not None else ""
                     st.markdown(f"**{rank}. {stock_name}** {price_str} {change_str}")
                     st.caption(f"_{sector}_")
-                    
-                    # CE/PE race bar
-                    st.progress(ce_pct / 100, text=f"CE: {ce_pct:.1f}% | PE: {pe_pct:.1f}%")
-                
+
+                    # CE/PE race bar with color-coded progress bar
+                    st.markdown(create_cepe_progress_bar(ce_flow, pe_flow, show_labels=True), unsafe_allow_html=True)
+
                 with col2:
                     # Net flow
                     if net_flow > 0:
-                        st.metric("Net", f"+{net_flow:,.0f}", delta="Bullish", delta_color="normal")
+                        st.metric("Net", f"+{format_number(net_flow)}", delta="Bullish", delta_color="normal")
                     else:
-                        st.metric("Net", f"{net_flow:,.0f}", delta="Bearish", delta_color="inverse")
-                
+                        st.metric("Net", f"{format_number(net_flow)}", delta="Bearish", delta_color="inverse")
+
                 st.markdown("---")
+
+st.markdown("---")
+st.markdown("")
 
 # ============================================
 # MARKET-WIDE PERFORMANCE (Outside Expander)
@@ -4395,262 +7430,588 @@ with st.expander("📈 View Top 10 Stocks (Live Rankings)", expanded=False):
 # Get stocks_data from cache
 if cached_data and "stocks_data" in cached_data:
     stocks_data = cached_data.get("stocks_data", {})
-    
+
     if stocks_data and len(stocks_data) > 0:
+        st.markdown(create_enhanced_section_header("MARKET-WIDE PERFORMANCE (All 209 F&O Stocks)", "📊"), unsafe_allow_html=True)
+
+        # Add Stock Performance Heat Bar
+        st.markdown(create_stock_performance_heatbar(stocks_data), unsafe_allow_html=True)
+
+        # Calculate market-wide statistics
+        total_stocks = len(stocks_data)
+        bullish_count = sum(1 for s in stocks_data.values() if s.get('net_flow', 0) > 0)
+        bearish_count = sum(1 for s in stocks_data.values() if s.get('net_flow', 0) < 0)
+        neutral_count = total_stocks - bullish_count - bearish_count
+
+        total_net_flow = sum(s.get('net_flow', 0) for s in stocks_data.values())
+        avg_net_flow = total_net_flow / total_stocks if total_stocks > 0 else 0
+
+        # Count stocks with price data
+        stocks_with_price = [s for s in stocks_data.values() if s.get('change_pct') is not None]
+        gainers = [s for s in stocks_with_price if s.get('change_pct', 0) > 0]
+        losers = [s for s in stocks_with_price if s.get('change_pct', 0) < 0]
+
+        # Display metrics
+        col1, col2, col3, col4 = st.columns(4)
+
+        with col1:
+            st.metric("Total Stocks", total_stocks)
+            market_sentiment = "🟢 BULLISH" if bullish_count > bearish_count else ("🔴 BEARISH" if bearish_count > bullish_count else "🟡 NEUTRAL")
+            st.caption(f"**Market Sentiment:** {market_sentiment}")
+
+        with col2:
+            bullish_pct = (bullish_count / total_stocks * 100) if total_stocks > 0 else 0
+            st.metric("🟢 Bullish Stocks", bullish_count, delta=f"{bullish_pct:.1f}%")
+            st.caption("Positive net flow")
+
+        with col3:
+            bearish_pct = (bearish_count / total_stocks * 100) if total_stocks > 0 else 0
+            st.metric("🔴 Bearish Stocks", bearish_count, delta=f"{bearish_pct:.1f}%", delta_color="inverse")
+            st.caption("Negative net flow")
+
+        with col4:
+            flow_emoji = "🟢" if avg_net_flow > 0 else "🔴"
+            st.metric(f"{flow_emoji} Avg Net Flow", format_number(avg_net_flow))
+            st.caption(f"Across {total_stocks} stocks")
+
         st.markdown("")
-        st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        st.markdown("### 📊 MARKET-WIDE PERFORMANCE (All 209 F&O Stocks)")
-        st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        
+
+        # Top Gainers and Losers
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.markdown("#### 📈 Top 5 Gainers (Price)")
+            if gainers:
+                top_gainers = sorted([(name, data) for name, data in stocks_data.items() if data.get('change_pct') and data.get('change_pct') > 0],
+                                   key=lambda x: x[1].get('change_pct', 0), reverse=True)[:5]
+
+                for i, (stock_name, data) in enumerate(top_gainers, 1):
+                    price = data.get('price')
+                    change_pct = data.get('change_pct', 0)
+                    net_flow = data.get('net_flow', 0)
+
+                    # Use color-coded stock card for gainers
+                    st.markdown(f"**{i}.**", unsafe_allow_html=True)
+                    st.markdown(create_stock_card(stock_name, price, change_pct, net_flow, card_type="gainer"), unsafe_allow_html=True)
+            else:
+                st.info("No gainers data available yet")
+
+        with col2:
+            st.markdown("#### 📉 Top 5 Losers (Price)")
+            if losers:
+                top_losers = sorted([(name, data) for name, data in stocks_data.items() if data.get('change_pct') and data.get('change_pct') < 0],
+                                  key=lambda x: x[1].get('change_pct', 0))[:5]
+
+                for i, (stock_name, data) in enumerate(top_losers, 1):
+                    price = data.get('price')
+                    change_pct = data.get('change_pct', 0)
+                    net_flow = data.get('net_flow', 0)
+
+                    # Use color-coded stock card for losers
+                    st.markdown(f"**{i}.**", unsafe_allow_html=True)
+                    st.markdown(create_stock_card(stock_name, price, change_pct, net_flow, card_type="loser"), unsafe_allow_html=True)
+            else:
+                st.info("No losers data available yet")
+
+        st.markdown("")
+
+        # Most Active Stocks by Net Flow
+        st.markdown("#### 🔥 Top 5 Most Active (By Net Flow)")
+        most_active = sorted(stocks_data.items(), key=lambda x: abs(x[1].get('net_flow', 0)), reverse=True)[:5]
+
+        cols = st.columns(5)
+        for i, (stock_name, data) in enumerate(most_active):
+            with cols[i]:
+                net_flow = data.get('net_flow', 0)
+                price = data.get('price')
+                change_pct = data.get('change_pct')
+
+                flow_emoji = "🟢" if net_flow > 0 else "🔴"
+                flow_str = format_number(abs(net_flow))
+
+                st.markdown(f"**{i+1}. {stock_name}**")
+                st.metric(f"{flow_emoji} Flow", flow_str)
+                if change_pct is not None:
+                    change_emoji = "🟢" if change_pct > 0 else "🔴"
+                    st.caption(f"{change_emoji} {change_pct:+.2f}%")
 
 st.markdown("---")
 
+
 # ============================================
-# INDICES-WIDE PERFORMANCE (All Tracked Indices)
+# VOLUME SPIKE DETECTION (Unusual Activity)
 # ============================================
-if cached_data and "indices_data" in cached_data:
-    indices_data_perf = cached_data.get("indices_data", {})
-    
-    if indices_data_perf and len(indices_data_perf) > 0:
+if cached_data and "stocks_data" in cached_data:
+    stocks_data_vol = cached_data.get("stocks_data", {})
+
+    if stocks_data_vol and len(stocks_data_vol) > 0:
         st.markdown("")
         st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        st.markdown(f"### 📊 INDICES-WIDE PERFORMANCE ({len(indices_data_perf)} Indices Tracked)")
+        st.markdown(create_enhanced_section_header("VOLUME SPIKE DETECTION (Unusual Activity)", "🔥"), unsafe_allow_html=True)
         st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        
-        # Calculate performance stats
-        total_indices = len(indices_data_perf)
-        positive_indices = []
-        negative_indices = []
-        neutral_indices = []
-        
-        for idx_name, idx_data in indices_data_perf.items():
-            # Get price change - try different keys
-            change_pct = 0
-            if "change_pct" in idx_data:
-                change_pct = idx_data["change_pct"]
-            elif "price" in idx_data and "prev_close" in idx_data:
-                if idx_data["prev_close"] and idx_data["prev_close"] > 0:
-                    change_pct = ((idx_data["price"] - idx_data["prev_close"]) / idx_data["prev_close"]) * 100
-            
-            if change_pct > 0:
-                positive_indices.append((idx_name, change_pct))
-            elif change_pct < 0:
-                negative_indices.append((idx_name, change_pct))
-            else:
-                neutral_indices.append(idx_name)
-        
-        pos_count = len(positive_indices)
-        neg_count = len(negative_indices)
-        neutral_count = len(neutral_indices)
-        
-        pos_pct = (pos_count / total_indices * 100) if total_indices > 0 else 0
-        neg_pct = (neg_count / total_indices * 100) if total_indices > 0 else 0
-        
-        # Breakdown by strength
-        very_strong_up = len([i for i in positive_indices if i[1] > 2])
-        strong_up = len([i for i in positive_indices if 1 <= i[1] <= 2])
-        weak_up = len([i for i in positive_indices if 0 < i[1] < 1])
-        
-        weak_down = len([i for i in negative_indices if -1 < i[1] < 0])
-        strong_down = len([i for i in negative_indices if -2 <= i[1] <= -1])
-        very_strong_down = len([i for i in negative_indices if i[1] < -2])
-        
-        # Display performance bar
-        st.markdown("**Index Performance Distribution:**")
-        
-        col1, col2, col3 = st.columns([max(pos_pct, 1), max(neg_pct, 1), 0.1])
-        
+
+        # Calculate volume spikes (based on net flow magnitude)
+        # A "volume spike" is when absolute net flow is significantly high
+        volume_threshold = 200  # Minimum 200M net flow to be considered
+
+        volume_spikes = []
+        for stock_name, data in stocks_data_vol.items():
+            net_flow = data.get('net_flow', 0)
+            ce_flow = data.get('ce_flow', 0)
+            pe_flow = data.get('pe_flow', 0)
+
+            # Calculate total volume (absolute sum of CE + PE)
+            total_volume = abs(ce_flow) + abs(pe_flow)
+
+            if abs(net_flow) >= volume_threshold or total_volume >= 500:
+                # Calculate volume intensity (how one-sided the flow is)
+                if total_volume > 0:
+                    intensity = abs(net_flow) / total_volume
+                else:
+                    intensity = 0
+
+                volume_spikes.append({
+                    'name': stock_name,
+                    'net_flow': net_flow,
+                    'ce_flow': ce_flow,
+                    'pe_flow': pe_flow,
+                    'total_volume': total_volume,
+                    'intensity': intensity,
+                    'price': data.get('price'),
+                    'change_pct': data.get('change_pct')
+                })
+
+        # Sort by total volume (most active)
+        volume_spikes_sorted = sorted(volume_spikes, key=lambda x: x['total_volume'], reverse=True)
+
+        # Display summary metrics
+        col1, col2, col3, col4 = st.columns(4)
+
         with col1:
-            st.markdown(f'<div style="background: linear-gradient(to right, #00ff00, #90EE90); padding: 20px; text-align: center; border-radius: 5px;"><b>🟢 POSITIVE</b><br>{pos_count} indices ({pos_pct:.0f}%)</div>', unsafe_allow_html=True)
-        
+            st.metric("🔥 Volume Spikes", len(volume_spikes))
+            st.caption(f"Net flow ≥ {volume_threshold}M")
+
         with col2:
-            st.markdown(f'<div style="background: linear-gradient(to right, #ffcccb, #ff0000); padding: 20px; text-align: center; border-radius: 5px;"><b>🔴 NEGATIVE</b><br>{neg_count} indices ({neg_pct:.0f}%)</div>', unsafe_allow_html=True)
-        
+            high_intensity = sum(1 for s in volume_spikes if s['intensity'] > 0.7)
+            st.metric("⚡ High Intensity", high_intensity)
+            st.caption("One-sided flow > 70%")
+
+        with col3:
+            bullish_spikes = sum(1 for s in volume_spikes if s['net_flow'] > 0)
+            st.metric("🟢 Bullish Spikes", bullish_spikes)
+            st.caption("Positive net flow")
+
+        with col4:
+            bearish_spikes = sum(1 for s in volume_spikes if s['net_flow'] < 0)
+            st.metric("🔴 Bearish Spikes", bearish_spikes)
+            st.caption("Negative net flow")
+
         st.markdown("")
-        
-        # Detailed breakdown
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown("#### 🟢 Advancing Indices")
-            st.metric("Very Strong (> +2%)", f"{very_strong_up} indices")
-            st.metric("Strong (+1% to +2%)", f"{strong_up} indices")
-            st.metric("Weak (0% to +1%)", f"{weak_up} indices")
-        
-        with col2:
-            st.markdown("#### 🔴 Declining Indices")
-            st.metric("Weak (0% to -1%)", f"{weak_down} indices")
-            st.metric("Strong (-1% to -2%)", f"{strong_down} indices")
-            st.metric("Very Strong (< -2%)", f"{very_strong_down} indices")
-        
-        st.markdown("")
-        
-        # Market breadth signal
-        if pos_pct >= 60:
-            sentiment = "🚀 STRONG BREADTH"
-            sentiment_text = f"{pos_pct:.0f}% indices advancing - Broad-based rally"
-            st.success(f"**Market Breadth:** {sentiment} - {sentiment_text}")
-        elif neg_pct >= 60:
-            sentiment = "📉 WEAK BREADTH"
-            sentiment_text = f"{neg_pct:.0f}% indices declining - Broad-based selloff"
-            st.error(f"**Market Breadth:** {sentiment} - {sentiment_text}")
+
+        if volume_spikes_sorted:
+            # Display top volume spikes
+            st.markdown("#### 📊 Top 10 Volume Spikes (By Total Activity)")
+
+            for i, spike in enumerate(volume_spikes_sorted[:10], 1):
+                col1, col2, col3 = st.columns([2, 2, 1])
+
+                with col1:
+                    stock_name = spike['name']
+                    price = spike['price']
+                    change_pct = spike['change_pct']
+
+                    price_str = f"₹{price:,.2f}" if price else "N/A"
+                    if change_pct is not None:
+                        change_emoji = "🟢" if change_pct > 0 else "🔴"
+                        change_str = f"{change_emoji}{change_pct:+.2f}%"
+                    else:
+                        change_str = ""
+
+                    st.markdown(f"**{i}. {stock_name}**")
+                    st.caption(f"{price_str} {change_str}")
+
+                with col2:
+                    ce_flow = spike['ce_flow']
+                    pe_flow = spike['pe_flow']
+                    total_volume = spike['total_volume']
+
+                    st.markdown(f"**Total Volume:** {format_number(total_volume)}")
+                    # Add CE/PE progress bar
+                    st.markdown(create_cepe_progress_bar(abs(ce_flow), abs(pe_flow), show_labels=True), unsafe_allow_html=True)
+
+                with col3:
+                    net_flow = spike['net_flow']
+                    intensity = spike['intensity']
+
+                    flow_emoji = "🟢" if net_flow > 0 else "🔴"
+
+                    # Intensity indicator
+                    if intensity > 0.8:
+                        intensity_label = "🔥 Extreme"
+                        intensity_color = "red" if net_flow < 0 else "green"
+                    elif intensity > 0.6:
+                        intensity_label = "⚡ High"
+                        intensity_color = "orange"
+                    else:
+                        intensity_label = "📊 Moderate"
+                        intensity_color = "gray"
+
+                    st.metric(f"{flow_emoji} Net", format_number(net_flow))
+                    st.caption(f"{intensity_label} ({intensity*100:.0f}%)")
+
+                st.markdown("---")
+
+            # Volume Spike Interpretation Guide
+            with st.expander("📖 How to Read Volume Spikes"):
+                st.markdown("""
+                **What is a Volume Spike?**
+                - Unusual high options trading activity in a stock
+                - Indicates smart money or institutional interest
+                - Can signal upcoming price moves
+
+                **Total Volume:**
+                - Sum of CE + PE premium flows (ignores direction)
+                - Higher = More active trading
+
+                **Intensity:**
+                - How one-sided the flow is
+                - **🔥 Extreme (>80%):** Very strong directional bias
+                - **⚡ High (60-80%):** Strong directional bias
+                - **📊 Moderate (<60%):** Mixed/hedging activity
+
+                **Trading Signals:**
+                - **🟢 High Intensity + Positive Net Flow:** Strong bullish signal
+                - **🔴 High Intensity + Negative Net Flow:** Strong bearish signal
+                - **📊 Low Intensity + High Volume:** Hedging/uncertainty
+
+                **Example:**
+                ```
+                RELIANCE
+                Total Volume: 2000M (very active)
+                CE: 1800M | PE: 200M
+                Net: +1600M (bullish)
+                Intensity: 80% (extreme one-sided)
+
+                → Strong bullish signal! Traders heavily buying calls.
+                ```
+                """)
         else:
-            sentiment = "⚖️ MIXED BREADTH"
-            sentiment_text = f"Market split - {pos_pct:.0f}% up, {neg_pct:.0f}% down"
-            st.info(f"**Market Breadth:** {sentiment} - {sentiment_text}")
-        
-        st.markdown("")
-        
-        # ============================================
-        # AGGREGATE CE vs PE RACE (All Indices)
-        # ============================================
-        st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        st.markdown("### 🏁 ALL INDICES CE vs PE RACE (Aggregate Flow)")
-        st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        st.markdown("**Total Options Flow Across All Tracked Indices:**")
-        
-        # Calculate aggregate
-        total_ce_flow_idx = sum(d.get("ce_flow", 0) for n, d in indices_data_perf.items())
-        total_pe_flow_idx = sum(d.get("pe_flow", 0) for n, d in indices_data_perf.items())
-        total_flow_idx = total_ce_flow_idx + total_pe_flow_idx
-        
-        if total_flow_idx > 0:
-            ce_pct_idx = (total_ce_flow_idx / total_flow_idx) * 100
-            pe_pct_idx = 100 - ce_pct_idx
-            
-            avg_ce_idx = total_ce_flow_idx / total_indices if total_indices > 0 else 0
-            avg_pe_idx = total_pe_flow_idx / total_indices if total_indices > 0 else 0
-            
-            # Visual race bar
-            ce_blocks_idx = int(round(ce_pct_idx / 10))
-            pe_blocks_idx = 10 - ce_blocks_idx
-            race_bar_idx = f"[🟢{'▓' * ce_blocks_idx}🔴{'▓' * pe_blocks_idx}]"
-            
-            st.markdown(f"**CE vs PE Race:**")
-            st.markdown(f"## {race_bar_idx} {ce_pct_idx:.0f}% CE | {pe_pct_idx:.0f}% PE")
-            
-            st.markdown("")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.markdown("#### 🟢 CE Flow (Calls)")
-                st.metric("Total CE Flow", format_number(total_ce_flow_idx))
-                st.metric("Average per Index", format_number(avg_ce_idx))
-                if ce_pct_idx >= 60:
-                    st.success("🚀 CE DOMINATING")
-                elif ce_pct_idx >= 55:
-                    st.info("🟢 CE Leading")
-                else:
-                    st.warning("⚖️ Balanced")
-            
-            with col2:
-                st.markdown("#### 🔴 PE Flow (Puts)")
-                st.metric("Total PE Flow", format_number(total_pe_flow_idx))
-                st.metric("Average per Index", format_number(avg_pe_idx))
-                if pe_pct_idx >= 60:
-                    st.error("📉 PE DOMINATING")
-                elif pe_pct_idx >= 55:
-                    st.info("🔴 PE Leading")
-                else:
-                    st.warning("⚖️ Balanced")
-            
-            st.markdown("")
-            
-            # Signal
-            st.markdown("**Indices Options Signal:**")
-            
-            if ce_pct_idx >= 65:
-                signal = "🚀 BULLS VERY AGGRESSIVE"
-                interpretation = "Smart money heavily buying calls across indices - strong bullish conviction"
-                st.success(f"**{signal}**")
-                st.caption(interpretation)
-            elif ce_pct_idx >= 55:
-                signal = "🟢 BULLS AGGRESSIVE"
-                interpretation = "More call buying than put buying - moderate bullish sentiment"
-                st.success(f"**{signal}**")
-                st.caption(interpretation)
-            elif pe_pct_idx >= 65:
-                signal = "📉 BEARS VERY AGGRESSIVE"
-                interpretation = "Smart money heavily buying puts across indices - strong bearish conviction"
-                st.error(f"**{signal}**")
-                st.caption(interpretation)
-            elif pe_pct_idx >= 55:
-                signal = "🔴 BEARS AGGRESSIVE"
-                interpretation = "More put buying than call buying - moderate bearish sentiment"
-                st.error(f"**{signal}**")
-                st.caption(interpretation)
+            st.info("No significant volume spikes detected yet. Spikes appear when net flow ≥ 200M")
+
+
+# ============================================
+# CHARTINK MOMENTUM ALERTS (Gmail Integration)
+# ============================================
+st.markdown("")
+st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+st.markdown(create_enhanced_section_header("📧 CHARTINK MOMENTUM ALERTS (Gmail)", "⚡"), unsafe_allow_html=True)
+st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+# Initialize session state for alerts
+if 'chartink_alerts' not in st.session_state:
+    st.session_state.chartink_alerts = []
+if 'chartink_last_fetch' not in st.session_state:
+    st.session_state.chartink_last_fetch = None
+if 'chartink_last_fetch_time' not in st.session_state:
+    st.session_state.chartink_last_fetch_time = None
+if 'chartink_fetch_count' not in st.session_state:
+    st.session_state.chartink_fetch_count = 0
+if 'chartink_auto_fetch_enabled' not in st.session_state:
+    st.session_state.chartink_auto_fetch_enabled = False
+
+# UI Debug logging helper - writes to both console and file
+from pathlib import Path
+ui_debug_dir = Path(r'D:\Stocks Analysis\Apex Nifty Trading\Logs')
+# Use DAILY log file (not per-session) so logs don't split across files on st.rerun()
+ui_debug_file = ui_debug_dir / f"UI_DEBUG_{datetime.now().strftime('%Y%m%d')}.log"
+
+def log_ui(msg):
+    """Write to both console and UI debug file"""
+    timestamp = datetime.now().strftime('[%Y-%m-%d %H:%M:%S]')
+    full_msg = f"{timestamp} {msg}"
+    print(full_msg)
+    try:
+        ui_debug_dir.mkdir(parents=True, exist_ok=True)
+        with open(ui_debug_file, 'a', encoding='utf-8') as f:
+            f.write(full_msg + '\n')
+    except Exception as e:
+        print(f"Failed to write UI debug: {e}")
+
+# Check if Gmail is configured
+gmail_configured = bool(os.getenv('GMAIL_USER') and os.getenv('GMAIL_APP_PASSWORD'))
+
+if gmail_configured:
+    col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
+
+    with col1:
+        st.caption("✅ Gmail configured | Monitoring: **Alert for Weekly close=high/low ONLY**")
+
+    with col2:
+        # Mode selector
+        test_mode = st.checkbox("🧪 TEST Mode", value=False, help="TEST: Last 30 days (read-only) | LIVE: Unread emails only")
+
+    with col3:
+        # Auto-fetch toggle (only for LIVE mode)
+        if not test_mode:
+            auto_fetch = st.checkbox("⚡ Auto-fetch", value=st.session_state.chartink_auto_fetch_enabled,
+                                    help="Auto-fetch new alerts: First fetch after 5min, then every 30sec")
+            if auto_fetch != st.session_state.chartink_auto_fetch_enabled:
+                st.session_state.chartink_auto_fetch_enabled = auto_fetch
+                st.rerun()
+
+    with col4:
+        # Clear button
+        if st.button("🗑️ Clear", help="Clear displayed alerts"):
+            st.session_state.chartink_alerts = []
+            st.session_state.chartink_last_fetch = None
+            st.session_state.chartink_last_fetch_time = None
+            st.session_state.chartink_fetch_count = 0
+            st.rerun()
+
+    # AUTO-FETCH LOGIC (only in LIVE mode with auto-fetch enabled)
+    should_auto_fetch = False
+    if not test_mode and st.session_state.chartink_auto_fetch_enabled:
+        now = datetime.now()
+
+        if st.session_state.chartink_last_fetch_time is None:
+            # First time - fetch immediately
+            should_auto_fetch = True
+            log_ui("🤖 AUTO-FETCH: First fetch triggered")
+        else:
+            last_fetch_time = st.session_state.chartink_last_fetch_time
+            seconds_since_last = (now - last_fetch_time).total_seconds()
+
+            if st.session_state.chartink_fetch_count == 1:
+                # After first fetch, wait 5 minutes before second fetch
+                if seconds_since_last >= 300:  # 5 minutes
+                    should_auto_fetch = True
+                    log_ui(f"🤖 AUTO-FETCH: 5 min interval reached ({seconds_since_last:.0f}s since last)")
             else:
-                signal = "⚖️ BALANCED FLOW"
-                interpretation = "Call and put buying roughly equal - no clear directional bias"
-                st.info(f"**{signal}**")
-                st.caption(interpretation)
-            
-            st.caption(f"📊 CE/PE Ratio: {(total_ce_flow_idx/total_pe_flow_idx):.2f}" if total_pe_flow_idx > 0 else "📊 CE/PE Ratio: N/A")
-        
-        st.markdown("")
-        
-        # ============================================
-        # TOP & BOTTOM PERFORMERS
-        # ============================================
-        st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        st.markdown("### 🎯 SECTOR PERFORMANCE")
-        st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        
-        # Prepare sorted list
-        all_idx_with_change = []
-        for idx_name, idx_data in indices_data_perf.items():
-            change_pct = 0
-            if "change_pct" in idx_data:
-                change_pct = idx_data["change_pct"]
-            elif "price" in idx_data and "prev_close" in idx_data:
-                if idx_data["prev_close"] and idx_data["prev_close"] > 0:
-                    change_pct = ((idx_data["price"] - idx_data["prev_close"]) / idx_data["prev_close"]) * 100
-            
-            ce_flow = idx_data.get("ce_flow", 0)
-            pe_flow = idx_data.get("pe_flow", 0)
-            all_idx_with_change.append((idx_name, change_pct, ce_flow, pe_flow))
-        
-        sorted_indices = sorted(all_idx_with_change, key=lambda x: x[1], reverse=True)
-        
+                # After second fetch, check every 30 seconds
+                if seconds_since_last >= 30:
+                    should_auto_fetch = True
+                    log_ui(f"🤖 AUTO-FETCH: 30 sec interval reached ({seconds_since_last:.0f}s since last)")
+
+    # Execute auto-fetch if triggered
+    if should_auto_fetch:
+        mode = 'LIVE'
+        log_ui(f"🤖 AUTO-FETCH STARTING - Fetch #{st.session_state.chartink_fetch_count + 1}")
+
+        with st.spinner(f"Auto-fetching new alerts..."):
+            alerts = fetch_chartink_alerts(mode=mode)
+
+        log_ui(f"✅ AUTO-FETCH COMPLETED: {len(alerts)} alerts")
+
+        # Update tracking
+        st.session_state.chartink_alerts = alerts
+        st.session_state.chartink_last_fetch = datetime.now().strftime('%I:%M:%S %p')
+        st.session_state.chartink_last_fetch_time = datetime.now()
+        st.session_state.chartink_fetch_count += 1
+
+        st.rerun()
+
+    # Manual fetch alerts button
+    if st.button("📬 Fetch Now", type="primary"):
+        mode = 'TEST' if test_mode else 'LIVE'
+
+        log_ui(f"🔵 FETCH BUTTON CLICKED - Mode: {mode}")
+        log_ui(f"⏳ Starting fetch... This takes ~60-90 seconds. Please wait and do NOT refresh the page!")
+
+        with st.spinner(f"Fetching alerts in {mode} mode... Please wait ~60-90 seconds..."):
+            alerts = fetch_chartink_alerts(mode=mode)
+
+        # DEBUG: Print what we got
+        log_ui(f"✅ FETCH COMPLETED: Received {len(alerts)} alerts from fetch_chartink_alerts()")
+        log_ui(f"📄 Alerts saved to JSON file by fetch function")
+
+        # Store in session state for immediate display
+        st.session_state.chartink_alerts = alerts
+        st.session_state.chartink_last_fetch = datetime.now().strftime('%I:%M:%S %p')
+        st.session_state.chartink_last_fetch_time = datetime.now()
+        st.session_state.chartink_fetch_count += 1
+        log_ui(f"💾 Stored {len(alerts)} alerts in session_state (Fetch #{st.session_state.chartink_fetch_count})")
+
+        # Force page reload to display
+        log_ui(f"🔄 Triggering page reload to display alerts...")
+        st.rerun()
+
+    # Show auto-fetch status
+    if not test_mode and st.session_state.chartink_auto_fetch_enabled:
+        if st.session_state.chartink_last_fetch_time:
+            now = datetime.now()
+            seconds_since = (now - st.session_state.chartink_last_fetch_time).total_seconds()
+
+            if st.session_state.chartink_fetch_count == 1:
+                # After first fetch, wait 5 minutes
+                next_fetch_in = 300 - seconds_since
+                if next_fetch_in > 0:
+                    st.info(f"⚡ Auto-fetch enabled | Next fetch in: {int(next_fetch_in)}s (waiting 5 min after first fetch)")
+                else:
+                    st.info(f"⚡ Auto-fetch enabled | Fetching on next refresh...")
+            else:
+                # After second fetch, every 30 seconds
+                next_fetch_in = 30 - seconds_since
+                if next_fetch_in > 0:
+                    st.info(f"⚡ Auto-fetch enabled | Next fetch in: {int(next_fetch_in)}s (every 30s)")
+                else:
+                    st.info(f"⚡ Auto-fetch enabled | Fetching on next refresh...")
+        else:
+            st.info(f"⚡ Auto-fetch enabled | Will fetch on next refresh...")
+
+    # Display alerts - try session_state first, then fall back to file
+    # DEBUG: Check what's in session state
+    log_ui(f"📊 DISPLAY SECTION - session_state has {len(st.session_state.chartink_alerts)} alerts")
+
+    # If session_state is empty, try loading from file
+    if not st.session_state.chartink_alerts:
+        import json
+        alerts_file = ui_debug_dir / "chartink_alerts.json"
+        if alerts_file.exists():
+            try:
+                log_ui(f"📂 Session state empty - Loading from file: {alerts_file}")
+                with open(alerts_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    alerts_from_file = data.get('alerts', [])
+
+                    # Convert timestamp strings back to datetime for display
+                    for alert in alerts_from_file:
+                        if 'timestamp' in alert and isinstance(alert['timestamp'], str):
+                            try:
+                                alert['timestamp'] = datetime.strptime(alert['timestamp'], '%Y-%m-%d %H:%M:%S')
+                            except:
+                                pass
+
+                    st.session_state.chartink_alerts = alerts_from_file
+                    st.session_state.chartink_last_fetch = data.get('last_fetch')
+                    log_ui(f"✅ Loaded {len(alerts_from_file)} alerts from file")
+            except Exception as e:
+                log_ui(f"❌ ERROR loading from file: {e}")
+
+    if st.session_state.chartink_alerts:
+        log_ui(f"✅ DISPLAY: Found alerts to display - {len(st.session_state.chartink_alerts)} total")
+        alerts = st.session_state.chartink_alerts
+
+        # Show last fetch time
+        if st.session_state.chartink_last_fetch:
+            st.success(f"✅ Found {len(alerts)} momentum alert(s) | Last fetched: {st.session_state.chartink_last_fetch}")
+        else:
+            st.success(f"✅ Found {len(alerts)} momentum alert(s)")
+
+        # Separate by direction
+        long_alerts = [a for a in alerts if a['direction'] == 'LONG']
+        bearish_alerts = [a for a in alerts if a['direction'] == 'SHORT']
+
+        log_ui(f"📈 LONG alerts: {len(long_alerts)}, 📉 SHORT alerts: {len(bearish_alerts)}")
+
+        # Display in columns
         col1, col2 = st.columns(2)
-        
+
         with col1:
-            st.markdown("#### 🥇 TOP 5 PERFORMERS")
-            medals = ["🥇", "🥈", "🥉", "🏅", "🏅"]
-            for i, (name, change, ce, pe) in enumerate(sorted_indices[:5]):
-                total = ce + pe
-                ce_pct_sector = (ce / total * 100) if total > 0 else 50
-                
-                # CE/PE bar
-                ce_blocks_s = int(round(ce_pct_sector / 10))
-                pe_blocks_s = 10 - ce_blocks_s
-                mini_bar = f"[🟢{'▓' * ce_blocks_s}🔴{'▓' * pe_blocks_s}]"
-                
-                # Signal
-                signal_icon = "🚀" if ce_pct_sector >= 70 else "✅" if ce_pct_sector >= 60 else "⚖️"
-                
-                medal = medals[i] if i < 5 else "📊"
-                st.markdown(f"{medal} **{name}**: {change:+.2f}%")
-                st.caption(f"{mini_bar} {ce_pct_sector:.0f}% CE {signal_icon}")
-        
+            st.markdown("### 🟢 BULLISH ALERTS (LONG)")
+            st.caption("Weekly close = Weekly high")
+
+            if long_alerts:
+                for alert in long_alerts:
+                    stocks_str = ', '.join(alert['stocks']) if alert['stocks'] else 'None'
+                    timestamp_str = alert['timestamp'].strftime('%b %d, %I:%M %p') if hasattr(alert['timestamp'], 'strftime') else alert['date'][:20]
+
+                    with st.container():
+                        st.markdown(f"**📈 {stocks_str}**")
+                        st.caption(f"⏰ {timestamp_str}")
+                        st.markdown("---")
+            else:
+                st.info("No bullish alerts found")
+
         with col2:
-            st.markdown("#### 📉 BOTTOM 5 PERFORMERS")
-            for i, (name, change, ce, pe) in enumerate(sorted_indices[-5:][::-1]):
-                total = ce + pe
-                ce_pct_sector = (ce / total * 100) if total > 0 else 50
-                
-                # CE/PE bar
-                ce_blocks_s = int(round(ce_pct_sector / 10))
-                pe_blocks_s = 10 - ce_blocks_s
-                mini_bar = f"[🟢{'▓' * ce_blocks_s}🔴{'▓' * pe_blocks_s}]"
-                
-                # Signal
-                signal_icon = "⚠️" if ce_pct_sector < 40 else "📉" if ce_pct_sector < 50 else "⚖️"
-                
-                st.markdown(f"**{name}**: {change:+.2f}%")
-                st.caption(f"{mini_bar} {ce_pct_sector:.0f}% CE {signal_icon}")
-        
-        st.markdown("")
+            st.markdown("### 🔴 BEARISH ALERTS (SHORT)")
+            st.caption("Weekly close = Weekly low")
+
+            if bearish_alerts:
+                for alert in bearish_alerts:
+                    stocks_str = ', '.join(alert['stocks']) if alert['stocks'] else 'None'
+                    timestamp_str = alert['timestamp'].strftime('%b %d, %I:%M %p') if hasattr(alert['timestamp'], 'strftime') else alert['date'][:20]
+
+                    with st.container():
+                        st.markdown(f"**📉 {stocks_str}**")
+                        st.caption(f"⏰ {timestamp_str}")
+                        st.markdown("---")
+            else:
+                st.info("No bearish alerts found")
+    elif st.session_state.chartink_last_fetch:
+        log_ui(f"⚠️ DISPLAY: No alerts in session_state but last_fetch exists: {st.session_state.chartink_last_fetch}")
+        st.info(f"No momentum alerts found | Last fetched: {st.session_state.chartink_last_fetch}")
+    else:
+        log_ui(f"ℹ️ DISPLAY: No alerts and no last_fetch - first load")
+        st.info("Click 'Fetch Chartink Alerts' to load momentum alerts")
+
+    # Info expander
+    st.markdown("")
+    with st.expander("ℹ️ How Chartink Gmail Integration Works"):
+        st.markdown("""
+        **What This Does:**
+        - Connects to your Gmail account via IMAP
+        - Fetches Chartink scan alerts for momentum conditions
+        - Classifies alerts as LONG (bullish) or SHORT (bearish)
+
+        **Alert Criteria:**
+        - 🟢 **LONG:** "Alert for Weekly close=high" → Bullish momentum
+        - 🔴 **SHORT:** "Alert for Weekly close=low" → Bearish momentum
+
+        **Modes:**
+        - **LIVE Mode:**
+          - Fetches only UNSEEN emails
+          - Marks processed emails as SEEN
+          - Use during market hours for real-time alerts
+
+        - **TEST Mode:**
+          - Fetches last 30 days of emails
+          - Does NOT mark as read
+          - Safe for testing/debugging
+
+        **Setup Required:**
+        1. Add to `.env` file:
+           ```
+           GMAIL_USER=your_email@gmail.com
+           GMAIL_APP_PASSWORD=your_16_char_password
+           ```
+        2. Generate Gmail App Password:
+           - Google Account → Security → 2-Step Verification
+           - App passwords → Mail → Generate
+
+        **Output:**
+        - Stock names extracted from email body
+        - Direction (LONG/SHORT)
+        - Alert timestamp
+        - Printed to console for logging
+        """)
+else:
+    st.warning("⚠️ Gmail not configured")
+    st.info("""
+    **To enable Chartink alerts:**
+
+    1. Add to your `.env` file:
+       ```
+       GMAIL_USER=your_email@gmail.com
+       GMAIL_APP_PASSWORD=your_16_char_app_password
+       ```
+
+    2. Generate Gmail App Password:
+       - Google Account → Security
+       - Enable 2-Step Verification
+       - App passwords → Select Mail → Generate
+       - Copy 16-character password
+
+    3. Restart the application
+    """)
+
+
+# ============================================
+# MOMENTUM STOCKS (Bullish & Bearish) - REMOVED FROM UI
+# ============================================
+# NOTE: Backend momentum tracking still runs for Smart Scoring Alert System
+# UI section removed per user request - alerts will be handled separately
+
+st.markdown("---")
+
 
 st.caption("🔥 Live Momentum Trading System - Actionable Alerts with Strike Prices! 🚀")
