@@ -2676,7 +2676,7 @@ def fetch_chartink_alerts(mode='LIVE'):
         ]
     """
     # Create debug log file
-    debug_dir = Path(r'D:\Stocks Analysis\Apex Nifty Trading')
+    debug_dir = Path(r'D:\Stocks Analysis\Apex Nifty Trading\Logs')
     debug_dir.mkdir(parents=True, exist_ok=True)
     debug_file = debug_dir / f"chartink_debug_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
 
@@ -7479,7 +7479,7 @@ if 'chartink_last_fetch' not in st.session_state:
 
 # UI Debug logging helper - writes to both console and file
 from pathlib import Path
-ui_debug_dir = Path(r'D:\Stocks Analysis\Apex Nifty Trading')
+ui_debug_dir = Path(r'D:\Stocks Analysis\Apex Nifty Trading\Logs')
 ui_debug_file = ui_debug_dir / f"UI_DEBUG_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
 
 def log_ui(msg):
