@@ -7525,25 +7525,66 @@ if gmail_configured:
 
         # DEBUG: Print what we got
         log_ui(f"DEBUG: Fetched {len(alerts)} alerts from fetch_chartink_alerts()")
-        log_ui(f"DEBUG: First alert sample: {alerts[0] if alerts else 'NONE'}")
-        log_ui(f"DEBUG: Alert types: {[type(a) for a in alerts[:3]]}")
 
-        # Store in session state
+        # SAVE TO FILE (alternative to session_state)
+        import json
+        alerts_file = ui_debug_dir / "chartink_alerts.json"
+        try:
+            # Convert datetime to string for JSON serialization
+            alerts_json = []
+            for alert in alerts:
+                alert_copy = alert.copy()
+                if 'timestamp' in alert_copy and hasattr(alert_copy['timestamp'], 'strftime'):
+                    alert_copy['timestamp'] = alert_copy['timestamp'].strftime('%Y-%m-%d %H:%M:%S')
+                alerts_json.append(alert_copy)
+
+            with open(alerts_file, 'w', encoding='utf-8') as f:
+                json.dump({
+                    'alerts': alerts_json,
+                    'last_fetch': datetime.now().strftime('%Y-%m-%d %I:%M:%S %p'),
+                    'count': len(alerts_json)
+                }, f, indent=2)
+            log_ui(f"✅ SAVED {len(alerts)} alerts to file: {alerts_file}")
+        except Exception as e:
+            log_ui(f"❌ ERROR saving to file: {e}")
+
+        # Also store in session state
         st.session_state.chartink_alerts = alerts
         st.session_state.chartink_last_fetch = datetime.now().strftime('%I:%M:%S %p')
 
-        # DEBUG: Verify storage
-        log_ui(f"DEBUG: Stored {len(st.session_state.chartink_alerts)} alerts in session_state")
-        log_ui(f"DEBUG: session_state.chartink_alerts type: {type(st.session_state.chartink_alerts)}")
-        log_ui(f"DEBUG: session_state.chartink_alerts content: {st.session_state.chartink_alerts[:2] if st.session_state.chartink_alerts else 'EMPTY'}")
-
-        # Force re-render to display alerts
-        log_ui(f"🔄 Calling st.rerun() to refresh display")
+        # Show success immediately
+        st.success(f"✅ Fetched {len(alerts)} alerts! Refreshing...")
+        time.sleep(1)  # Brief pause so user sees the message
         st.rerun()
 
-    # Display alerts from session state
+    # Display alerts - try session_state first, then fall back to file
     # DEBUG: Check what's in session state
     log_ui(f"📊 DISPLAY SECTION - session_state has {len(st.session_state.chartink_alerts)} alerts")
+
+    # If session_state is empty, try loading from file
+    if not st.session_state.chartink_alerts:
+        import json
+        alerts_file = ui_debug_dir / "chartink_alerts.json"
+        if alerts_file.exists():
+            try:
+                log_ui(f"📂 Session state empty - Loading from file: {alerts_file}")
+                with open(alerts_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    alerts_from_file = data.get('alerts', [])
+
+                    # Convert timestamp strings back to datetime for display
+                    for alert in alerts_from_file:
+                        if 'timestamp' in alert and isinstance(alert['timestamp'], str):
+                            try:
+                                alert['timestamp'] = datetime.strptime(alert['timestamp'], '%Y-%m-%d %H:%M:%S')
+                            except:
+                                pass
+
+                    st.session_state.chartink_alerts = alerts_from_file
+                    st.session_state.chartink_last_fetch = data.get('last_fetch')
+                    log_ui(f"✅ Loaded {len(alerts_from_file)} alerts from file")
+            except Exception as e:
+                log_ui(f"❌ ERROR loading from file: {e}")
 
     if st.session_state.chartink_alerts:
         log_ui(f"✅ DISPLAY: Found alerts to display - {len(st.session_state.chartink_alerts)} total")
