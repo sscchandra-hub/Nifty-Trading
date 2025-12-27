@@ -7480,7 +7480,8 @@ if 'chartink_last_fetch' not in st.session_state:
 # UI Debug logging helper - writes to both console and file
 from pathlib import Path
 ui_debug_dir = Path(r'D:\Stocks Analysis\Apex Nifty Trading\Logs')
-ui_debug_file = ui_debug_dir / f"UI_DEBUG_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+# Use DAILY log file (not per-session) so logs don't split across files on st.rerun()
+ui_debug_file = ui_debug_dir / f"UI_DEBUG_{datetime.now().strftime('%Y%m%d')}.log"
 
 def log_ui(msg):
     """Write to both console and UI debug file"""
