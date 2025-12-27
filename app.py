@@ -2865,6 +2865,35 @@ def fetch_chartink_alerts(mode='LIVE'):
         log_debug(f"{'='*80}")
         log_debug(f"\nDebug log saved to: {debug_file}")
 
+        # SAVE TO JSON FILE immediately (before returning)
+        # This ensures alerts persist even if page reloads before st.rerun()
+        import json
+        from pathlib import Path
+        alerts_dir = Path(r'D:\Stocks Analysis\Apex Nifty Trading\Logs')
+        alerts_file = alerts_dir / "chartink_alerts.json"
+        try:
+            # Convert datetime to string for JSON serialization
+            alerts_json = []
+            for alert in alerts:
+                alert_copy = alert.copy()
+                if 'timestamp' in alert_copy and hasattr(alert_copy['timestamp'], 'strftime'):
+                    alert_copy['timestamp'] = alert_copy['timestamp'].strftime('%Y-%m-%d %H:%M:%S')
+                alerts_json.append(alert_copy)
+
+            alerts_dir.mkdir(parents=True, exist_ok=True)
+            with open(alerts_file, 'w', encoding='utf-8') as f:
+                json.dump({
+                    'alerts': alerts_json,
+                    'last_fetch': datetime.now().strftime('%Y-%m-%d %I:%M:%S %p'),
+                    'count': len(alerts_json),
+                    'mode': mode
+                }, f, indent=2)
+            log_debug(f"\n✅ SAVED {len(alerts)} alerts to: {alerts_file}")
+        except Exception as e:
+            log_debug(f"\n❌ ERROR saving JSON: {e}")
+            import traceback
+            log_debug(f"Traceback: {traceback.format_exc()}")
+
     except Exception as e:
         log_debug(f"\n❌ CRITICAL ERROR: {e}")
         import traceback
@@ -7520,42 +7549,22 @@ if gmail_configured:
         mode = 'TEST' if test_mode else 'LIVE'
 
         log_ui(f"🔵 FETCH BUTTON CLICKED - Mode: {mode}")
+        log_ui(f"⏳ Starting fetch... This takes ~60-90 seconds. Please wait and do NOT refresh the page!")
 
-        with st.spinner(f"Fetching alerts in {mode} mode..."):
+        with st.spinner(f"Fetching alerts in {mode} mode... Please wait ~60-90 seconds..."):
             alerts = fetch_chartink_alerts(mode=mode)
 
         # DEBUG: Print what we got
-        log_ui(f"DEBUG: Fetched {len(alerts)} alerts from fetch_chartink_alerts()")
+        log_ui(f"✅ FETCH COMPLETED: Received {len(alerts)} alerts from fetch_chartink_alerts()")
+        log_ui(f"📄 Alerts saved to JSON file by fetch function")
 
-        # SAVE TO FILE (alternative to session_state)
-        import json
-        alerts_file = ui_debug_dir / "chartink_alerts.json"
-        try:
-            # Convert datetime to string for JSON serialization
-            alerts_json = []
-            for alert in alerts:
-                alert_copy = alert.copy()
-                if 'timestamp' in alert_copy and hasattr(alert_copy['timestamp'], 'strftime'):
-                    alert_copy['timestamp'] = alert_copy['timestamp'].strftime('%Y-%m-%d %H:%M:%S')
-                alerts_json.append(alert_copy)
-
-            with open(alerts_file, 'w', encoding='utf-8') as f:
-                json.dump({
-                    'alerts': alerts_json,
-                    'last_fetch': datetime.now().strftime('%Y-%m-%d %I:%M:%S %p'),
-                    'count': len(alerts_json)
-                }, f, indent=2)
-            log_ui(f"✅ SAVED {len(alerts)} alerts to file: {alerts_file}")
-        except Exception as e:
-            log_ui(f"❌ ERROR saving to file: {e}")
-
-        # Also store in session state
+        # Store in session state for immediate display
         st.session_state.chartink_alerts = alerts
         st.session_state.chartink_last_fetch = datetime.now().strftime('%I:%M:%S %p')
+        log_ui(f"💾 Stored {len(alerts)} alerts in session_state")
 
-        # Show success immediately
-        st.success(f"✅ Fetched {len(alerts)} alerts! Refreshing...")
-        time.sleep(1)  # Brief pause so user sees the message
+        # Force page reload to display
+        log_ui(f"🔄 Triggering page reload to display alerts...")
         st.rerun()
 
     # Display alerts - try session_state first, then fall back to file
