@@ -2868,7 +2868,6 @@ def fetch_chartink_alerts(mode='LIVE'):
         # SAVE TO JSON FILE immediately (before returning)
         # This ensures alerts persist even if page reloads before st.rerun()
         import json
-        from pathlib import Path
         alerts_dir = Path(r'D:\Stocks Analysis\Apex Nifty Trading\Logs')
         alerts_file = alerts_dir / "chartink_alerts.json"
         try:
