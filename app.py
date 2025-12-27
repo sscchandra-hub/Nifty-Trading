@@ -23,6 +23,10 @@ from dotenv import load_dotenv
 from kiteconnect import KiteConnect
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import imaplib
+import email
+from email.header import decode_header
+from html.parser import HTMLParser
 
 try:
     from streamlit_autorefresh import st_autorefresh
@@ -2515,6 +2519,256 @@ def detect_spike(deltas, avg_delta, threshold=3.0):
     if not deltas or not avg_delta or avg_delta == 0:
         return False
     return abs(deltas) > (threshold * abs(avg_delta))
+
+# =========================
+# CHARTINK GMAIL INTEGRATION
+# =========================
+
+class StockNameParser(HTMLParser):
+    """HTML parser to extract stock names from Chartink email body"""
+    def __init__(self):
+        super().__init__()
+        self.stock_names = []
+        self.in_link = False
+
+    def handle_starttag(self, tag, attrs):
+        if tag == 'a':
+            self.in_link = True
+
+    def handle_endtag(self, tag):
+        if tag == 'a':
+            self.in_link = False
+
+    def handle_data(self, data):
+        if self.in_link:
+            # Stock names are typically all caps and alphanumeric
+            cleaned = data.strip()
+            if cleaned and cleaned.isupper() and cleaned.isalnum():
+                self.stock_names.append(cleaned)
+
+def connect_gmail():
+    """Connect to Gmail via IMAP using credentials from .env"""
+    gmail_user = os.getenv('GMAIL_USER')
+    gmail_password = os.getenv('GMAIL_APP_PASSWORD')
+
+    if not gmail_user or not gmail_password:
+        print("❌ Gmail credentials not found in .env file")
+        print("   Required: GMAIL_USER and GMAIL_APP_PASSWORD")
+        return None
+
+    try:
+        # Connect to Gmail via IMAP SSL
+        mail = imaplib.IMAP4_SSL('imap.gmail.com', 993)
+        mail.login(gmail_user, gmail_password)
+        print(f"✅ Connected to Gmail: {gmail_user}")
+        return mail
+    except Exception as e:
+        print(f"❌ Gmail connection failed: {e}")
+        return None
+
+def classify_alert_direction(subject):
+    """
+    Classify alert direction based on subject (case-insensitive)
+
+    Returns:
+        'LONG' if bullish (Weekly close=high)
+        'SHORT' if bearish (Weekly close=low)
+        None if not a momentum alert
+    """
+    subject_lower = subject.lower()
+
+    if 'weekly close=high' in subject_lower:
+        return 'LONG'
+    elif 'weekly close=low' in subject_lower:
+        return 'SHORT'
+    else:
+        return None
+
+def parse_chartink_email(msg):
+    """
+    Parse Chartink email to extract stock names and metadata
+
+    Returns:
+        {
+            'stocks': [list of stock names],
+            'subject': email subject,
+            'date': email date,
+            'direction': 'LONG' or 'SHORT' or None
+        }
+    """
+    result = {
+        'stocks': [],
+        'subject': '',
+        'date': '',
+        'direction': None
+    }
+
+    # Get subject
+    subject = msg.get('Subject', '')
+    if subject:
+        # Decode if needed
+        decoded = decode_header(subject)
+        subject = ''.join([
+            part.decode(encoding or 'utf-8') if isinstance(part, bytes) else part
+            for part, encoding in decoded
+        ])
+    result['subject'] = subject
+
+    # Get date
+    result['date'] = msg.get('Date', '')
+
+    # Classify direction
+    result['direction'] = classify_alert_direction(subject)
+
+    # Parse email body for stock names
+    if msg.is_multipart():
+        for part in msg.walk():
+            content_type = part.get_content_type()
+            if content_type == 'text/html':
+                try:
+                    html_body = part.get_payload(decode=True).decode('utf-8', errors='ignore')
+                    parser = StockNameParser()
+                    parser.feed(html_body)
+                    result['stocks'] = parser.stock_names
+                    break
+                except Exception as e:
+                    print(f"⚠️ Error parsing HTML: {e}")
+    else:
+        # Single part message
+        try:
+            html_body = msg.get_payload(decode=True).decode('utf-8', errors='ignore')
+            parser = StockNameParser()
+            parser.feed(html_body)
+            result['stocks'] = parser.stock_names
+        except Exception as e:
+            print(f"⚠️ Error parsing HTML: {e}")
+
+    return result
+
+def fetch_chartink_alerts(mode='LIVE'):
+    """
+    Fetch and parse Chartink momentum alerts from Gmail
+
+    Args:
+        mode: 'LIVE' or 'TEST'
+
+    LIVE mode:
+        - Fetches only UNSEEN emails
+        - Marks processed emails as SEEN
+        - For real-time alert processing during market hours
+
+    TEST mode:
+        - Fetches emails from last 30 days
+        - Does NOT mark as seen
+        - For debugging/replaying historical alerts
+
+    Returns:
+        List of parsed alerts with structure:
+        [
+            {
+                'stocks': ['STOCK1', 'STOCK2'],
+                'subject': 'Alert for Weekly close=high',
+                'date': 'Wed, Dec 24, 9:16 AM',
+                'direction': 'LONG' or 'SHORT',
+                'timestamp': datetime object
+            },
+            ...
+        ]
+    """
+    mail = connect_gmail()
+    if not mail:
+        return []
+
+    alerts = []
+
+    try:
+        # Select inbox
+        mail.select('INBOX')
+
+        # Build search criteria based on mode
+        if mode == 'LIVE':
+            # LIVE: Only unseen emails from Chartink
+            search_criteria = '(UNSEEN FROM "Chartink")'
+            print("🔴 LIVE MODE: Searching for UNSEEN Chartink emails...")
+        else:  # TEST mode
+            # TEST: Last 30 days, matching specific subjects
+            since_date = (datetime.now() - timedelta(days=30)).strftime("%d-%b-%Y")
+            search_criteria = f'(SINCE {since_date} FROM "Chartink")'
+            print(f"🧪 TEST MODE: Searching for Chartink emails since {since_date}...")
+
+        # Search emails
+        status, message_ids = mail.search(None, search_criteria)
+
+        if status != 'OK':
+            print(f"❌ Email search failed: {status}")
+            return alerts
+
+        email_ids = message_ids[0].split()
+        print(f"📬 Found {len(email_ids)} emails")
+
+        # Process each email
+        for email_id in email_ids:
+            try:
+                # Fetch email
+                status, msg_data = mail.fetch(email_id, '(RFC822)')
+
+                if status != 'OK':
+                    continue
+
+                # Parse email
+                raw_email = msg_data[0][1]
+                msg = email.message_from_bytes(raw_email)
+
+                # Parse Chartink email
+                parsed = parse_chartink_email(msg)
+
+                # In TEST mode, filter by subject keywords
+                if mode == 'TEST':
+                    if parsed['direction'] is None:
+                        continue  # Skip non-momentum alerts in TEST mode
+
+                # Only process if direction is classified
+                if parsed['direction']:
+                    # Add timestamp
+                    try:
+                        parsed['timestamp'] = email.utils.parsedate_to_datetime(parsed['date'])
+                    except:
+                        parsed['timestamp'] = datetime.now()
+
+                    alerts.append(parsed)
+
+                    # Print to console
+                    direction_emoji = "🟢" if parsed['direction'] == 'LONG' else "🔴"
+                    stocks_str = ', '.join(parsed['stocks']) if parsed['stocks'] else 'None'
+                    print(f"{direction_emoji} {parsed['direction']:5s} | {parsed['date'][:25]:25s} | Stocks: {stocks_str}")
+
+                # Mark as seen ONLY in LIVE mode
+                if mode == 'LIVE' and parsed['direction']:
+                    mail.store(email_id, '+FLAGS', '\\Seen')
+
+            except Exception as e:
+                print(f"⚠️ Error processing email {email_id}: {e}")
+                continue
+
+        # Close connection
+        mail.close()
+        mail.logout()
+
+        print(f"✅ Processed {len(alerts)} momentum alerts")
+
+    except Exception as e:
+        print(f"❌ Error fetching emails: {e}")
+        try:
+            mail.close()
+            mail.logout()
+        except:
+            pass
+
+    return alerts
+
+# =========================
+# TELEGRAM ALERTS
+# =========================
 
 def send_telegram_alert(message):
     """Send alert to Telegram"""
