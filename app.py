@@ -7508,6 +7508,9 @@ if gmail_configured:
         st.session_state.chartink_alerts = alerts
         st.session_state.chartink_last_fetch = datetime.now().strftime('%I:%M:%S %p')
 
+        # Force re-render to display alerts
+        st.rerun()
+
     # Display alerts from session state
     if st.session_state.chartink_alerts:
         alerts = st.session_state.chartink_alerts
