@@ -730,6 +730,26 @@ if 'flow_history' not in st.session_state:
     st.session_state.flow_history = deque(maxlen=30)
 if 'alerts' not in st.session_state:
     st.session_state.alerts = deque(maxlen=10)
+if 'alert_history' not in st.session_state:
+    st.session_state.alert_history = []
+if 'session_start_time' not in st.session_state:
+    st.session_state.session_start_time = datetime.now()
+if 'poll_count' not in st.session_state:
+    st.session_state.poll_count = 0
+if 'dark_mode' not in st.session_state:
+    st.session_state.dark_mode = False
+if 'watchlist' not in st.session_state:
+    # Try to load from cache
+    try:
+        watchlist_file = Path('.cache/watchlist.json')
+        if watchlist_file.exists():
+            import json
+            with open(watchlist_file, 'r') as f:
+                st.session_state.watchlist = set(json.load(f))
+        else:
+            st.session_state.watchlist = set()
+    except:
+        st.session_state.watchlist = set()
 if 'nifty_chart_data' not in st.session_state:
     # Try to load from cache file first
     chart_cache_file = Path('.cache/nifty_chart_data.pkl')
@@ -3009,6 +3029,295 @@ def add_alert(message, alert_type="info", cooldown_minutes=10):
     telegram_message = f"<b>🚨 ALERT - {timestamp}</b>\n\n{message}"
     send_telegram_alert(telegram_message)
     engine.last_stock_alert[message_hash] = now
+
+
+# ============================================
+# ENHANCED ALERT SYSTEM WITH PRIORITY & FILTERING
+# ============================================
+
+def add_alert_enhanced(message, alert_type="info", priority="MEDIUM", category="GENERAL", metadata=None):
+    """
+    Enhanced alert system with priority levels, categories, and metadata
+
+    Priority Levels:
+    - CRITICAL: Immediate action required (e.g., major breakouts, confluence signals)
+    - HIGH: Important signals (e.g., volume spikes >5x, pattern matches)
+    - MEDIUM: Notable events (e.g., Top 10 entries, range breaks)
+    - LOW: Informational (e.g., sentiment changes)
+
+    Categories:
+    - PATTERN: AI pattern detection alerts
+    - VOLUME: Volume spike alerts
+    - CONFLUENCE: Triple confluence signals
+    - COMPREHENSIVE: NIFTY momentum scoring
+    - STOCK: Individual stock alerts
+    - RANGE: Range breakout alerts
+    - GENERAL: Other alerts
+    """
+    timestamp = datetime.now()
+
+    # Create enhanced alert object
+    alert_obj = {
+        "time": timestamp.strftime("%H:%M:%S"),
+        "timestamp": timestamp,
+        "message": message,
+        "type": alert_type,
+        "priority": priority,
+        "category": category,
+        "metadata": metadata or {},
+        "read": False
+    }
+
+    # Add to alerts queue
+    alerts.appendleft(alert_obj)
+
+    # Also save to persistent alert history
+    if 'alert_history' not in st.session_state:
+        st.session_state.alert_history = []
+
+    st.session_state.alert_history.append(alert_obj)
+
+    # Limit history to last 1000 alerts (prevent memory bloat)
+    if len(st.session_state.alert_history) > 1000:
+        st.session_state.alert_history = st.session_state.alert_history[-1000:]
+
+    # Send to Telegram for CRITICAL and HIGH priority
+    if priority in ["CRITICAL", "HIGH"]:
+        # Add priority indicator to telegram message
+        priority_emoji = {"CRITICAL": "🚨🚨🚨", "HIGH": "⚠️"}
+        telegram_msg = f"{priority_emoji[priority]} <b>{priority} PRIORITY</b>\n\n{message}"
+
+        # Apply cooldown for non-critical alerts
+        if priority != "CRITICAL":
+            import hashlib
+            message_hash = hashlib.md5(message.encode()).hexdigest()[:8]
+
+            now = datetime.now()
+            if message_hash in engine.last_stock_alert:
+                last_time = engine.last_stock_alert[message_hash]
+                minutes_passed = (now - last_time).total_seconds() / 60
+                if minutes_passed < 10:
+                    return  # Skip telegram for repeated high-priority alerts
+
+            engine.last_stock_alert[message_hash] = now
+
+        send_telegram_alert(telegram_msg)
+
+
+def get_alert_statistics():
+    """Calculate statistics from alert history"""
+    if 'alert_history' not in st.session_state or not st.session_state.alert_history:
+        return {
+            "total": 0,
+            "by_priority": {},
+            "by_category": {},
+            "by_hour": {},
+            "critical_count": 0,
+            "high_count": 0
+        }
+
+    alerts_list = st.session_state.alert_history
+
+    # Count by priority
+    priority_counts = {}
+    for alert in alerts_list:
+        p = alert.get('priority', 'MEDIUM')
+        priority_counts[p] = priority_counts.get(p, 0) + 1
+
+    # Count by category
+    category_counts = {}
+    for alert in alerts_list:
+        c = alert.get('category', 'GENERAL')
+        category_counts[c] = category_counts.get(c, 0) + 1
+
+    # Count by hour
+    hour_counts = {}
+    for alert in alerts_list:
+        if 'timestamp' in alert and hasattr(alert['timestamp'], 'hour'):
+            hour = alert['timestamp'].hour
+            hour_counts[hour] = hour_counts.get(hour, 0) + 1
+
+    return {
+        "total": len(alerts_list),
+        "by_priority": priority_counts,
+        "by_category": category_counts,
+        "by_hour": hour_counts,
+        "critical_count": priority_counts.get('CRITICAL', 0),
+        "high_count": priority_counts.get('HIGH', 0)
+    }
+
+
+def export_alerts_to_csv():
+    """Export alert history to CSV file"""
+    import csv
+    from io import StringIO
+
+    if 'alert_history' not in st.session_state or not st.session_state.alert_history:
+        return None
+
+    output = StringIO()
+    writer = csv.DictWriter(output, fieldnames=['timestamp', 'priority', 'category', 'type', 'message'])
+    writer.writeheader()
+
+    for alert in st.session_state.alert_history:
+        writer.writerow({
+            'timestamp': alert.get('timestamp', '').strftime('%Y-%m-%d %H:%M:%S') if hasattr(alert.get('timestamp'), 'strftime') else str(alert.get('timestamp', '')),
+            'priority': alert.get('priority', 'MEDIUM'),
+            'category': alert.get('category', 'GENERAL'),
+            'type': alert.get('type', 'info'),
+            'message': alert.get('message', '')
+        })
+
+    return output.getvalue()
+
+
+# ============================================
+# WATCHLIST MANAGEMENT
+# ============================================
+
+def add_to_watchlist(stock_name):
+    """Add stock to watchlist"""
+    if 'watchlist' not in st.session_state:
+        st.session_state.watchlist = set()
+
+    st.session_state.watchlist.add(stock_name.upper())
+    save_watchlist()
+
+
+def remove_from_watchlist(stock_name):
+    """Remove stock from watchlist"""
+    if 'watchlist' in st.session_state and stock_name.upper() in st.session_state.watchlist:
+        st.session_state.watchlist.remove(stock_name.upper())
+        save_watchlist()
+
+
+def get_watchlist():
+    """Get current watchlist"""
+    if 'watchlist' not in st.session_state:
+        load_watchlist()
+
+    return sorted(list(st.session_state.watchlist)) if 'watchlist' in st.session_state else []
+
+
+def save_watchlist():
+    """Save watchlist to file"""
+    try:
+        watchlist_file = Path('.cache/watchlist.json')
+        watchlist_file.parent.mkdir(parents=True, exist_ok=True)
+
+        import json
+        with open(watchlist_file, 'w') as f:
+            json.dump(list(st.session_state.watchlist), f)
+    except Exception as e:
+        print(f"Error saving watchlist: {e}")
+
+
+def load_watchlist():
+    """Load watchlist from file"""
+    try:
+        watchlist_file = Path('.cache/watchlist.json')
+        if watchlist_file.exists():
+            import json
+            with open(watchlist_file, 'r') as f:
+                stocks = json.load(f)
+                st.session_state.watchlist = set(stocks)
+        else:
+            st.session_state.watchlist = set()
+    except Exception as e:
+        print(f"Error loading watchlist: {e}")
+        st.session_state.watchlist = set()
+
+
+# ============================================
+# PERFORMANCE METRICS & SESSION SUMMARY
+# ============================================
+
+def get_session_metrics():
+    """Calculate session performance metrics"""
+    metrics = {
+        "session_start": st.session_state.get('session_start_time'),
+        "total_alerts": 0,
+        "critical_alerts": 0,
+        "patterns_detected": 0,
+        "volume_spikes": 0,
+        "confluence_signals": 0,
+        "top10_entries": 0,
+        "polls_completed": st.session_state.get('poll_count', 0),
+        "uptime_minutes": 0
+    }
+
+    if 'alert_history' in st.session_state:
+        metrics["total_alerts"] = len(st.session_state.alert_history)
+
+        # Count by category
+        for alert in st.session_state.alert_history:
+            if alert.get('priority') == 'CRITICAL':
+                metrics["critical_alerts"] += 1
+            if alert.get('category') == 'PATTERN':
+                metrics["patterns_detected"] += 1
+            elif alert.get('category') == 'VOLUME':
+                metrics["volume_spikes"] += 1
+            elif alert.get('category') == 'CONFLUENCE':
+                metrics["confluence_signals"] += 1
+            elif alert.get('category') == 'STOCK':
+                metrics["top10_entries"] += 1
+
+    # Calculate uptime
+    if metrics["session_start"]:
+        uptime_seconds = (datetime.now() - metrics["session_start"]).total_seconds()
+        metrics["uptime_minutes"] = int(uptime_seconds / 60)
+
+    return metrics
+
+
+def generate_session_summary():
+    """Generate comprehensive session summary report"""
+    metrics = get_session_metrics()
+    stats = get_alert_statistics()
+
+    summary = []
+    summary.append("=" * 60)
+    summary.append("📊 SESSION SUMMARY REPORT")
+    summary.append("=" * 60)
+    summary.append("")
+
+    # Session info
+    if metrics["session_start"]:
+        summary.append(f"🕒 Session Start: {metrics['session_start'].strftime('%I:%M:%S %p')}")
+        summary.append(f"⏱️ Uptime: {metrics['uptime_minutes']} minutes")
+    summary.append(f"🔄 Polls Completed: {metrics['polls_completed']}")
+    summary.append("")
+
+    # Alert summary
+    summary.append("🚨 ALERTS SUMMARY:")
+    summary.append(f"   Total Alerts: {stats['total']}")
+    summary.append(f"   Critical: {stats['critical_count']}")
+    summary.append(f"   High Priority: {stats['high_count']}")
+    summary.append("")
+
+    # Breakdown by category
+    summary.append("📂 ALERTS BY CATEGORY:")
+    for category, count in stats['by_category'].items():
+        summary.append(f"   {category}: {count}")
+    summary.append("")
+
+    # Key highlights
+    summary.append("🎯 KEY HIGHLIGHTS:")
+    summary.append(f"   AI Patterns Detected: {metrics['patterns_detected']}")
+    summary.append(f"   Volume Spikes (>5x): {metrics['volume_spikes']}")
+    summary.append(f"   Confluence Signals: {metrics['confluence_signals']}")
+    summary.append(f"   Top 10 Stock Entries: {metrics['top10_entries']}")
+    summary.append("")
+
+    # Performance
+    if metrics['uptime_minutes'] > 0:
+        alerts_per_hour = (stats['total'] / metrics['uptime_minutes']) * 60
+        summary.append(f"📈 Performance: {alerts_per_hour:.1f} alerts/hour")
+        summary.append("")
+
+    summary.append("=" * 60)
+
+    return "\n".join(summary)
 
 
 def send_stock_alert(stock_name, alert_type, price, change_pct, net_flow, volume_ratio=None):
@@ -5513,6 +5822,138 @@ st.markdown("""
 .alert-warning {background-color: #fff3cd; border-left: 4px solid #ffc107;}
 .alert-success {background-color: #d4edda; border-left: 4px solid #28a745;}
 .momentum-gauge {text-align: center; padding: 0.5rem; border-radius: 0.5rem; font-weight: bold;}
+
+/* ============================================
+   DARK MODE STYLES
+   ============================================ */
+body.dark-mode {
+    background-color: #1a1a1a;
+    color: #e0e0e0;
+}
+
+.dark-mode .main-header {
+    background: linear-gradient(90deg, #2c3e50, #34495e);
+    color: #ecf0f1;
+}
+
+.dark-mode .metric-card-bullish {
+    background: linear-gradient(135deg, #1e4d2b 0%, #27ae60 100%);
+    color: white;
+}
+
+.dark-mode .metric-card-bearish {
+    background: linear-gradient(135deg, #7f1d1d 0%, #c0392b 100%);
+    color: white;
+}
+
+.dark-mode .metric-card-neutral {
+    background: linear-gradient(135deg, #4a4a4a 0%, #666 100%);
+    color: white;
+}
+
+.dark-mode .part-container {
+    background-color: #2d2d2d;
+    border-color: #444;
+}
+
+.dark-mode .section-box-green {
+    background-color: #1a1a1a;
+    border-color: #27ae60;
+}
+
+.dark-mode .section-box-blue {
+    background-color: #1a1a1a;
+    border-color: #3498db;
+}
+
+.dark-mode .section-header {
+    background: linear-gradient(90deg, #2d2d2d 0%, #3a3a3a 100%);
+    color: #e0e0e0;
+}
+
+.dark-mode .stock-card {
+    background-color: #2d2d2d;
+    color: #e0e0e0;
+}
+
+/* Priority Alert Badges */
+.priority-critical {
+    background-color: #dc3545;
+    color: white;
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    font-weight: bold;
+    font-size: 0.75rem;
+    margin-right: 0.5rem;
+}
+
+.priority-high {
+    background-color: #ffc107;
+    color: #000;
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    font-weight: bold;
+    font-size: 0.75rem;
+    margin-right: 0.5rem;
+}
+
+.priority-medium {
+    background-color: #17a2b8;
+    color: white;
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    font-weight: bold;
+    font-size: 0.75rem;
+    margin-right: 0.5rem;
+}
+
+.priority-low {
+    background-color: #6c757d;
+    color: white;
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    font-weight: bold;
+    font-size: 0.75rem;
+    margin-right: 0.5rem;
+}
+
+/* Enhanced Tab Styling */
+.stTabs [data-baseweb="tab-list"] {
+    gap: 8px;
+    background-color: #f8f9fa;
+    padding: 1rem;
+    border-radius: 10px;
+}
+
+.stTabs [data-baseweb="tab"] {
+    height: 50px;
+    padding: 0 24px;
+    background-color: white;
+    border-radius: 8px;
+    font-weight: 600;
+    border: 2px solid #dee2e6;
+}
+
+.stTabs [aria-selected="true"] {
+    background-color: #1f77b4;
+    color: white;
+    border-color: #1f77b4;
+}
+
+.dark-mode .stTabs [data-baseweb="tab-list"] {
+    background-color: #2d2d2d;
+}
+
+.dark-mode .stTabs [data-baseweb="tab"] {
+    background-color: #1a1a1a;
+    color: #e0e0e0;
+    border-color: #444;
+}
+
+.dark-mode .stTabs [aria-selected="true"] {
+    background-color: #3498db;
+    border-color: #3498db;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -5576,6 +6017,42 @@ with st.sidebar:
             st.warning("⏸️ Pattern matching paused")
     else:
         st.warning("⚠️ Pattern modules not loaded")
+
+    st.markdown("---")
+    st.markdown("### 🎨 Display Settings")
+
+    # Dark Mode Toggle
+    dark_mode = st.toggle(
+        "🌙 Dark Mode",
+        value=st.session_state.dark_mode,
+        key="dark_mode_toggle",
+        help="Toggle dark mode theme"
+    )
+
+    if dark_mode != st.session_state.dark_mode:
+        st.session_state.dark_mode = dark_mode
+        st.rerun()
+
+    # Apply dark mode class to body
+    if st.session_state.dark_mode:
+        st.markdown("""
+        <script>
+        document.body.classList.add('dark-mode');
+        </script>
+        """, unsafe_allow_html=True)
+
+    st.markdown("---")
+    st.markdown("### 📈 Session Metrics")
+
+    metrics = get_session_metrics()
+    st.metric("Total Alerts", metrics["total_alerts"])
+    st.metric("Critical Alerts", metrics["critical_alerts"])
+    st.metric("Uptime", f"{metrics['uptime_minutes']} min")
+
+    # Session Summary Button
+    if st.button("📊 Generate Report", use_container_width=True):
+        summary = generate_session_summary()
+        st.text_area("Session Summary", summary, height=400)
 
 
 st.markdown('<p class="main-header">🚀 APEX AI TRADING</p>', unsafe_allow_html=True)
