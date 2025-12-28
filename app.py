@@ -793,6 +793,55 @@ API_SECRET = os.getenv("KITE_API_SECRET")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
+# Security validation
+def validate_credentials():
+    """Validate environment variables and security settings"""
+    issues = []
+
+    # Check .env file exists
+    env_file = Path(".env")
+    if not env_file.exists():
+        issues.append("⚠️ .env file not found - create one with your API credentials")
+    else:
+        # Check file permissions (Unix/Linux/Mac only)
+        if hasattr(os, 'stat') and env_file.exists():
+            import stat
+            mode = os.stat(env_file).st_mode
+            # Warn if file is readable by others (not just owner)
+            if mode & stat.S_IROTH or mode & stat.S_IWOTH:
+                issues.append("🔒 Security Warning: .env file is readable by others (run: chmod 600 .env)")
+
+    # Validate required credentials
+    if not API_KEY or not API_SECRET:
+        issues.append("❌ KITE_API_KEY and KITE_API_SECRET are required in .env file")
+    elif len(API_KEY) < 10 or len(API_SECRET) < 10:
+        issues.append("⚠️ API credentials look invalid (too short)")
+
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        issues.append("⚠️ Telegram credentials missing - alerts will not work")
+
+    # Check .gitignore exists and contains .env
+    gitignore_file = Path(".gitignore")
+    if gitignore_file.exists():
+        gitignore_content = gitignore_file.read_text()
+        if ".env" not in gitignore_content:
+            issues.append("🔒 Security Warning: .env not in .gitignore - your credentials may be exposed!")
+    else:
+        issues.append("⚠️ No .gitignore file - credentials may be committed to git!")
+
+    # Print validation results
+    if issues:
+        print("\n" + "="*60)
+        print("🔐 SECURITY VALIDATION")
+        print("="*60)
+        for issue in issues:
+            print(issue)
+        print("="*60 + "\n")
+    else:
+        print("✅ Security validation passed - credentials properly configured\n")
+
+validate_credentials()
+
 DERIV_FUT_SEGMENTS = {"NFO-FUT", "BFO-FUT"}
 DERIV_OPT_SEGMENTS = {"NFO-OPT", "BFO-OPT"}
 INDEX_NAME_WHITELIST = {
@@ -4906,13 +4955,14 @@ def polling_loop():
                     traceback.print_exc()
 
                 # ============================================
-                # NIFTY COMPREHENSIVE ALERT (8 Criteria Scoring)
+                # NIFTY COMPREHENSIVE ALERT (9 Criteria Scoring)
                 # ============================================
                 try:
-                    # Calculate comprehensive score using all 8 criteria
-                    score_result = calculate_comprehensive_score(
+                    # Calculate comprehensive score using all 9 criteria
+                    score_result = calculate_nifty_momentum_score(
                         indices_data=indices_data,
                         stocks_data=stocks_data,
+                        volume_state=volume_state,
                         vwap_st_strategy=vwap_st_strategy
                     )
 
@@ -5303,7 +5353,7 @@ st.set_page_config(page_title="APEX AI TRADING", layout="wide", initial_sidebar_
 
 if AUTOREFRESH_AVAILABLE and st.session_state.get("auto_refresh_toggle", True) and st.session_state.get("polling_running", False):
     st.session_state.refresh_count += 1
-    count = st_autorefresh(interval=30 * 1000, key="auto_refresh_counter")  # Changed from 10s to 30s to reduce memory usage
+    count = st_autorefresh(interval=10 * 1000, key="auto_refresh_counter")  # 10s refresh for responsive dashboard
 
 st.markdown("""
 <style>
