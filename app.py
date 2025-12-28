@@ -5684,21 +5684,22 @@ st.markdown("""
 }
 
 .main-header {
-    font-size: 5.5rem;
+    font-size: 8rem;
     font-weight: 900;
-    letter-spacing: 8px;
+    letter-spacing: 15px;
     text-align: center;
-    padding: 2.5rem 0;
-    margin-bottom: 2rem;
-    background: linear-gradient(90deg, #00ffff, #00ff88, #0088ff, #ff00ff, #00ffff);
+    padding: 3rem 0 2rem 0;
+    margin-bottom: 1rem;
+    background: linear-gradient(90deg, #0d47a1, #1976d2, #2196f3, #e91e63, #9c27b0, #0d47a1);
     background-size: 400% 400%;
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
     animation: gradientShift 8s ease infinite, float 3s ease-in-out infinite;
-    filter: drop-shadow(0 0 20px rgba(0, 255, 255, 0.5));
+    filter: drop-shadow(0 4px 8px rgba(13, 71, 161, 0.6)) drop-shadow(0 0 30px rgba(33, 150, 243, 0.4));
     font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
     text-transform: uppercase;
+    line-height: 1.2;
 }
 
 /* Color-Coded Metric Cards */
@@ -6109,9 +6110,9 @@ with st.sidebar:
 
 
 st.markdown('''
-<div style="text-align: center; margin-bottom: 1rem;">
+<div style="text-align: center; margin-bottom: 2rem;">
     <p class="main-header">⚡ APEX AI TRADING ⚡</p>
-    <p style="font-size: 1.2rem; color: #00ffff; font-weight: 600; letter-spacing: 3px; margin-top: -1.5rem; text-shadow: 0 0 10px rgba(0, 255, 255, 0.5);">
+    <p style="font-size: 1.8rem; color: #1565c0; font-weight: 700; letter-spacing: 5px; margin-top: -1rem; text-shadow: 0 2px 4px rgba(21, 101, 192, 0.3);">
         NEXT-GENERATION MOMENTUM ANALYTICS
     </p>
 </div>
