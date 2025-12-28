@@ -5666,18 +5666,39 @@ if AUTOREFRESH_AVAILABLE and st.session_state.get("auto_refresh_toggle", True) a
 
 st.markdown("""
 <style>
+/* Futuristic Animated Header */
+@keyframes gradientShift {
+    0% { background-position: 0% 50%; }
+    50% { background-position: 100% 50%; }
+    100% { background-position: 0% 50%; }
+}
+
+@keyframes glow {
+    0%, 100% { text-shadow: 0 0 10px #00ffff, 0 0 20px #00ffff, 0 0 30px #00ffff, 0 0 40px #00ffff; }
+    50% { text-shadow: 0 0 20px #00ffff, 0 0 30px #00ffff, 0 0 40px #00ffff, 0 0 50px #00ffff, 0 0 60px #00ffff; }
+}
+
+@keyframes float {
+    0%, 100% { transform: translateY(0px); }
+    50% { transform: translateY(-10px); }
+}
+
 .main-header {
-    font-size: 4.5rem;
-    font-weight: bold;
-    color: #1f77b4;
+    font-size: 5.5rem;
+    font-weight: 900;
+    letter-spacing: 8px;
     text-align: center;
-    padding: 1.5rem 0;
-    margin-bottom: 1.5rem;
-    background: linear-gradient(90deg, #1f77b4, #2ca02c);
+    padding: 2.5rem 0;
+    margin-bottom: 2rem;
+    background: linear-gradient(90deg, #00ffff, #00ff88, #0088ff, #ff00ff, #00ffff);
+    background-size: 400% 400%;
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
-    text-shadow: 2px 2px 4px rgba(0,0,0,0.1);
+    animation: gradientShift 8s ease infinite, float 3s ease-in-out infinite;
+    filter: drop-shadow(0 0 20px rgba(0, 255, 255, 0.5));
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    text-transform: uppercase;
 }
 
 /* Color-Coded Metric Cards */
@@ -6087,7 +6108,14 @@ with st.sidebar:
         st.text_area("Session Summary", summary, height=400)
 
 
-st.markdown('<p class="main-header">🚀 APEX AI TRADING</p>', unsafe_allow_html=True)
+st.markdown('''
+<div style="text-align: center; margin-bottom: 1rem;">
+    <p class="main-header">⚡ APEX AI TRADING ⚡</p>
+    <p style="font-size: 1.2rem; color: #00ffff; font-weight: 600; letter-spacing: 3px; margin-top: -1.5rem; text-shadow: 0 0 10px rgba(0, 255, 255, 0.5);">
+        NEXT-GENERATION MOMENTUM ANALYTICS
+    </p>
+</div>
+''', unsafe_allow_html=True)
 
 if not API_KEY or not API_SECRET:
     st.error("❌ Missing credentials in .env file")
