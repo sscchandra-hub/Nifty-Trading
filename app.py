@@ -6033,12 +6033,44 @@ with st.sidebar:
         st.session_state.dark_mode = dark_mode
         st.rerun()
 
-    # Apply dark mode class to body
+    # Apply dark mode styles dynamically
     if st.session_state.dark_mode:
         st.markdown("""
-        <script>
-        document.body.classList.add('dark-mode');
-        </script>
+        <style>
+        /* Dark Mode Override */
+        .stApp {
+            background-color: #1a1a1a;
+            color: #e0e0e0;
+        }
+        .stMarkdown, .stText, p, span, div {
+            color: #e0e0e0 !important;
+        }
+        .stMetric {
+            background-color: #2d2d2d;
+            border-radius: 8px;
+            padding: 1rem;
+        }
+        .stButton>button {
+            background-color: #3498db;
+            color: white;
+        }
+        .stSelectbox, .stTextInput, .stTextArea {
+            background-color: #2d2d2d !important;
+            color: #e0e0e0 !important;
+        }
+        [data-testid="stSidebar"] {
+            background-color: #1e1e1e;
+        }
+        [data-testid="stSidebar"] * {
+            color: #e0e0e0 !important;
+        }
+        .stAlert {
+            background-color: #2d2d2d !important;
+        }
+        h1, h2, h3, h4, h5, h6 {
+            color: #e0e0e0 !important;
+        }
+        </style>
         """, unsafe_allow_html=True)
 
     st.markdown("---")
