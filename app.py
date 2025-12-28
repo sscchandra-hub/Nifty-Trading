@@ -3370,6 +3370,19 @@ def send_stock_alert(stock_name, alert_type, price, change_pct, net_flow, volume
         send_telegram_alert(telegram_message)
         print(f"📱 Stock Alert: {stock_name} - {signal}")
         engine.last_stock_alert[cooldown_key] = now
+
+        # 🚀 TRIGGER ROCKET ANIMATION (Stars for stocks)
+        # Fixed count of 4 stars/sparkles for stock alerts
+        if 'rocket_triggers' not in st.session_state:
+            st.session_state.rocket_triggers = []
+
+        st.session_state.rocket_triggers.append({
+            'type': 'STOCK',
+            'direction': 'UP' if alert_type == 'BULLISH' else 'DOWN',
+            'count': 4,  # Fixed count for stock alerts
+            'priority': 'NORMAL'
+        })
+
         return True
     except Exception as e:
         print(f"Error sending stock alert: {e}")
@@ -3481,6 +3494,27 @@ def send_nifty_comprehensive_alert(score_result):
         send_telegram_alert(telegram_message)
         print(f"📱 NIFTY Comprehensive Alert: {full_signal} (Score: {total_score:+d})")
         engine.last_stock_alert[cooldown_key] = now
+
+        # 🚀 TRIGGER ROCKET ANIMATION
+        # Calculate rocket count based on score (3-5 rockets)
+        if abs_score >= 85:
+            rocket_count = 5  # VERY HIGH confidence
+        elif abs_score >= 70:
+            rocket_count = 4  # HIGH confidence
+        else:  # 60-69
+            rocket_count = 3  # MEDIUM confidence
+
+        # Store rocket trigger in session state
+        if 'rocket_triggers' not in st.session_state:
+            st.session_state.rocket_triggers = []
+
+        st.session_state.rocket_triggers.append({
+            'type': 'NIFTY',
+            'direction': 'UP' if signal_type == 'BULLISH' else 'DOWN',
+            'count': rocket_count,
+            'priority': 'CRITICAL' if abs_score >= 85 else 'NORMAL'
+        })
+
         return True
     except Exception as e:
         print(f"Error sending NIFTY comprehensive alert: {e}")
@@ -5976,6 +6010,156 @@ body.dark-mode {
     background-color: #3498db;
     border-color: #3498db;
 }
+
+/* ============================================
+   ROCKET ANIMATIONS FOR ALERTS
+   ============================================ */
+
+/* Rocket container */
+.rocket-container {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 9999;
+}
+
+/* NIFTY Bullish - Rockets going UP */
+@keyframes rocketUp {
+    0% {
+        transform: translateY(100vh) rotate(0deg);
+        opacity: 0;
+    }
+    10% {
+        opacity: 1;
+    }
+    90% {
+        opacity: 1;
+    }
+    100% {
+        transform: translateY(-20vh) rotate(15deg);
+        opacity: 0;
+    }
+}
+
+.nifty-rocket-up {
+    position: absolute;
+    font-size: 4rem;
+    animation: rocketUp 3s ease-out forwards;
+    filter: drop-shadow(0 0 10px rgba(33, 150, 243, 0.8));
+}
+
+/* NIFTY Bearish - Arrows going DOWN */
+@keyframes arrowDown {
+    0% {
+        transform: translateY(-10vh) rotate(0deg);
+        opacity: 0;
+    }
+    10% {
+        opacity: 1;
+    }
+    90% {
+        opacity: 1;
+    }
+    100% {
+        transform: translateY(110vh) rotate(-15deg);
+        opacity: 0;
+    }
+}
+
+.nifty-arrow-down {
+    position: absolute;
+    font-size: 4rem;
+    animation: arrowDown 3s ease-in forwards;
+    filter: drop-shadow(0 0 10px rgba(244, 67, 54, 0.8));
+}
+
+/* STOCK Bullish - Stars going UP with spiral */
+@keyframes starUp {
+    0% {
+        transform: translateY(100vh) translateX(0) rotate(0deg) scale(0.5);
+        opacity: 0;
+    }
+    10% {
+        opacity: 1;
+    }
+    25% {
+        transform: translateY(75vh) translateX(30px) rotate(90deg) scale(1);
+    }
+    50% {
+        transform: translateY(50vh) translateX(-30px) rotate(180deg) scale(1.2);
+    }
+    75% {
+        transform: translateY(25vh) translateX(30px) rotate(270deg) scale(1);
+    }
+    90% {
+        opacity: 1;
+    }
+    100% {
+        transform: translateY(-10vh) translateX(0) rotate(360deg) scale(0.5);
+        opacity: 0;
+    }
+}
+
+.stock-star-up {
+    position: absolute;
+    font-size: 3.5rem;
+    animation: starUp 3.5s ease-in-out forwards;
+    filter: drop-shadow(0 0 15px rgba(255, 193, 7, 0.9));
+}
+
+/* STOCK Bearish - Red sparkles tumbling DOWN */
+@keyframes sparkleDown {
+    0% {
+        transform: translateY(-10vh) translateX(0) rotate(0deg) scale(1);
+        opacity: 0;
+    }
+    10% {
+        opacity: 1;
+    }
+    25% {
+        transform: translateY(25vh) translateX(-40px) rotate(-90deg) scale(1.2);
+    }
+    50% {
+        transform: translateY(50vh) translateX(40px) rotate(-180deg) scale(0.8);
+    }
+    75% {
+        transform: translateY(75vh) translateX(-40px) rotate(-270deg) scale(1.1);
+    }
+    90% {
+        opacity: 1;
+    }
+    100% {
+        transform: translateY(110vh) translateX(0) rotate(-360deg) scale(0.5);
+        opacity: 0;
+    }
+}
+
+.stock-sparkle-down {
+    position: absolute;
+    font-size: 3.5rem;
+    animation: sparkleDown 3.5s ease-in forwards;
+    filter: drop-shadow(0 0 15px rgba(244, 67, 54, 0.9));
+    color: #f44336;
+}
+
+/* Pulse effect for critical alerts */
+@keyframes pulse {
+    0%, 100% {
+        transform: scale(1);
+    }
+    50% {
+        transform: scale(1.2);
+    }
+}
+
+.rocket-critical {
+    animation-duration: 2.5s !important;
+    font-size: 5rem !important;
+}
+
 </style>
 """, unsafe_allow_html=True)
 
@@ -6116,7 +6300,89 @@ st.markdown('''
         NEXT-GENERATION MOMENTUM ANALYTICS
     </p>
 </div>
+
+<!-- Rocket Animation Container -->
+<div id="rocketContainer" class="rocket-container"></div>
+
+<!-- Audio for alerts -->
+<audio id="alertSound" preload="auto">
+    <source src="data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdJivrJBhNjVgodDbq2EcBj+a2/LDciUFLIHO8tiJNwgZaLvt559NEAxQp+PwtmMcBjiR1/LMeSwFJHfH8N2QQAoUXrTp66hVFApGn+DyvmwhBSuBzvLZjTgHF2i88OScTgwOUKfj8LRiHAU2kdfy0HgsBS13yPDej0AKElyz6uqnVRQJRp/h8r9sIgUpgc/y2o06BxhqvvbnnU4MClOn4fCzYxwGN5LY8s94LAUtdsjw3Y9AChJcs+rqp1UUCUaf4PK/bCIFKoHO8tqNOwcZar327qBPCwtTqOLws2MdBjmS2PLPeCwGLXbI8N2PQAoSXLPq6qdVFAlGn+DywG0iBSuBzvLajTsHGWu99++gTwsLU6ni8LNkHQY6ktfyz3gtBy12yPDej0AKElyz6+qmVRQJRp/g8sBtIgUrgs7y2o07BxlrvffvoE8LC1Kp4vCzZR0GOJLa8tB5LActdsnw3Y9AChJcs+vqp1UVCUaf4PK/bSIFK4LO8tqNOwcZa7337qFOCwtSqeLws2UdBjmS2PLQeS0HLHbJ8NyPQQoSXLPr6qdVFQlGn+DywG4iBSyCzvLajTwHGWu+9++hTgsLUqni8LNlHQY5ktfyzXktByx2yfDcj0EKElyz6+qnVRUJRp/h8r9uIgUsgs7y2o08BxlrvvfvoU4LC1Kp4vCyZh0GOZLa8tB5LQcsdsnw3I9BChJcs+vqp1UVCUaf4fK/biIFLILO8tqNPAcZa773 76FOCwtSqeLwsmYdBjmS2vLQeS0HLHbJ8NyPQQoSXLTq6qdWFQlGn+HywG4iBSyCzvLajT0HGGu+9++hTgsLUqni8LJmHQY5ktry0HktByx2yfDcj0EKElyz6+qnVhYJRp/h8r9uIgUsgs7y2o09Bxhrvvfuok4LC1Kp4vCyZh0GOpLa8tB5LQcsdsnw3I9BChJctOrqp1YWCUae4fLAbSIGLIHO8tqNPQcYar337qJOCwtTp+PwsmUeBjiS2/LPeC4HK3bJ79yOQgoRXLPr6qdWFglGn+HyvmwjBSyBzvLajT0GGGq+9++iTgsMUqfi8LJlHgc5kdvy0HkuByt2ye/cjkIKEVyz6+qnVhYJRp/h8r5sIwUsgs7y2o09BhhrrvbvpE4LDFKn4vCyZR4HOZHb8tB5LgcqdsrvzIxDCRFcsurqp1YWCUef4fK+bCMFLILO8tqNPQYYa6717qROCwxSpuLwsWUeBzmR2/LQeS4HKnbK78yMRAkQXbPq6qdWFglGn+HyvmwjBSyCzvLajT0GGGuu9e+kTgsMUqbi8LFlHgc5kdvy0HkuByp2yu/MjEQJEF2z6uqnVhYJRp/h8r5sIwUtgs7y2o0+Bhlrrvbvo04LDFKm4vCxZB4HOpHb8tB5LgcqdsvwzIxDCRBds+rqp1YXCUae4fK+bCMFLYLO8tqNPgYYa6717qNODAxSpuLwsWQeBzqR2/LQeS4HKXbL8M+MQwkQXbPq6qhVFwlGn+HyvmwkBSuCzvLajT4GGGuv9u+kTgwMU6bi8LFkHgc7ktvy0HovByl2zPDPjEQJEF2z6uqoVhcJRp/h8r5sJAUsgs7y2o0+BhhrrfbupE4MDFOn4vCxYx8HOpLb8tB6LwcpdszvzoxFCRBds+vqqFUXCkee4fK+bCQFLIHO8tuNPgYYaq317qVODAxTp+LwsWIfBzuS2vLReS8HKXbM782MRQgRXbPq6qhWFwpGn+HyvWwkBSyBzvLbjT8GGGqu9e+lTgwMU6fi8LFiHwc7ktny0HkvBih2zPDNjEYJD1206uqpVRcKRp/h8r1tJAUsgs7y2409BhhrrvXwpU4MDE+o4fCyYh8HPJLa8s96LwYodszwzYxGCQ9dtOrqqlUXCkae4fK9bSMGLIHO8tuNPwYYaq317qZODAxPqOHwsmIfBz2S2vLPei8GKHbM8M2NRQgPXrTp6qtVGApGnuHyvWwkBSyCzvLbjT4HGGqt9++mTwsMT6jh8LFjHwc9ktryz3ovBih2zPDNjUUIEF606+qrVRgKRp/g8r1sJQUsgs7y240+BxdprPfvpk8LDE+o4fCxYh8HPJLb8s96MAYndszwzo1FCBBetOnqrFUYCUae4PK9bCYFK4LO8tyNQAcXaK3276dQDAtPqODwsWIfBz2S2/LPejAGJ3bN8M6NRQgQXrTp6q1VFwpGnt/yvWwnBSyCzvLcjUAHF2ir9++oUAwMUKbf8bFiHwc9kt3yz3ovBSd2zfDOjkYID160 6uqtVRcKRp7e8bxuJwUsgs/y3I1ABxZoqvfvqFAMC1Cmx/GxYyAHPpPd8s97MAYmdszwzo5HBw9etOrqr1UXC0ae3vK8bycFLIHP8tuOQAcWZ6r386hQDAtQpsfxsWQgBj+T3fPPezAGJnXN8c2OSQcPXrTp66xWFwtGnt7yvG4nBSuCz/LcjkEHFmeq9vOqUAwLUKbG8bFlIQc/k93yz3sxBSV1zfDOjkoGD1606euuVRgLRp7e8rttKAUrgtDy3I5BBxZnqfbzqlANDFCmxvGwZiAHQJPd8s97MQYldc3wz45KBQ9etOnrrlYYC0ae3vK7bSgFK4LQ8tuPQQcVZ6n286pRDQxQpsbxsGcgBj+U3vLPezEGJXXN8M+PSwUQXrTp669WGAtGnt3yuW4pBSuB0PLbj0IHFWeq9vOrUQ0LUabF8a9nIQZAlN7y0HwyBiR1zO/Pj0sGEF605+uwVhcLRp/d8bpuKQUrgtDy2o9DBxRmq/b0q1ENDFGmxfGvZyIGQJPf8s99MgYkdMzwz49MBRBftOfqsFYXDEae3fK6cCkFK4LQ8tuPRAcUZqv29KtRDQxRpsTxrmgjBkGT3/LPfTIFJHPL8c+OTQUPYbTn6rBWGA1GneHvuXEqBSqC0PDbkEQHE2Ws9/WsUQ4MUKfD8a5pIwZAk+Dy0H0zBSN0y/HQjU4FD2G05+qwVhgNRp3g8LpxLAUqgdDy3JBFBhJlrvf1rVEODVCmw/GuaiMGQJTg8tB+MwUjdMvx0I1OBQ9htOfqsVcYDUad4PC6cSwFKoHQ8tyPRgYSZa339K5SDQ1Qp8Pxrmk0ByCS4fLQfzQFInPM8dCNTwUPYrTn6rJWGQ5Gnt/xu3MtBSqB0PPdjkYHEWWu+PWuUg0NUKfD8K5qNAcgkuHy0H80BSFzy/HRjk8FD2O05+uzVRkOR5/e8rt0LgUqgc/z3I9HBhFlr/j1r1MODFCnw/CuazQHH5Ph8tB/NAUhc8vx0Y5PBA9ktOnrs1UZDUeg3vK8dS8GKoHQ89yPRwYRZa349a9UDg1QpsPwrms0Bx+T4fLQgDUFIHPL8dGOTwQPZLTp67NVGg1HoN7yvHYwBSqB0PPcj0gGEWWv+fWwUw4NUKfD769sNQcekuHy0IA1BSBzy/HRjlAEDmS16OuzVRoMR6De8rx2MAUrgc/z3I9IBxFlr/r0sFQODVCmw+6ubTYHHpLh8tGANQUgc8vx0Y5RBA5ktejrs1UaDEeg3vK8dzEGKoHQ89yPSQYQZa/69LBUDg1Qpb/vu200ByCS4fLRgDUFIHPL8dGPUQQOZbXn67RWHQ1HoN3yu3cxBiqB0PPcj0kGEGWu+vWxUw8NUaW+76xvNgcfkuLy0YE2BR9zzPHRj1IEDWe05+u0Vh4MR5/d8rt4MgYpgdDz249KBhBlrvr1sVQPDVGlvu+sbzcHHpLi8tGCNgUfcsvy0o9SBA1otObrtFYeDEef3fK7eDIGKYHQ89uQSgYQZa369bJUEA1RpL7uq280Bx6S4vLRgzYFHnLM8tKPUwQOaLTl7LRXHA1Hn9zzu3gzBymB0PPbkEsGD2Wu+vayUxANU6O+7qpwNQcdkuLy0oM3BR1yzPLTj1QEDGm04uy0VxwNR5/c8rt5NAcpgNDz25BLBg9lrfr2s1MQDVKUO+7obEAbB/" type="audio/wav">
+</audio>
+
+<script>
+// Rocket Animation Trigger Function
+function launchRockets(alertType, direction, count, priority) {
+    const container = document.getElementById('rocketContainer');
+    if (!container) return;
+
+    // Determine emoji and class based on alert type
+    let emoji, className;
+    if (alertType === 'NIFTY') {
+        emoji = direction === 'UP' ? '🚀' : '⬇️';
+        className = direction === 'UP' ? 'nifty-rocket-up' : 'nifty-arrow-down';
+    } else { // STOCK
+        emoji = direction === 'UP' ? '⭐' : '💫';
+        className = direction === 'UP' ? 'stock-star-up' : 'stock-sparkle-down';
+    }
+
+    // Play sound
+    const audio = document.getElementById('alertSound');
+    if (audio) {
+        audio.currentTime = 0;
+        audio.volume = 0.3;
+        audio.play().catch(e => console.log('Audio play failed:', e));
+    }
+
+    // Launch multiple rockets with staggered timing
+    for (let i = 0; i < count; i++) {
+        setTimeout(() => {
+            const rocket = document.createElement('div');
+            rocket.className = className;
+            if (priority === 'CRITICAL') {
+                rocket.classList.add('rocket-critical');
+            }
+            rocket.textContent = emoji;
+
+            // Random horizontal position (10% to 90% of screen width)
+            const randomX = 10 + Math.random() * 80;
+            rocket.style.left = randomX + '%';
+
+            // Add slight delay variation
+            rocket.style.animationDelay = (Math.random() * 0.3) + 's';
+
+            container.appendChild(rocket);
+
+            // Remove after animation completes
+            setTimeout(() => {
+                rocket.remove();
+            }, 4000);
+        }, i * 200); // Stagger by 200ms
+    }
+}
+
+// Make function globally accessible
+window.launchRockets = launchRockets;
+</script>
 ''', unsafe_allow_html=True)
+
+# 🚀 CHECK FOR PENDING ROCKET LAUNCHES
+# This executes whenever the page reruns and triggers any pending rocket animations
+if 'rocket_triggers' in st.session_state and st.session_state.rocket_triggers:
+    # Build JavaScript to launch all pending rockets
+    rocket_js = "<script>\n"
+    for trigger in st.session_state.rocket_triggers:
+        alert_type = trigger['type']
+        direction = trigger['direction']
+        count = trigger['count']
+        priority = trigger['priority']
+        rocket_js += f"window.launchRockets('{alert_type}', '{direction}', {count}, '{priority}');\n"
+    rocket_js += "</script>"
+
+    # Inject the JavaScript
+    st.markdown(rocket_js, unsafe_allow_html=True)
+
+    # Clear triggers after launching
+    st.session_state.rocket_triggers = []
 
 if not API_KEY or not API_SECRET:
     st.error("❌ Missing credentials in .env file")
