@@ -5684,9 +5684,9 @@ st.markdown("""
 }
 
 .main-header {
-    font-size: 8rem;
+    font-size: 10rem;
     font-weight: 900;
-    letter-spacing: 15px;
+    letter-spacing: 20px;
     text-align: center;
     padding: 3rem 0 2rem 0;
     margin-bottom: 1rem;
@@ -6112,7 +6112,7 @@ with st.sidebar:
 st.markdown('''
 <div style="text-align: center; margin-bottom: 2rem;">
     <p class="main-header">⚡ APEX AI TRADING ⚡</p>
-    <p style="font-size: 1.8rem; color: #1565c0; font-weight: 700; letter-spacing: 5px; margin-top: -1rem; text-shadow: 0 2px 4px rgba(21, 101, 192, 0.3);">
+    <p style="font-size: 1.1rem; color: #1565c0; font-weight: 600; letter-spacing: 3px; margin-top: -0.5rem; text-shadow: 0 1px 3px rgba(21, 101, 192, 0.3);">
         NEXT-GENERATION MOMENTUM ANALYTICS
     </p>
 </div>
