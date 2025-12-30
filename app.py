@@ -4319,6 +4319,303 @@ def ensure_instruments(kite: KiteConnect) -> pd.DataFrame:
     df.to_parquet(INSTRUMENTS_FILE, index=False)
     return df
 
+# =========================
+# WEEKLY EXPIRY TRACKING SYSTEM
+# =========================
+
+def get_next_nifty_expiries(ins_df: pd.DataFrame, num_expiries=4) -> list:
+    """
+    Get next N NIFTY option expiries dynamically from instruments data
+
+    Returns: List of expiry dates (datetime objects) sorted by date
+    Example: [datetime(2024, 12, 24), datetime(2024, 12, 31), ...]
+    """
+    try:
+        # Filter NIFTY options
+        nifty_options = ins_df[
+            (ins_df['name'] == 'NIFTY') &
+            (ins_df['instrument_type'].isin(['CE', 'PE'])) &
+            (ins_df['segment'].isin(DERIV_OPT_SEGMENTS))
+        ].copy()
+
+        if nifty_options.empty:
+            print("⚠️ No NIFTY options found in instruments")
+            return []
+
+        # Get unique expiry dates
+        expiries = nifty_options['expiry'].dropna().unique()
+        expiries = pd.to_datetime(expiries)
+
+        # Filter future expiries only
+        today = pd.Timestamp.now().normalize()
+        future_expiries = expiries[expiries >= today]
+
+        # Sort and take next N
+        future_expiries = sorted(future_expiries)[:num_expiries]
+
+        print(f"📅 Next {len(future_expiries)} NIFTY expiries:")
+        for i, exp in enumerate(future_expiries, 1):
+            print(f"   Week {i}: {exp.strftime('%d-%b-%Y (%A)')}")
+
+        return future_expiries
+
+    except Exception as e:
+        print(f"❌ Error getting NIFTY expiries: {e}")
+        return []
+
+def get_atm_strike(current_price: float, strike_gap=50) -> int:
+    """
+    Calculate ATM strike based on current NIFTY price
+
+    Args:
+        current_price: Current NIFTY spot price
+        strike_gap: Strike interval (default 50 for NIFTY)
+
+    Returns: ATM strike price
+    Example: If price is 26075, ATM = 26100
+    """
+    return round(current_price / strike_gap) * strike_gap
+
+def get_strikes_for_expiry(ins_df: pd.DataFrame, expiry_date, atm_strike: int, range_strikes=20) -> dict:
+    """
+    Get ATM ± N strikes for a specific expiry
+
+    Args:
+        ins_df: Instruments DataFrame
+        expiry_date: Expiry date to filter
+        atm_strike: ATM strike price
+        range_strikes: Number of strikes above and below ATM (default 20)
+
+    Returns: Dict with strike -> {ce_token, pe_token, strike}
+    """
+    try:
+        # Filter NIFTY options for this expiry
+        expiry_options = ins_df[
+            (ins_df['name'] == 'NIFTY') &
+            (ins_df['instrument_type'].isin(['CE', 'PE'])) &
+            (ins_df['expiry'] == expiry_date) &
+            (ins_df['segment'].isin(DERIV_OPT_SEGMENTS))
+        ].copy()
+
+        if expiry_options.empty:
+            return {}
+
+        # Get all available strikes
+        all_strikes = sorted(expiry_options['strike'].dropna().unique())
+
+        # Find ATM position
+        atm_idx = None
+        for i, strike in enumerate(all_strikes):
+            if strike >= atm_strike:
+                atm_idx = i
+                break
+
+        if atm_idx is None:
+            atm_idx = len(all_strikes) - 1
+
+        # Get ATM ± range_strikes
+        start_idx = max(0, atm_idx - range_strikes)
+        end_idx = min(len(all_strikes), atm_idx + range_strikes + 1)
+        selected_strikes = all_strikes[start_idx:end_idx]
+
+        # Build strike mapping with CE/PE tokens
+        strike_map = {}
+        for strike in selected_strikes:
+            ce_data = expiry_options[
+                (expiry_options['strike'] == strike) &
+                (expiry_options['instrument_type'] == 'CE')
+            ]
+            pe_data = expiry_options[
+                (expiry_options['strike'] == strike) &
+                (expiry_options['instrument_type'] == 'PE')
+            ]
+
+            strike_map[strike] = {
+                'strike': strike,
+                'ce_token': ce_data['instrument_token'].iloc[0] if not ce_data.empty else None,
+                'pe_token': pe_data['instrument_token'].iloc[0] if not pe_data.empty else None,
+                'ce_symbol': ce_data['tradingsymbol'].iloc[0] if not ce_data.empty else None,
+                'pe_symbol': pe_data['tradingsymbol'].iloc[0] if not pe_data.empty else None
+            }
+
+        print(f"   Found {len(strike_map)} strikes (ATM: {atm_strike})")
+        return strike_map
+
+    except Exception as e:
+        print(f"❌ Error getting strikes for expiry: {e}")
+        return {}
+
+def collect_weekly_expiry_data(kite: KiteConnect, ins_df: pd.DataFrame, expiry_date, strike_map: dict) -> pd.DataFrame:
+    """
+    Collect options data for all strikes of an expiry
+
+    Returns: DataFrame with columns:
+    - strike, type (CE/PE), last_price, volume, oi, oi_change,
+      bid, ask, net_flow, iv, delta, theta, gamma, vega
+    """
+    try:
+        # Collect all tokens
+        tokens = []
+        for strike_data in strike_map.values():
+            if strike_data['ce_token']:
+                tokens.append(strike_data['ce_token'])
+            if strike_data['pe_token']:
+                tokens.append(strike_data['pe_token'])
+
+        if not tokens:
+            return pd.DataFrame()
+
+        # Fetch quotes
+        quotes = kite.quote([f"NFO:{token}" for token in tokens])
+
+        # Build dataframe
+        rows = []
+        for strike, strike_data in strike_map.items():
+            # CE data
+            if strike_data['ce_token']:
+                ce_key = f"NFO:{strike_data['ce_token']}"
+                if ce_key in quotes:
+                    q = quotes[ce_key]
+                    rows.append({
+                        'strike': strike,
+                        'type': 'CE',
+                        'symbol': strike_data['ce_symbol'],
+                        'token': strike_data['ce_token'],
+                        'last_price': q.get('last_price', 0),
+                        'volume': q.get('volume', 0),
+                        'oi': q.get('oi', 0),
+                        'oi_day_high': q.get('oi_day_high', 0),
+                        'oi_day_low': q.get('oi_day_low', 0),
+                        'bid': q.get('depth', {}).get('buy', [{}])[0].get('price', 0) if q.get('depth') else 0,
+                        'ask': q.get('depth', {}).get('sell', [{}])[0].get('price', 0) if q.get('depth') else 0,
+                    })
+
+            # PE data
+            if strike_data['pe_token']:
+                pe_key = f"NFO:{strike_data['pe_token']}"
+                if pe_key in quotes:
+                    q = quotes[pe_key]
+                    rows.append({
+                        'strike': strike,
+                        'type': 'PE',
+                        'symbol': strike_data['pe_symbol'],
+                        'token': strike_data['pe_token'],
+                        'last_price': q.get('last_price', 0),
+                        'volume': q.get('volume', 0),
+                        'oi': q.get('oi', 0),
+                        'oi_day_high': q.get('oi_day_high', 0),
+                        'oi_day_low': q.get('oi_day_low', 0),
+                        'bid': q.get('depth', {}).get('buy', [{}])[0].get('price', 0) if q.get('depth') else 0,
+                        'ask': q.get('depth', {}).get('sell', [{}])[0].get('price', 0) if q.get('depth') else 0,
+                    })
+
+        df = pd.DataFrame(rows)
+
+        if not df.empty:
+            # Calculate net flow (volume * last_price for options)
+            df['net_flow'] = df['volume'] * df['last_price']
+            # For PE, make flow negative
+            df.loc[df['type'] == 'PE', 'net_flow'] *= -1
+
+            # Calculate OI change
+            df['oi_change'] = df['oi'] - df['oi_day_low']  # Approximation
+
+            # Placeholder for Greeks (would need Greeks API or calculation)
+            df['iv'] = 0  # Implied Volatility
+            df['delta'] = 0
+            df['theta'] = 0
+            df['gamma'] = 0
+            df['vega'] = 0
+
+        return df
+
+    except Exception as e:
+        print(f"❌ Error collecting weekly expiry data: {e}")
+        import traceback
+        traceback.print_exc()
+        return pd.DataFrame()
+
+def save_cumulative_expiry_data(expiry_date, daily_df: pd.DataFrame, data_dir="data/weekly_expiry"):
+    """
+    Save or update cumulative expiry data to CSV
+
+    Logic:
+    - Day 1: Save fresh data
+    - Day 2+: Load previous, add today's data, save cumulative
+    """
+    try:
+        # Create data directory
+        Path(data_dir).mkdir(parents=True, exist_ok=True)
+
+        # CSV filename based on expiry date
+        expiry_str = expiry_date.strftime('%d%b%Y').upper()
+        csv_file = Path(data_dir) / f"nifty_{expiry_str}.csv"
+
+        # Calculate current day of week (for tracking)
+        today = datetime.now().date()
+
+        if csv_file.exists():
+            # Load previous cumulative data
+            prev_df = pd.read_csv(csv_file)
+
+            # Merge with today's data (sum volumes, flows, OI changes)
+            # Group by strike + type
+            if not prev_df.empty and not daily_df.empty:
+                # Merge on strike + type
+                cumulative_df = prev_df.merge(
+                    daily_df[['strike', 'type', 'net_flow', 'volume', 'oi_change']],
+                    on=['strike', 'type'],
+                    how='outer',
+                    suffixes=('_prev', '_today')
+                )
+
+                # Calculate cumulative values
+                cumulative_df['cumulative_flow'] = (
+                    cumulative_df['cumulative_flow'].fillna(0) +
+                    cumulative_df['net_flow_today'].fillna(0)
+                )
+                cumulative_df['cumulative_volume'] = (
+                    cumulative_df['cumulative_volume'].fillna(0) +
+                    cumulative_df['volume_today'].fillna(0)
+                )
+                cumulative_df['cumulative_oi_change'] = (
+                    cumulative_df['cumulative_oi_change'].fillna(0) +
+                    cumulative_df['oi_change_today'].fillna(0)
+                )
+
+                # Update latest values
+                cumulative_df['last_price'] = daily_df['last_price']
+                cumulative_df['oi'] = daily_df['oi']
+                cumulative_df['daily_flow'] = daily_df['net_flow']
+                cumulative_df['daily_volume'] = daily_df['volume']
+
+                # Keep symbol and token
+                cumulative_df['symbol'] = daily_df['symbol']
+                cumulative_df['token'] = daily_df['token']
+
+            else:
+                cumulative_df = prev_df
+        else:
+            # First day - initialize cumulative columns
+            cumulative_df = daily_df.copy()
+            cumulative_df['cumulative_flow'] = cumulative_df['net_flow']
+            cumulative_df['cumulative_volume'] = cumulative_df['volume']
+            cumulative_df['cumulative_oi_change'] = cumulative_df['oi_change']
+            cumulative_df['daily_flow'] = cumulative_df['net_flow']
+            cumulative_df['daily_volume'] = cumulative_df['volume']
+
+        # Save updated cumulative data
+        cumulative_df.to_csv(csv_file, index=False)
+        print(f"✅ Saved cumulative data to {csv_file}")
+
+        return cumulative_df
+
+    except Exception as e:
+        print(f"❌ Error saving cumulative data: {e}")
+        import traceback
+        traceback.print_exc()
+        return daily_df
+
 def discover_indices_with_fo(ins_df: pd.DataFrame) -> list:
     """
     Discover all whitelisted indices from instruments data.
