@@ -4616,6 +4616,290 @@ def save_cumulative_expiry_data(expiry_date, daily_df: pd.DataFrame, data_dir="d
         traceback.print_exc()
         return daily_df
 
+# ============================================
+# STOCK MONTHLY EXPIRY TRACKING FUNCTIONS
+# ============================================
+
+def get_stock_expiry(ins_df: pd.DataFrame, symbol: str) -> datetime:
+    """
+    Get current month expiry for a stock from live options data.
+    Returns the nearest future expiry date.
+    """
+    try:
+        stock_options = ins_df[
+            (ins_df['name'] == symbol) &
+            (ins_df['instrument_type'] == 'CE') &
+            (ins_df['segment'].isin(DERIV_OPT_SEGMENTS))
+        ].copy()
+
+        if stock_options.empty:
+            return None
+
+        # Get unique expiry dates
+        expiries = pd.to_datetime(stock_options['expiry']).dt.date.unique()
+        expiries = sorted([e for e in expiries if e >= datetime.now().date()])
+
+        if expiries:
+            return datetime.combine(expiries[0], datetime.min.time())
+        return None
+
+    except Exception as e:
+        print(f"❌ Error getting expiry for {symbol}: {e}")
+        return None
+
+def get_stock_atm_strike(current_price: float, symbol: str = None) -> int:
+    """
+    Calculate ATM strike for a stock.
+    Strike gap varies by stock price range.
+    """
+    if current_price < 500:
+        strike_gap = 10  # Stocks under 500: 10 gap
+    elif current_price < 1000:
+        strike_gap = 20  # Stocks 500-1000: 20 gap
+    elif current_price < 2500:
+        strike_gap = 50  # Stocks 1000-2500: 50 gap
+    else:
+        strike_gap = 100  # Stocks above 2500: 100 gap
+
+    return round(current_price / strike_gap) * strike_gap
+
+def get_stock_strikes_for_expiry(ins_df: pd.DataFrame, symbol: str, expiry_date: datetime,
+                                 atm_strike: int, range_strikes: int = 10) -> dict:
+    """
+    Get ATM ± range_strikes for a stock expiry.
+    Returns dict: strike -> {ce_token, pe_token, ce_symbol, pe_symbol}
+    """
+    try:
+        expiry_str = expiry_date.strftime('%Y-%m-%d')
+
+        # Filter options for this stock and expiry
+        stock_opts = ins_df[
+            (ins_df['name'] == symbol) &
+            (ins_df['expiry'] == expiry_str) &
+            (ins_df['segment'].isin(DERIV_OPT_SEGMENTS))
+        ].copy()
+
+        if stock_opts.empty:
+            return {}
+
+        # Determine strike gap
+        if atm_strike < 500:
+            strike_gap = 10
+        elif atm_strike < 1000:
+            strike_gap = 20
+        elif atm_strike < 2500:
+            strike_gap = 50
+        else:
+            strike_gap = 100
+
+        # Generate ATM ± range strikes
+        strikes = [atm_strike + (i * strike_gap) for i in range(-range_strikes, range_strikes + 1)]
+
+        strike_map = {}
+        for strike in strikes:
+            ce_row = stock_opts[(stock_opts['strike'] == strike) & (stock_opts['instrument_type'] == 'CE')]
+            pe_row = stock_opts[(stock_opts['strike'] == strike) & (stock_opts['instrument_type'] == 'PE')]
+
+            if not ce_row.empty and not pe_row.empty:
+                strike_map[strike] = {
+                    'ce_token': ce_row.iloc[0]['instrument_token'],
+                    'pe_token': pe_row.iloc[0]['instrument_token'],
+                    'ce_symbol': ce_row.iloc[0]['tradingsymbol'],
+                    'pe_symbol': pe_row.iloc[0]['tradingsymbol']
+                }
+
+        return strike_map
+
+    except Exception as e:
+        print(f"❌ Error getting strikes for {symbol}: {e}")
+        return {}
+
+def collect_stock_expiry_data(kite, ins_df: pd.DataFrame, symbol: str, expiry_date: datetime,
+                               strike_map: dict) -> pd.DataFrame:
+    """
+    Collect live options data for a stock expiry.
+    Returns DataFrame with cumulative flow and volume for CE/PE.
+    """
+    try:
+        if not strike_map:
+            return pd.DataFrame()
+
+        # Collect all tokens
+        all_tokens = []
+        for strike_data in strike_map.values():
+            all_tokens.extend([strike_data['ce_token'], strike_data['pe_token']])
+
+        # Fetch quotes
+        quotes = kite.quote([f"NFO:{token}" for token in all_tokens])
+
+        rows = []
+        for strike, strike_data in strike_map.items():
+            ce_token = f"NFO:{strike_data['ce_token']}"
+            pe_token = f"NFO:{strike_data['pe_token']}"
+
+            ce_quote = quotes.get(ce_token, {})
+            pe_quote = quotes.get(pe_token, {})
+
+            # CE row
+            ce_price = ce_quote.get('last_price', 0)
+            ce_volume = ce_quote.get('volume', 0)
+            ce_oi = ce_quote.get('oi', 0)
+            ce_flow = ce_volume * ce_price
+
+            rows.append({
+                'strike': strike,
+                'type': 'CE',
+                'last_price': ce_price,
+                'volume': ce_volume,
+                'oi': ce_oi,
+                'net_flow': ce_flow
+            })
+
+            # PE row
+            pe_price = pe_quote.get('last_price', 0)
+            pe_volume = pe_quote.get('volume', 0)
+            pe_oi = pe_quote.get('oi', 0)
+            pe_flow = -(pe_volume * pe_price)  # Negative for PE
+
+            rows.append({
+                'strike': strike,
+                'type': 'PE',
+                'last_price': pe_price,
+                'volume': pe_volume,
+                'oi': pe_oi,
+                'net_flow': pe_flow
+            })
+
+        return pd.DataFrame(rows)
+
+    except Exception as e:
+        print(f"❌ Error collecting data for {symbol}: {e}")
+        return pd.DataFrame()
+
+def save_cumulative_stock_expiry_data(symbol: str, expiry_date: datetime, daily_df: pd.DataFrame,
+                                      data_dir: str = "data/stock_expiry") -> pd.DataFrame:
+    """
+    Save stock expiry data with cumulative tracking.
+    Day 1: Save fresh data
+    Day 2+: Load previous + add today's values
+    """
+    try:
+        os.makedirs(data_dir, exist_ok=True)
+
+        expiry_str = expiry_date.strftime('%d%b%Y').upper()
+        csv_file = Path(data_dir) / f"{symbol}_{expiry_str}.csv"
+
+        # Add daily columns
+        daily_df['daily_flow'] = daily_df['net_flow']
+        daily_df['daily_volume'] = daily_df['volume']
+
+        if csv_file.exists():
+            # Load previous cumulative data
+            prev_df = pd.read_csv(csv_file)
+
+            # Merge on strike and type
+            merged = prev_df.merge(
+                daily_df[['strike', 'type', 'daily_flow', 'daily_volume', 'last_price', 'oi']],
+                on=['strike', 'type'],
+                how='outer',
+                suffixes=('', '_today')
+            )
+
+            # Update cumulative values
+            merged['cumulative_flow'] = merged['cumulative_flow'].fillna(0) + merged['daily_flow'].fillna(0)
+            merged['cumulative_volume'] = merged['cumulative_volume'].fillna(0) + merged['daily_volume'].fillna(0)
+
+            # Update latest price and OI
+            merged['last_price'] = merged['last_price_today'].fillna(merged['last_price'])
+            merged['oi'] = merged['oi_today'].fillna(merged['oi'])
+
+            cumulative_df = merged[['strike', 'type', 'cumulative_flow', 'cumulative_volume',
+                                   'daily_flow', 'daily_volume', 'last_price', 'oi']]
+        else:
+            # First day - initialize cumulative columns
+            cumulative_df = daily_df.copy()
+            cumulative_df['cumulative_flow'] = cumulative_df['daily_flow']
+            cumulative_df['cumulative_volume'] = cumulative_df['daily_volume']
+            cumulative_df = cumulative_df[['strike', 'type', 'cumulative_flow', 'cumulative_volume',
+                                          'daily_flow', 'daily_volume', 'last_price', 'oi']]
+
+        # Save updated CSV
+        cumulative_df.to_csv(csv_file, index=False)
+        return cumulative_df
+
+    except Exception as e:
+        print(f"❌ Error saving stock data for {symbol}: {e}")
+        return daily_df
+
+def get_top_stocks_by_flow(data_dir: str = "data/stock_expiry", top_n: int = 10) -> pd.DataFrame:
+    """
+    Read all stock expiry CSVs and return top N stocks by absolute net flow.
+    Sorted by |CE Flow + PE Flow| descending.
+    """
+    try:
+        data_path = Path(data_dir)
+        if not data_path.exists():
+            return pd.DataFrame()
+
+        csv_files = list(data_path.glob("*.csv"))
+        if not csv_files:
+            return pd.DataFrame()
+
+        stock_summaries = []
+
+        for csv_file in csv_files:
+            try:
+                # Extract symbol and expiry from filename: RELIANCE_30JAN2025.csv
+                filename = csv_file.stem
+                parts = filename.rsplit('_', 1)
+                if len(parts) != 2:
+                    continue
+
+                symbol = parts[0]
+                expiry_str = parts[1]
+
+                # Load data
+                df = pd.read_csv(csv_file)
+                if df.empty:
+                    continue
+
+                # Calculate totals
+                ce_flow = df[df['type'] == 'CE']['cumulative_flow'].sum()
+                pe_flow = df[df['type'] == 'PE']['cumulative_flow'].sum()
+                ce_vol = df[df['type'] == 'CE']['cumulative_volume'].sum()
+                pe_vol = df[df['type'] == 'PE']['cumulative_volume'].sum()
+
+                net_flow = ce_flow + pe_flow
+                abs_net_flow = abs(net_flow)
+
+                stock_summaries.append({
+                    'symbol': symbol,
+                    'expiry': expiry_str,
+                    'ce_flow': ce_flow,
+                    'pe_flow': pe_flow,
+                    'ce_volume': ce_vol,
+                    'pe_volume': pe_vol,
+                    'net_flow': net_flow,
+                    'abs_net_flow': abs_net_flow
+                })
+
+            except Exception as e:
+                print(f"❌ Error processing {csv_file}: {e}")
+                continue
+
+        if not stock_summaries:
+            return pd.DataFrame()
+
+        # Create DataFrame and sort by absolute net flow
+        summary_df = pd.DataFrame(stock_summaries)
+        summary_df = summary_df.sort_values('abs_net_flow', ascending=False).head(top_n)
+
+        return summary_df
+
+    except Exception as e:
+        print(f"❌ Error getting top stocks: {e}")
+        return pd.DataFrame()
+
 def discover_indices_with_fo(ins_df: pd.DataFrame) -> list:
     """
     Discover all whitelisted indices from instruments data.
@@ -6047,6 +6331,56 @@ def polling_loop():
                         import traceback
                         traceback.print_exc()
 
+                # STOCK MONTHLY EXPIRY TRACKING: Collect data every 5 minutes
+                if engine.chart_update_counter >= 10 and not engine.ins_df.empty and engine.stocks_with_fo:
+                    try:
+                        print("📈 Collecting stock monthly expiry data...")
+                        stocks_collected = 0
+
+                        # Iterate through all F&O stocks (191 stocks)
+                        for symbol in engine.stocks_with_fo:
+                            try:
+                                # Get stock price from stocks_data
+                                if symbol not in stocks_data:
+                                    continue
+
+                                stock_price = stocks_data[symbol].get("price")
+                                if not stock_price or stock_price <= 0:
+                                    continue
+
+                                # Get current month expiry for this stock
+                                expiry_date = get_stock_expiry(engine.ins_df, symbol)
+                                if not expiry_date:
+                                    continue
+
+                                # Calculate ATM strike
+                                atm_strike = get_stock_atm_strike(stock_price, symbol)
+
+                                # Get ATM ± 10 strikes
+                                strike_map = get_stock_strikes_for_expiry(
+                                    engine.ins_df, symbol, expiry_date, atm_strike, range_strikes=10
+                                )
+
+                                if strike_map:
+                                    # Collect options data
+                                    daily_df = collect_stock_expiry_data(kite, engine.ins_df, symbol, expiry_date, strike_map)
+
+                                    if not daily_df.empty:
+                                        # Save cumulative data
+                                        save_cumulative_stock_expiry_data(symbol, expiry_date, daily_df)
+                                        stocks_collected += 1
+
+                            except Exception as e:
+                                print(f"❌ Error collecting data for {symbol}: {e}")
+                                continue
+
+                        print(f"✅ Stock expiry data collection complete ({stocks_collected}/{len(engine.stocks_with_fo)} stocks)")
+
+                    except Exception as e:
+                        print(f"❌ Error in stock expiry tracking: {e}")
+                        import traceback
+                        traceback.print_exc()
+
                 # PHASE 1: Update chart data every 5 minutes (30 polls = 5 min at 10 sec intervals)
                 engine.chart_update_counter += 1
                 log_chart_debug(f"chart_update_counter = {engine.chart_update_counter}/30")
@@ -7288,6 +7622,133 @@ if not engine.ins_df.empty:
         st.warning("⚠️ Instruments data not loaded. Weekly expiry tracking requires instruments data.")
 else:
     st.warning("⚠️ Instruments data not loaded. Please start polling to enable weekly expiry tracking.")
+
+st.markdown("")
+
+# =========================
+# STOCK MONTHLY EXPIRY TRACKING
+# =========================
+st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+st.markdown(create_enhanced_section_header("📈 STOCK MONTHLY EXPIRY TRACKING - TOP 10", "📊"), unsafe_allow_html=True)
+st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+# Get top 10 stocks by absolute net flow
+top_stocks_df = get_top_stocks_by_flow(data_dir="data/stock_expiry", top_n=10)
+
+if not top_stocks_df.empty:
+    st.markdown(f"**Tracking {len(engine.stocks_with_fo)} F&O stocks | Showing Top 10 by Absolute Net Flow**")
+    st.markdown("")
+
+    # Summary metrics
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        total_ce = top_stocks_df['ce_flow'].sum()
+        st.metric("Total CE Flow (Top 10)", f"₹{total_ce/1e7:.1f} Cr")
+    with col2:
+        total_pe = top_stocks_df['pe_flow'].sum()
+        st.metric("Total PE Flow (Top 10)", f"₹{abs(total_pe)/1e7:.1f} Cr")
+    with col3:
+        net_bias = total_ce + total_pe
+        bias_label = "🟢 BULLISH" if net_bias > 0 else "🔴 BEARISH"
+        st.metric("Net Bias", bias_label)
+
+    st.markdown("")
+
+    # Compact table view
+    display_data = []
+    for idx, row in top_stocks_df.iterrows():
+        net_flow = row['net_flow']
+        bias_emoji = "🟢" if net_flow > 0 else "🔴"
+
+        display_data.append({
+            "Rank": idx + 1,
+            "Stock": row['symbol'],
+            "Expiry": row['expiry'],
+            "CE Flow": f"₹{row['ce_flow']/1e7:.2f} Cr",
+            "PE Flow": f"₹{abs(row['pe_flow'])/1e7:.2f} Cr",
+            "Net Flow": f"{bias_emoji} ₹{abs(net_flow)/1e7:.2f} Cr",
+            "CE Volume": f"{row['ce_volume']/1e6:.1f}M",
+            "PE Volume": f"{row['pe_volume']/1e6:.1f}M",
+            "Abs Net Flow": row['abs_net_flow']  # Hidden sort column
+        })
+
+    display_df = pd.DataFrame(display_data)
+    display_df = display_df.drop(columns=['Abs Net Flow'])  # Remove sort column from display
+
+    # Display compact table
+    st.dataframe(display_df, use_container_width=True, height=400, hide_index=True)
+
+    st.markdown("")
+
+    # Expandable details for each stock
+    st.markdown("### 📋 Detailed Breakdown")
+    for idx, row in top_stocks_df.iterrows():
+        symbol = row['symbol']
+        expiry_str = row['expiry']
+
+        with st.expander(f"**{idx + 1}. {symbol}** - Expiry: {expiry_str}"):
+            # Load full CSV data for this stock
+            csv_file = Path("data/stock_expiry") / f"{symbol}_{expiry_str}.csv"
+
+            if csv_file.exists():
+                try:
+                    stock_df = pd.read_csv(csv_file)
+
+                    # Summary for this stock
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric("CE Flow", f"₹{row['ce_flow']/1e7:.2f} Cr")
+                    with col2:
+                        st.metric("PE Flow", f"₹{abs(row['pe_flow'])/1e7:.2f} Cr")
+                    with col3:
+                        net = row['net_flow']
+                        direction = "🟢 BULLISH" if net > 0 else "🔴 BEARISH"
+                        st.metric("Direction", direction)
+                    with col4:
+                        st.metric("Net Flow", f"₹{abs(net)/1e7:.2f} Cr")
+
+                    st.markdown("")
+
+                    # Strike-wise data table
+                    if not stock_df.empty:
+                        # Format for display
+                        display_stock_df = stock_df.copy()
+                        display_stock_df['Flow'] = display_stock_df['cumulative_flow'].apply(
+                            lambda x: f"₹{abs(x)/1e6:.2f}M {'🟢' if x > 0 else '🔴'}"
+                        )
+                        display_stock_df['Volume'] = display_stock_df['cumulative_volume'].apply(
+                            lambda x: f"{x:,.0f}"
+                        )
+                        display_stock_df['LTP'] = display_stock_df['last_price'].apply(
+                            lambda x: f"₹{x:.2f}"
+                        )
+                        display_stock_df['OI'] = display_stock_df['oi'].apply(
+                            lambda x: f"{x:,.0f}"
+                        )
+
+                        final_df = display_stock_df[['strike', 'type', 'Flow', 'Volume', 'LTP', 'OI']]
+                        final_df.columns = ['Strike', 'Type', 'Cumulative Flow', 'Volume', 'LTP', 'OI']
+
+                        st.dataframe(final_df, use_container_width=True, height=300, hide_index=True)
+
+                        # Download button
+                        csv_data = stock_df.to_csv(index=False)
+                        st.download_button(
+                            label=f"📥 Download {symbol} Data",
+                            data=csv_data,
+                            file_name=f"{symbol}_{expiry_str}.csv",
+                            mime="text/csv",
+                            key=f"download_{symbol}_{expiry_str}"
+                        )
+
+                except Exception as e:
+                    st.error(f"Error loading data: {e}")
+            else:
+                st.info("No data file found for this stock.")
+
+else:
+    st.info("📊 No stock expiry data collected yet. Data collection will start during market hours.")
+    st.caption("Tracking 191 F&O stocks with monthly expiry tracking (ATM ± 10 strikes)")
 
 st.markdown("")
 
