@@ -5699,7 +5699,7 @@ if AUTOREFRESH_AVAILABLE and st.session_state.get("auto_refresh_toggle", True) a
     # Reset counter periodically to prevent overflow
     if st.session_state.refresh_count > 1000:
         st.session_state.refresh_count = 0
-    count = st_autorefresh(interval=30 * 1000, key="auto_refresh_counter")  # 30s refresh - reduced to prevent browser crashes
+    count = st_autorefresh(interval=60 * 1000, key="auto_refresh_counter")  # 60s refresh - optimized for 8-hour market sessions without crashes
 
 st.markdown("""
 <style>
