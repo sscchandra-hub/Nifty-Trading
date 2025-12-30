@@ -7165,9 +7165,12 @@ st.markdown("━━━━━━━━━━━━━━━━━━━━━━�
 if not engine.ins_df.empty:
     next_expiries = get_next_nifty_expiries(engine.ins_df, num_expiries=4)
 
-    if next_expiries and cached_data:
+    # Load cached data for NIFTY price
+    weekly_cached_data = load_dashboard_cache()
+
+    if next_expiries and weekly_cached_data:
         # Get current NIFTY price for ATM calculation
-        nifty_price = cached_data.get('indices_data', {}).get('NIFTY', {}).get('price', 26000)
+        nifty_price = weekly_cached_data.get('indices_data', {}).get('NIFTY', {}).get('price', 26000)
         atm_strike = get_atm_strike(nifty_price)
 
         st.markdown(f"**Current NIFTY:** ₹{nifty_price:.2f} | **ATM Strike:** {atm_strike}")
