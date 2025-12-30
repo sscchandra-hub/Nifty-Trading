@@ -6009,6 +6009,44 @@ def polling_loop():
                 }
                 save_dashboard_cache(cache_data)
 
+                # WEEKLY EXPIRY TRACKING: Collect data every 5 minutes
+                if engine.chart_update_counter >= 10 and not engine.ins_df.empty:  # Every 5 minutes
+                    try:
+                        print("📅 Collecting weekly expiry data...")
+
+                        # Get next 4 expiries
+                        next_expiries = get_next_nifty_expiries(engine.ins_df, num_expiries=4)
+
+                        if next_expiries and "NIFTY" in indices_data:
+                            nifty_price = indices_data["NIFTY"].get("price")
+
+                            if nifty_price:
+                                atm_strike = get_atm_strike(nifty_price)
+
+                                # Collect data for each expiry
+                                for expiry_date in next_expiries:
+                                    try:
+                                        # Get strikes for this expiry
+                                        strike_map = get_strikes_for_expiry(engine.ins_df, expiry_date, atm_strike, range_strikes=20)
+
+                                        if strike_map:
+                                            # Collect options data
+                                            daily_df = collect_weekly_expiry_data(kite, engine.ins_df, expiry_date, strike_map)
+
+                                            if not daily_df.empty:
+                                                # Save cumulative data
+                                                save_cumulative_expiry_data(expiry_date, daily_df)
+
+                                    except Exception as e:
+                                        print(f"❌ Error collecting data for {expiry_date}: {e}")
+
+                                print("✅ Weekly expiry data collection complete")
+
+                    except Exception as e:
+                        print(f"❌ Error in weekly expiry tracking: {e}")
+                        import traceback
+                        traceback.print_exc()
+
                 # PHASE 1: Update chart data every 5 minutes (30 polls = 5 min at 10 sec intervals)
                 engine.chart_update_counter += 1
                 log_chart_debug(f"chart_update_counter = {engine.chart_update_counter}/30")
@@ -7116,6 +7154,140 @@ if len(nifty_chart_data) > 1:
         <hr style="border: 1px solid #ddd; margin: 1rem 0;">
     </div>
     """, unsafe_allow_html=True)
+
+    # =========================
+    # WEEKLY EXPIRY TRACKING
+    # =========================
+    st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    st.markdown(create_enhanced_section_header("📅 NIFTY WEEKLY EXPIRY TRACKING", "📊"), unsafe_allow_html=True)
+    st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+    # Get next 4 expiries
+    if not engine.ins_df.empty:
+        next_expiries = get_next_nifty_expiries(engine.ins_df, num_expiries=4)
+
+        if next_expiries and cached_data:
+            # Get current NIFTY price for ATM calculation
+            nifty_price = cached_data.get('indices_data', {}).get('NIFTY', {}).get('price', 26000)
+            atm_strike = get_atm_strike(nifty_price)
+
+            st.markdown(f"**Current NIFTY:** ₹{nifty_price:.2f} | **ATM Strike:** {atm_strike}")
+            st.markdown("")
+
+            # Display tabs for each expiry
+            expiry_tabs = st.tabs([
+                f"Week 1: {next_expiries[0].strftime('%d %b')}" if len(next_expiries) > 0 else "Week 1",
+                f"Week 2: {next_expiries[1].strftime('%d %b')}" if len(next_expiries) > 1 else "Week 2",
+                f"Week 3: {next_expiries[2].strftime('%d %b')}" if len(next_expiries) > 2 else "Week 3",
+                f"Week 4: {next_expiries[3].strftime('%d %b')}" if len(next_expiries) > 3 else "Week 4"
+            ])
+
+            for i, expiry_date in enumerate(next_expiries):
+                with expiry_tabs[i]:
+                    expiry_str = expiry_date.strftime('%d%b%Y').upper()
+                    csv_file = Path("data/weekly_expiry") / f"nifty_{expiry_str}.csv"
+
+                    # Display expiry info
+                    days_to_expiry = (expiry_date.date() - datetime.now().date()).days
+                    st.markdown(f"**Expiry:** {expiry_date.strftime('%A, %d %B %Y')} ({days_to_expiry} days)")
+
+                    if csv_file.exists():
+                        try:
+                            # Load cumulative data
+                            df = pd.read_csv(csv_file)
+
+                            if not df.empty:
+                                # Summary metrics
+                                col1, col2, col3, col4 = st.columns(4)
+
+                                total_ce_flow = df[df['type'] == 'CE']['cumulative_flow'].sum() if 'cumulative_flow' in df.columns else 0
+                                total_pe_flow = df[df['type'] == 'PE']['cumulative_flow'].sum() if 'cumulative_flow' in df.columns else 0
+                                net_bias = total_ce_flow + total_pe_flow
+
+                                with col1:
+                                    st.metric("Total CE Flow", f"{total_ce_flow/1e6:.1f}M")
+                                with col2:
+                                    st.metric("Total PE Flow", f"{abs(total_pe_flow)/1e6:.1f}M")
+                                with col3:
+                                    bias_label = "🟢 BULLISH" if net_bias > 0 else "🔴 BEARISH"
+                                    st.metric("Net Bias", bias_label)
+                                with col4:
+                                    st.metric("Total Strikes", len(df))
+
+                                st.markdown("")
+
+                                # Display data table
+                                display_df = df.copy()
+
+                                # Format columns for display
+                                if 'cumulative_flow' in display_df.columns:
+                                    display_df['Cum Flow'] = display_df['cumulative_flow'].apply(lambda x: f"{x/1e6:.2f}M")
+                                if 'cumulative_volume' in display_df.columns:
+                                    display_df['Cum Vol'] = display_df['cumulative_volume'].apply(lambda x: f"{x:,.0f}")
+                                if 'daily_flow' in display_df.columns:
+                                    display_df['Daily Flow'] = display_df['daily_flow'].apply(lambda x: f"{x/1e6:.2f}M")
+                                if 'daily_volume' in display_df.columns:
+                                    display_df['Daily Vol'] = display_df['daily_volume'].apply(lambda x: f"{x:,.0f}")
+                                if 'last_price' in display_df.columns:
+                                    display_df['LTP'] = display_df['last_price'].apply(lambda x: f"₹{x:.2f}")
+                                if 'oi' in display_df.columns:
+                                    display_df['OI'] = display_df['oi'].apply(lambda x: f"{x:,.0f}")
+                                if 'oi_change' in display_df.columns:
+                                    display_df['OI Chg'] = display_df['oi_change'].apply(lambda x: f"{x:+,.0f}")
+
+                                # Select columns to display
+                                display_cols = ['strike', 'type']
+                                if 'Cum Flow' in display_df.columns:
+                                    display_cols.append('Cum Flow')
+                                if 'Daily Flow' in display_df.columns:
+                                    display_cols.append('Daily Flow')
+                                if 'Cum Vol' in display_df.columns:
+                                    display_cols.append('Cum Vol')
+                                if 'Daily Vol' in display_df.columns:
+                                    display_cols.append('Daily Vol')
+                                if 'LTP' in display_df.columns:
+                                    display_cols.append('LTP')
+                                if 'OI' in display_df.columns:
+                                    display_cols.append('OI')
+                                if 'OI Chg' in display_df.columns:
+                                    display_cols.append('OI Chg')
+
+                                display_df = display_df[display_cols]
+                                display_df.columns = ['Strike', 'Type', 'Cumulative Flow', 'Daily Flow', 'Cum Volume', 'Daily Volume', 'LTP', 'OI', 'OI Change']
+
+                                # Highlight ATM strike
+                                def highlight_atm(row):
+                                    if abs(row['Strike'] - atm_strike) <= 50:
+                                        return ['background-color: #fffacd'] * len(row)
+                                    return [''] * len(row)
+
+                                styled_df = display_df.style.apply(highlight_atm, axis=1)
+                                st.dataframe(styled_df, use_container_width=True, height=400)
+
+                                # Download button
+                                csv = df.to_csv(index=False)
+                                st.download_button(
+                                    label=f"📥 Download {expiry_str} Data",
+                                    data=csv,
+                                    file_name=f"nifty_{expiry_str}.csv",
+                                    mime="text/csv"
+                                )
+
+                            else:
+                                st.info("No data available yet. Data will be collected during market hours.")
+
+                        except Exception as e:
+                            st.error(f"Error loading data: {e}")
+                    else:
+                        st.info(f"📊 No data collected yet for this expiry. Data collection will start during market hours.")
+                        st.caption(f"CSV file will be created at: {csv_file}")
+
+        else:
+            st.warning("⚠️ Instruments data not loaded. Weekly expiry tracking requires instruments data.")
+    else:
+        st.warning("⚠️ Instruments data not loaded. Please start polling to enable weekly expiry tracking.")
+
+    st.markdown("")
 
     # Section box for NIFTY Flow Analysis
     st.markdown('<div style="border: 2px solid #28a745; border-radius: 8px; padding: 1rem; margin: 1rem 0; background-color: #ffffff;"><h3>📊 NIFTY Flow Analysis Charts</h3></div>', unsafe_allow_html=True)
