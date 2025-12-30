@@ -5696,7 +5696,10 @@ st.set_page_config(page_title="APEX AI TRADING", layout="wide", initial_sidebar_
 
 if AUTOREFRESH_AVAILABLE and st.session_state.get("auto_refresh_toggle", True) and st.session_state.get("polling_running", False):
     st.session_state.refresh_count += 1
-    count = st_autorefresh(interval=10 * 1000, key="auto_refresh_counter")  # 10s refresh for responsive dashboard
+    # Reset counter periodically to prevent overflow
+    if st.session_state.refresh_count > 1000:
+        st.session_state.refresh_count = 0
+    count = st_autorefresh(interval=30 * 1000, key="auto_refresh_counter")  # 30s refresh - reduced to prevent browser crashes
 
 st.markdown("""
 <style>
