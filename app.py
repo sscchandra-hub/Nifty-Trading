@@ -7625,133 +7625,6 @@ else:
 
 st.markdown("")
 
-# =========================
-# STOCK MONTHLY EXPIRY TRACKING
-# =========================
-st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-st.markdown(create_enhanced_section_header("📈 STOCK MONTHLY EXPIRY TRACKING - TOP 10", "📊"), unsafe_allow_html=True)
-st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-
-# Get top 10 stocks by absolute net flow
-top_stocks_df = get_top_stocks_by_flow(data_dir="data/stock_expiry", top_n=10)
-
-if not top_stocks_df.empty:
-    st.markdown(f"**Tracking {len(engine.stocks_with_fo)} F&O stocks | Showing Top 10 by Absolute Net Flow**")
-    st.markdown("")
-
-    # Summary metrics
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        total_ce = top_stocks_df['ce_flow'].sum()
-        st.metric("Total CE Flow (Top 10)", f"₹{total_ce/1e7:.1f} Cr")
-    with col2:
-        total_pe = top_stocks_df['pe_flow'].sum()
-        st.metric("Total PE Flow (Top 10)", f"₹{abs(total_pe)/1e7:.1f} Cr")
-    with col3:
-        net_bias = total_ce + total_pe
-        bias_label = "🟢 BULLISH" if net_bias > 0 else "🔴 BEARISH"
-        st.metric("Net Bias", bias_label)
-
-    st.markdown("")
-
-    # Compact table view
-    display_data = []
-    for idx, row in top_stocks_df.iterrows():
-        net_flow = row['net_flow']
-        bias_emoji = "🟢" if net_flow > 0 else "🔴"
-
-        display_data.append({
-            "Rank": idx + 1,
-            "Stock": row['symbol'],
-            "Expiry": row['expiry'],
-            "CE Flow": f"₹{row['ce_flow']/1e7:.2f} Cr",
-            "PE Flow": f"₹{abs(row['pe_flow'])/1e7:.2f} Cr",
-            "Net Flow": f"{bias_emoji} ₹{abs(net_flow)/1e7:.2f} Cr",
-            "CE Volume": f"{row['ce_volume']/1e6:.1f}M",
-            "PE Volume": f"{row['pe_volume']/1e6:.1f}M",
-            "Abs Net Flow": row['abs_net_flow']  # Hidden sort column
-        })
-
-    display_df = pd.DataFrame(display_data)
-    display_df = display_df.drop(columns=['Abs Net Flow'])  # Remove sort column from display
-
-    # Display compact table
-    st.dataframe(display_df, use_container_width=True, height=400, hide_index=True)
-
-    st.markdown("")
-
-    # Expandable details for each stock
-    st.markdown("### 📋 Detailed Breakdown")
-    for idx, row in top_stocks_df.iterrows():
-        symbol = row['symbol']
-        expiry_str = row['expiry']
-
-        with st.expander(f"**{idx + 1}. {symbol}** - Expiry: {expiry_str}"):
-            # Load full CSV data for this stock
-            csv_file = Path("data/stock_expiry") / f"{symbol}_{expiry_str}.csv"
-
-            if csv_file.exists():
-                try:
-                    stock_df = pd.read_csv(csv_file)
-
-                    # Summary for this stock
-                    col1, col2, col3, col4 = st.columns(4)
-                    with col1:
-                        st.metric("CE Flow", f"₹{row['ce_flow']/1e7:.2f} Cr")
-                    with col2:
-                        st.metric("PE Flow", f"₹{abs(row['pe_flow'])/1e7:.2f} Cr")
-                    with col3:
-                        net = row['net_flow']
-                        direction = "🟢 BULLISH" if net > 0 else "🔴 BEARISH"
-                        st.metric("Direction", direction)
-                    with col4:
-                        st.metric("Net Flow", f"₹{abs(net)/1e7:.2f} Cr")
-
-                    st.markdown("")
-
-                    # Strike-wise data table
-                    if not stock_df.empty:
-                        # Format for display
-                        display_stock_df = stock_df.copy()
-                        display_stock_df['Flow'] = display_stock_df['cumulative_flow'].apply(
-                            lambda x: f"₹{abs(x)/1e6:.2f}M {'🟢' if x > 0 else '🔴'}"
-                        )
-                        display_stock_df['Volume'] = display_stock_df['cumulative_volume'].apply(
-                            lambda x: f"{x:,.0f}"
-                        )
-                        display_stock_df['LTP'] = display_stock_df['last_price'].apply(
-                            lambda x: f"₹{x:.2f}"
-                        )
-                        display_stock_df['OI'] = display_stock_df['oi'].apply(
-                            lambda x: f"{x:,.0f}"
-                        )
-
-                        final_df = display_stock_df[['strike', 'type', 'Flow', 'Volume', 'LTP', 'OI']]
-                        final_df.columns = ['Strike', 'Type', 'Cumulative Flow', 'Volume', 'LTP', 'OI']
-
-                        st.dataframe(final_df, use_container_width=True, height=300, hide_index=True)
-
-                        # Download button
-                        csv_data = stock_df.to_csv(index=False)
-                        st.download_button(
-                            label=f"📥 Download {symbol} Data",
-                            data=csv_data,
-                            file_name=f"{symbol}_{expiry_str}.csv",
-                            mime="text/csv",
-                            key=f"download_{symbol}_{expiry_str}"
-                        )
-
-                except Exception as e:
-                    st.error(f"Error loading data: {e}")
-            else:
-                st.info("No data file found for this stock.")
-
-else:
-    st.info("📊 No stock expiry data collected yet. Data collection will start during market hours.")
-    st.caption("Tracking 191 F&O stocks with monthly expiry tracking (ATM ± 10 strikes)")
-
-st.markdown("")
-
 # Only show flow charts if we have data
 if len(nifty_chart_data) > 1:
     # Section box for NIFTY Flow Analysis
@@ -9349,6 +9222,133 @@ st.markdown("""
     <hr style="border: 1px solid #ddd; margin: 1rem 0;">
 </div>
 """, unsafe_allow_html=True)
+
+# =========================
+# STOCK MONTHLY EXPIRY TRACKING
+# =========================
+st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+st.markdown(create_enhanced_section_header("📈 STOCK MONTHLY EXPIRY TRACKING - TOP 10", "📊"), unsafe_allow_html=True)
+st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+# Get top 10 stocks by absolute net flow
+top_stocks_df = get_top_stocks_by_flow(data_dir="data/stock_expiry", top_n=10)
+
+if not top_stocks_df.empty:
+    st.markdown(f"**Tracking {len(engine.stocks_with_fo)} F&O stocks | Showing Top 10 by Absolute Net Flow**")
+    st.markdown("")
+
+    # Summary metrics
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        total_ce = top_stocks_df['ce_flow'].sum()
+        st.metric("Total CE Flow (Top 10)", f"₹{total_ce/1e7:.1f} Cr")
+    with col2:
+        total_pe = top_stocks_df['pe_flow'].sum()
+        st.metric("Total PE Flow (Top 10)", f"₹{abs(total_pe)/1e7:.1f} Cr")
+    with col3:
+        net_bias = total_ce + total_pe
+        bias_label = "🟢 BULLISH" if net_bias > 0 else "🔴 BEARISH"
+        st.metric("Net Bias", bias_label)
+
+    st.markdown("")
+
+    # Compact table view
+    display_data = []
+    for idx, row in top_stocks_df.iterrows():
+        net_flow = row['net_flow']
+        bias_emoji = "🟢" if net_flow > 0 else "🔴"
+
+        display_data.append({
+            "Rank": idx + 1,
+            "Stock": row['symbol'],
+            "Expiry": row['expiry'],
+            "CE Flow": f"₹{row['ce_flow']/1e7:.2f} Cr",
+            "PE Flow": f"₹{abs(row['pe_flow'])/1e7:.2f} Cr",
+            "Net Flow": f"{bias_emoji} ₹{abs(net_flow)/1e7:.2f} Cr",
+            "CE Volume": f"{row['ce_volume']/1e6:.1f}M",
+            "PE Volume": f"{row['pe_volume']/1e6:.1f}M",
+            "Abs Net Flow": row['abs_net_flow']  # Hidden sort column
+        })
+
+    display_df = pd.DataFrame(display_data)
+    display_df = display_df.drop(columns=['Abs Net Flow'])  # Remove sort column from display
+
+    # Display compact table
+    st.dataframe(display_df, use_container_width=True, height=400, hide_index=True)
+
+    st.markdown("")
+
+    # Expandable details for each stock
+    st.markdown("### 📋 Detailed Breakdown")
+    for idx, row in top_stocks_df.iterrows():
+        symbol = row['symbol']
+        expiry_str = row['expiry']
+
+        with st.expander(f"**{idx + 1}. {symbol}** - Expiry: {expiry_str}"):
+            # Load full CSV data for this stock
+            csv_file = Path("data/stock_expiry") / f"{symbol}_{expiry_str}.csv"
+
+            if csv_file.exists():
+                try:
+                    stock_df = pd.read_csv(csv_file)
+
+                    # Summary for this stock
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric("CE Flow", f"₹{row['ce_flow']/1e7:.2f} Cr")
+                    with col2:
+                        st.metric("PE Flow", f"₹{abs(row['pe_flow'])/1e7:.2f} Cr")
+                    with col3:
+                        net = row['net_flow']
+                        direction = "🟢 BULLISH" if net > 0 else "🔴 BEARISH"
+                        st.metric("Direction", direction)
+                    with col4:
+                        st.metric("Net Flow", f"₹{abs(net)/1e7:.2f} Cr")
+
+                    st.markdown("")
+
+                    # Strike-wise data table
+                    if not stock_df.empty:
+                        # Format for display
+                        display_stock_df = stock_df.copy()
+                        display_stock_df['Flow'] = display_stock_df['cumulative_flow'].apply(
+                            lambda x: f"₹{abs(x)/1e6:.2f}M {'🟢' if x > 0 else '🔴'}"
+                        )
+                        display_stock_df['Volume'] = display_stock_df['cumulative_volume'].apply(
+                            lambda x: f"{x:,.0f}"
+                        )
+                        display_stock_df['LTP'] = display_stock_df['last_price'].apply(
+                            lambda x: f"₹{x:.2f}"
+                        )
+                        display_stock_df['OI'] = display_stock_df['oi'].apply(
+                            lambda x: f"{x:,.0f}"
+                        )
+
+                        final_df = display_stock_df[['strike', 'type', 'Flow', 'Volume', 'LTP', 'OI']]
+                        final_df.columns = ['Strike', 'Type', 'Cumulative Flow', 'Volume', 'LTP', 'OI']
+
+                        st.dataframe(final_df, use_container_width=True, height=300, hide_index=True)
+
+                        # Download button
+                        csv_data = stock_df.to_csv(index=False)
+                        st.download_button(
+                            label=f"📥 Download {symbol} Data",
+                            data=csv_data,
+                            file_name=f"{symbol}_{expiry_str}.csv",
+                            mime="text/csv",
+                            key=f"download_{symbol}_{expiry_str}"
+                        )
+
+                except Exception as e:
+                    st.error(f"Error loading data: {e}")
+            else:
+                st.info("No data file found for this stock.")
+
+else:
+    st.info("📊 No stock expiry data collected yet. Data collection will start during market hours.")
+    st.caption("Tracking 191 F&O stocks with monthly expiry tracking (ATM ± 10 strikes)")
+
+st.markdown("")
 
 # ============================================
 # STOCKS MARKET OVERVIEW PANEL
