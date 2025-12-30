@@ -905,6 +905,14 @@ class EngineState:
     nifty_momentum_state: str = None  # Track NIFTY momentum class for reversal detection
     nifty_momentum_last_alert: datetime = None  # Track last NIFTY momentum alert time
 
+    # Enhanced Alert System - 3-minute confirmation tracking
+    nifty_score_buffer: list = field(default_factory=list)  # Last 3 scores for confirmation
+    nifty_price_buffer: list = field(default_factory=list)  # Last 3 prices for confirmation
+    nifty_confirmation_start: datetime = None  # When confirmation period started
+    nifty_last_alert_type: str = None  # Type of last alert sent (STRONG_BULLISH, BULLISH, etc.)
+    nifty_last_alert_score: int = 0  # Score when last alert was sent
+    nifty_universal_cooldown: datetime = None  # Universal cooldown for all NIFTY alerts
+
 engine = EngineState()
 
 # =========================
@@ -3388,6 +3396,289 @@ def send_stock_alert(stock_name, alert_type, price, change_pct, net_flow, volume
         print(f"Error sending stock alert: {e}")
         return False
 
+def send_nifty_enhanced_alert(score_result):
+    """
+    Enhanced NIFTY alert system with 3-minute confirmation and divergence detection
+
+    Features:
+    - 3-minute confirmation period (3 consecutive readings)
+    - Score persistence check (must stay above threshold)
+    - Price validation (must move in same direction)
+    - Divergence detection (flow vs price mismatch)
+    - Reversal warnings (weakening signals)
+    - Universal cooldown (30 min for any alert)
+
+    Alert Categories:
+    - STRONG BULLISH: Score >75 for 3 min + Price up >0.1%
+    - BULLISH: Score 60-75 for 3 min + Price up >0%
+    - STRONG BEARISH: Score <-75 for 3 min + Price down >0.1%
+    - BEARISH: Score -60 to -75 for 3 min + Price down >0%
+    - BEARISH DIVERGENCE: Score >60 but price down >0.15%
+    - BULLISH DIVERGENCE: Score <-60 but price up >0.15%
+    - REVERSAL WARNING: Previous strong signal weakening
+    """
+    now = datetime.now()
+    total_score = score_result['total_score']
+    current_price = score_result.get('nifty_price', 0)
+
+    if not current_price:
+        return False
+
+    # Update buffers (keep last 3 readings = 3 minutes with 60s refresh)
+    engine.nifty_score_buffer.append(total_score)
+    engine.nifty_price_buffer.append(current_price)
+
+    # Keep only last 3 readings
+    if len(engine.nifty_score_buffer) > 3:
+        engine.nifty_score_buffer.pop(0)
+    if len(engine.nifty_price_buffer) > 3:
+        engine.nifty_price_buffer.pop(0)
+
+    # Need at least 3 readings for confirmation (3 minutes)
+    if len(engine.nifty_score_buffer) < 3:
+        print(f"⏳ Building confirmation buffer: {len(engine.nifty_score_buffer)}/3 readings")
+        return False
+
+    # Get price change from 3 minutes ago
+    start_price = engine.nifty_price_buffer[0]
+    price_change_pct = ((current_price - start_price) / start_price) * 100 if start_price > 0 else 0
+
+    # Check universal cooldown (30 minutes for ANY alert)
+    if engine.nifty_universal_cooldown:
+        time_since_last = (now - engine.nifty_universal_cooldown).total_seconds() / 60
+        if time_since_last < 30:
+            return False
+
+    # ==================================================================
+    # DIVERGENCE DETECTION (Immediate alerts - no confirmation needed)
+    # ==================================================================
+
+    # BEARISH DIVERGENCE: Bullish flow but price falling
+    if total_score >= 60 and price_change_pct < -0.15:
+        alert_type = "BEARISH_DIVERGENCE"
+        emoji = "⚠️"
+        signal_text = "BEARISH DIVERGENCE"
+        description = "Bullish options flow but price falling - Reversal risk!"
+        confidence = "🔴 HIGH RISK"
+
+        message = f"⚠️ <b>NIFTY ALERT - {signal_text}</b>\n\n"
+        message += f"📊 <b>Score:</b> {total_score:+d}/100 (Bullish flow)\n"
+        message += f"📉 <b>Price:</b> ₹{current_price:.2f} 🔴{price_change_pct:+.2f}% (3-min)\n\n"
+        message += f"⚠️ <b>WARNING:</b> {description}\n"
+        message += f"Options traders are bullish BUT price is falling.\n"
+        message += f"This often signals:\n"
+        message += f"• Trapped longs / Smart money selling\n"
+        message += f"• Possible bearish reversal ahead\n\n"
+        message += f"💰 <b>Current:</b> ₹{current_price:.2f}\n"
+        message += f"⏰ {now.strftime('%I:%M:%S %p')}\n"
+        message += f"#Nifty #Divergence #BearishRisk"
+
+        try:
+            send_telegram_alert(message)
+            print(f"📱 {signal_text}: Score {total_score:+d}, Price {price_change_pct:+.2f}%")
+            engine.nifty_universal_cooldown = now
+            engine.nifty_last_alert_type = alert_type
+            engine.nifty_last_alert_score = total_score
+
+            # Trigger rockets for divergence
+            if 'rocket_triggers' not in st.session_state:
+                st.session_state.rocket_triggers = []
+            st.session_state.rocket_triggers.append({
+                'type': 'NIFTY',
+                'direction': 'DOWN',
+                'count': 3,
+                'priority': 'CRITICAL'
+            })
+            return True
+        except Exception as e:
+            print(f"Error sending divergence alert: {e}")
+            return False
+
+    # BULLISH DIVERGENCE: Bearish flow but price rising
+    if total_score <= -60 and price_change_pct > 0.15:
+        alert_type = "BULLISH_DIVERGENCE"
+        emoji = "⚠️"
+        signal_text = "BULLISH DIVERGENCE"
+        description = "Bearish options flow but price rising - Reversal opportunity!"
+        confidence = "🟢 OPPORTUNITY"
+
+        message = f"⚠️ <b>NIFTY ALERT - {signal_text}</b>\n\n"
+        message += f"📊 <b>Score:</b> {total_score:+d}/100 (Bearish flow)\n"
+        message += f"📈 <b>Price:</b> ₹{current_price:.2f} 🟢{price_change_pct:+.2f}% (3-min)\n\n"
+        message += f"✨ <b>OPPORTUNITY:</b> {description}\n"
+        message += f"Options traders are bearish BUT price is rising.\n"
+        message += f"This often signals:\n"
+        message += f"• Trapped shorts / Smart money buying\n"
+        message += f"• Possible bullish continuation\n\n"
+        message += f"💰 <b>Current:</b> ₹{current_price:.2f}\n"
+        message += f"⏰ {now.strftime('%I:%M:%S %p')}\n"
+        message += f"#Nifty #Divergence #BullishOpportunity"
+
+        try:
+            send_telegram_alert(message)
+            print(f"📱 {signal_text}: Score {total_score:+d}, Price {price_change_pct:+.2f}%")
+            engine.nifty_universal_cooldown = now
+            engine.nifty_last_alert_type = alert_type
+            engine.nifty_last_alert_score = total_score
+
+            # Trigger rockets for divergence
+            if 'rocket_triggers' not in st.session_state:
+                st.session_state.rocket_triggers = []
+            st.session_state.rocket_triggers.append({
+                'type': 'NIFTY',
+                'direction': 'UP',
+                'count': 3,
+                'priority': 'CRITICAL'
+            })
+            return True
+        except Exception as e:
+            print(f"Error sending divergence alert: {e}")
+            return False
+
+    # ==================================================================
+    # REVERSAL WARNING (Previous strong signal weakening)
+    # ==================================================================
+
+    if engine.nifty_last_alert_type in ['STRONG_BULLISH', 'STRONG_BEARISH']:
+        # Check if signal is weakening
+        if engine.nifty_last_alert_type == 'STRONG_BULLISH' and total_score < 50:
+            alert_type = "REVERSAL_WARNING"
+            message = f"🔄 <b>NIFTY MOMENTUM WEAKENING</b>\n\n"
+            message += f"Previous: STRONG BULLISH ({engine.nifty_last_alert_score:+d})\n"
+            message += f"Current: {total_score:+d}/100\n\n"
+            message += f"⚠️ Bullish momentum fading - Consider exits\n"
+            message += f"💰 Price: ₹{current_price:.2f} 🔴{price_change_pct:+.2f}%\n"
+            message += f"⏰ {now.strftime('%I:%M:%S %p')}"
+
+            try:
+                send_telegram_alert(message)
+                print(f"📱 REVERSAL WARNING: BULLISH weakening to {total_score:+d}")
+                engine.nifty_last_alert_type = alert_type
+                return True
+            except Exception as e:
+                print(f"Error sending reversal warning: {e}")
+
+        elif engine.nifty_last_alert_type == 'STRONG_BEARISH' and total_score > -50:
+            alert_type = "REVERSAL_WARNING"
+            message = f"🔄 <b>NIFTY MOMENTUM WEAKENING</b>\n\n"
+            message += f"Previous: STRONG BEARISH ({engine.nifty_last_alert_score:+d})\n"
+            message += f"Current: {total_score:+d}/100\n\n"
+            message += f"⚠️ Bearish momentum fading - Consider exits\n"
+            message += f"💰 Price: ₹{current_price:.2f} 🟢{price_change_pct:+.2f}%\n"
+            message += f"⏰ {now.strftime('%I:%M:%S %p')}"
+
+            try:
+                send_telegram_alert(message)
+                print(f"📱 REVERSAL WARNING: BEARISH weakening to {total_score:+d}")
+                engine.nifty_last_alert_type = alert_type
+                return True
+            except Exception as e:
+                print(f"Error sending reversal warning: {e}")
+
+    # ==================================================================
+    # CONFIRMED SIGNALS (3-minute persistence required)
+    # ==================================================================
+
+    # Check score persistence (all 3 readings must meet threshold)
+    scores = engine.nifty_score_buffer
+
+    # STRONG BULLISH: Score >75 for all 3 readings + Price up >0.1%
+    if all(s > 75 for s in scores) and price_change_pct > 0.1:
+        alert_type = "STRONG_BULLISH"
+        emoji = "🟢"
+        signal_text = "STRONG BULLISH"
+        confidence = "🔴 VERY HIGH"
+        rocket_count = 5
+
+    # BULLISH: Score 60-75 for all 3 readings + Price up >0%
+    elif all(s >= 60 for s in scores) and price_change_pct > 0:
+        alert_type = "BULLISH"
+        emoji = "🟢"
+        signal_text = "BULLISH"
+        confidence = "🟠 HIGH" if all(s > 70 for s in scores) else "🟡 MEDIUM"
+        rocket_count = 4 if all(s > 70 for s in scores) else 3
+
+    # STRONG BEARISH: Score <-75 for all 3 readings + Price down >0.1%
+    elif all(s < -75 for s in scores) and price_change_pct < -0.1:
+        alert_type = "STRONG_BEARISH"
+        emoji = "🔴"
+        signal_text = "STRONG BEARISH"
+        confidence = "🔴 VERY HIGH"
+        rocket_count = 5
+
+    # BEARISH: Score -60 to -75 for all 3 readings + Price down >0%
+    elif all(s <= -60 for s in scores) and price_change_pct < 0:
+        alert_type = "BEARISH"
+        emoji = "🔴"
+        signal_text = "BEARISH"
+        confidence = "🟠 HIGH" if all(s < -70 for s in scores) else "🟡 MEDIUM"
+        rocket_count = 4 if all(s < -70 for s in scores) else 3
+
+    else:
+        # No confirmed signal yet
+        return False
+
+    # Build alert message
+    breakdown = score_result['breakdown']
+
+    message = f"🚨 <b>NIFTY CONFIRMED SIGNAL {emoji}</b>\n\n"
+    message += f"📊 <b>{signal_text} MOMENTUM</b>\n"
+    message += f"Score: <b>{total_score:+d}/100</b> {confidence}\n"
+    message += f"✅ <b>3-Minute Confirmation</b> (Scores: {scores[0]:+d} → {scores[1]:+d} → {scores[2]:+d})\n\n"
+
+    # Price movement
+    price_emoji = "🟢" if price_change_pct > 0 else "🔴"
+    message += f"💰 <b>Price Movement:</b>\n"
+    message += f"   3 min ago: ₹{start_price:.2f}\n"
+    message += f"   Now: ₹{current_price:.2f} {price_emoji}{price_change_pct:+.2f}%\n\n"
+
+    # Key conditions (show only strong signals)
+    message += "✅ <b>Key Signals:</b>\n"
+    if abs(breakdown.get('ce_pe_flow', 0)) >= 10:
+        flow_type = "CE" if breakdown['ce_pe_flow'] > 0 else "PE"
+        message += f"• {flow_type} Flow dominance ✓\n"
+    if abs(breakdown.get('session_spikes', 0)) >= 8:
+        spike_type = "CE" if breakdown['session_spikes'] > 0 else "PE"
+        message += f"• {spike_type} Spikes ahead ✓\n"
+    if abs(breakdown.get('vwap_supertrend', 0)) >= 15:
+        tech_signal = "BULLISH" if breakdown['vwap_supertrend'] > 0 else "BEARISH"
+        message += f"• VWAP/ST: {tech_signal} ✓\n"
+    if abs(breakdown.get('nifty_net_flow', 0)) >= 7:
+        flow_sign = "+ve" if breakdown['nifty_net_flow'] > 0 else "-ve"
+        message += f"• Nifty Net Flow: {flow_sign} ✓\n"
+
+    message += f"\n⏰ {now.strftime('%I:%M:%S %p')}\n"
+    message += f"#Nifty #{alert_type.replace('_', '')}"
+
+    # Send alert
+    try:
+        send_telegram_alert(message)
+        print(f"📱 NIFTY {signal_text}: Score {total_score:+d}, Price {price_change_pct:+.2f}% (3-min confirmed)")
+
+        # Update state
+        engine.nifty_universal_cooldown = now
+        engine.nifty_last_alert_type = alert_type
+        engine.nifty_last_alert_score = total_score
+
+        # Trigger rockets
+        direction = 'UP' if 'BULLISH' in alert_type else 'DOWN'
+        priority = 'CRITICAL' if 'STRONG' in alert_type else 'NORMAL'
+
+        if 'rocket_triggers' not in st.session_state:
+            st.session_state.rocket_triggers = []
+        st.session_state.rocket_triggers.append({
+            'type': 'NIFTY',
+            'direction': direction,
+            'count': rocket_count,
+            'priority': priority
+        })
+
+        return True
+
+    except Exception as e:
+        print(f"Error sending NIFTY enhanced alert: {e}")
+        return False
+
 def send_nifty_comprehensive_alert(score_result):
     """
     Send comprehensive NIFTY alert based on 8-criteria scoring
@@ -5309,8 +5600,8 @@ def polling_loop():
                         vwap_st_strategy=vwap_st_strategy
                     )
 
-                    # Send alert if score >= +60 or <= -60
-                    send_nifty_comprehensive_alert(score_result)
+                    # Send enhanced alert with 3-minute confirmation and divergence detection
+                    send_nifty_enhanced_alert(score_result)
 
                 except Exception as e:
                     print(f"❌ Error calculating NIFTY comprehensive alert: {e}")
