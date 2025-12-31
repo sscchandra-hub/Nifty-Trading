@@ -4453,6 +4453,7 @@ def collect_weekly_expiry_data(kite: KiteConnect, ins_df: pd.DataFrame, expiry_d
     - strike, type (CE/PE), last_price, volume, oi, oi_change,
       bid, ask, net_flow, iv, delta, theta, gamma, vega
     """
+    print(f"   🔍 collect_weekly_expiry_data() STARTED")
     try:
         # Collect all tokens
         tokens = []
@@ -4462,11 +4463,16 @@ def collect_weekly_expiry_data(kite: KiteConnect, ins_df: pd.DataFrame, expiry_d
             if strike_data['pe_token']:
                 tokens.append(strike_data['pe_token'])
 
+        print(f"   🔍 Collected {len(tokens)} tokens from strike_map")
+
         if not tokens:
+            print(f"   ❌ No tokens found in strike_map!")
             return pd.DataFrame()
 
+        print(f"   🔍 Calling kite.quote() with {len(tokens)} tokens...")
         # Fetch quotes
         quotes = kite.quote([f"NFO:{token}" for token in tokens])
+        print(f"   🔍 kite.quote() returned successfully")
 
         # DEBUG: Check if quotes were fetched
         print(f"   📊 Fetched {len(quotes) if quotes else 0} quotes from Kite API")
@@ -6339,11 +6345,16 @@ def polling_loop():
 
                                             if strike_map:
                                                 # Collect options data
+                                                print(f"   🔍 About to call collect_weekly_expiry_data() for {expiry_date.strftime('%d-%b')}")
                                                 daily_df = collect_weekly_expiry_data(kite, engine.ins_df, expiry_date, strike_map)
+                                                print(f"   🔍 collect_weekly_expiry_data() returned, df empty: {daily_df.empty if daily_df is not None else 'None'}")
 
                                                 if not daily_df.empty:
                                                     # Save cumulative data
+                                                    print(f"   🔍 Calling save_cumulative_expiry_data()...")
                                                     save_cumulative_expiry_data(expiry_date, daily_df)
+                                                else:
+                                                    print(f"   ⚠️ daily_df is EMPTY - not saving")
 
                                         except Exception as e:
                                             print(f"❌ Error collecting data for {expiry_date}: {e}")
