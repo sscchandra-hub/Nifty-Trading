@@ -4468,6 +4468,17 @@ def collect_weekly_expiry_data(kite: KiteConnect, ins_df: pd.DataFrame, expiry_d
         # Fetch quotes
         quotes = kite.quote([f"NFO:{token}" for token in tokens])
 
+        # DEBUG: Check if quotes were fetched
+        print(f"   📊 Fetched {len(quotes) if quotes else 0} quotes from Kite API")
+        if not quotes:
+            print(f"   ❌ No quotes returned! Token count: {len(tokens)}")
+            return pd.DataFrame()
+
+        # DEBUG: Show sample quote key format
+        if quotes:
+            sample_key = list(quotes.keys())[0] if quotes else None
+            print(f"   Sample quote key: {sample_key}")
+
         # Build dataframe
         rows = []
         for strike, strike_data in strike_map.items():
@@ -4731,6 +4742,11 @@ def collect_stock_expiry_data(kite, ins_df: pd.DataFrame, symbol: str, expiry_da
 
         # Fetch quotes
         quotes = kite.quote([f"NFO:{token}" for token in all_tokens])
+
+        # DEBUG: Check quote fetch
+        if not quotes:
+            print(f"   ❌ {symbol}: No quotes returned")
+            return pd.DataFrame()
 
         rows = []
         for strike, strike_data in strike_map.items():
