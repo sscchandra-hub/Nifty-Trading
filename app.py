@@ -6293,102 +6293,102 @@ def polling_loop():
                 }
                 save_dashboard_cache(cache_data)
 
-                # WEEKLY EXPIRY TRACKING: Collect data every 5 minutes
-                if engine.chart_update_counter >= 10 and not engine.ins_df.empty:  # Every 5 minutes
-                    try:
-                        print("📅 Collecting weekly expiry data...")
-
-                        # Get next 4 expiries
-                        next_expiries = get_next_nifty_expiries(engine.ins_df, num_expiries=4)
-
-                        if next_expiries and "NIFTY" in indices_data:
-                            nifty_price = indices_data["NIFTY"].get("price")
-
-                            if nifty_price:
-                                atm_strike = get_atm_strike(nifty_price)
-
-                                # Collect data for each expiry
-                                for expiry_date in next_expiries:
-                                    try:
-                                        # Get strikes for this expiry
-                                        strike_map = get_strikes_for_expiry(engine.ins_df, expiry_date, atm_strike, range_strikes=20)
-
-                                        if strike_map:
-                                            # Collect options data
-                                            daily_df = collect_weekly_expiry_data(kite, engine.ins_df, expiry_date, strike_map)
-
-                                            if not daily_df.empty:
-                                                # Save cumulative data
-                                                save_cumulative_expiry_data(expiry_date, daily_df)
-
-                                    except Exception as e:
-                                        print(f"❌ Error collecting data for {expiry_date}: {e}")
-
-                                print("✅ Weekly expiry data collection complete")
-
-                    except Exception as e:
-                        print(f"❌ Error in weekly expiry tracking: {e}")
-                        import traceback
-                        traceback.print_exc()
-
-                # STOCK MONTHLY EXPIRY TRACKING: Collect data every 5 minutes
-                if engine.chart_update_counter >= 10 and not engine.ins_df.empty and engine.stocks_with_fo:
-                    try:
-                        print("📈 Collecting stock monthly expiry data...")
-                        stocks_collected = 0
-
-                        # Iterate through all F&O stocks (191 stocks)
-                        for symbol in engine.stocks_with_fo:
-                            try:
-                                # Get stock price from stocks_data
-                                if symbol not in stocks_data:
-                                    continue
-
-                                stock_price = stocks_data[symbol].get("price")
-                                if not stock_price or stock_price <= 0:
-                                    continue
-
-                                # Get current month expiry for this stock
-                                expiry_date = get_stock_expiry(engine.ins_df, symbol)
-                                if not expiry_date:
-                                    continue
-
-                                # Calculate ATM strike
-                                atm_strike = get_stock_atm_strike(stock_price, symbol)
-
-                                # Get ATM ± 10 strikes
-                                strike_map = get_stock_strikes_for_expiry(
-                                    engine.ins_df, symbol, expiry_date, atm_strike, range_strikes=10
-                                )
-
-                                if strike_map:
-                                    # Collect options data
-                                    daily_df = collect_stock_expiry_data(kite, engine.ins_df, symbol, expiry_date, strike_map)
-
-                                    if not daily_df.empty:
-                                        # Save cumulative data
-                                        save_cumulative_stock_expiry_data(symbol, expiry_date, daily_df)
-                                        stocks_collected += 1
-
-                            except Exception as e:
-                                print(f"❌ Error collecting data for {symbol}: {e}")
-                                continue
-
-                        print(f"✅ Stock expiry data collection complete ({stocks_collected}/{len(engine.stocks_with_fo)} stocks)")
-
-                    except Exception as e:
-                        print(f"❌ Error in stock expiry tracking: {e}")
-                        import traceback
-                        traceback.print_exc()
-
                 # PHASE 1: Update chart data every 5 minutes (30 polls = 5 min at 10 sec intervals)
                 engine.chart_update_counter += 1
                 log_chart_debug(f"chart_update_counter = {engine.chart_update_counter}/30")
-                
+
                 if engine.chart_update_counter >= 10:  # 5 minutes
                     log_chart_debug(f"🎯 CHART UPDATE TRIGGERED! Counter reached {engine.chart_update_counter}")
                     engine.chart_update_counter = 0
-                    
+
+                    # WEEKLY EXPIRY TRACKING: Collect data every 5 minutes
+                    if not engine.ins_df.empty:
+                        try:
+                            print("📅 Collecting weekly expiry data...")
+
+                            # Get next 4 expiries
+                            next_expiries = get_next_nifty_expiries(engine.ins_df, num_expiries=4)
+
+                            if next_expiries and "NIFTY" in indices_data:
+                                nifty_price = indices_data["NIFTY"].get("price")
+
+                                if nifty_price:
+                                    atm_strike = get_atm_strike(nifty_price)
+
+                                    # Collect data for each expiry
+                                    for expiry_date in next_expiries:
+                                        try:
+                                            # Get strikes for this expiry
+                                            strike_map = get_strikes_for_expiry(engine.ins_df, expiry_date, atm_strike, range_strikes=20)
+
+                                            if strike_map:
+                                                # Collect options data
+                                                daily_df = collect_weekly_expiry_data(kite, engine.ins_df, expiry_date, strike_map)
+
+                                                if not daily_df.empty:
+                                                    # Save cumulative data
+                                                    save_cumulative_expiry_data(expiry_date, daily_df)
+
+                                        except Exception as e:
+                                            print(f"❌ Error collecting data for {expiry_date}: {e}")
+
+                                    print("✅ Weekly expiry data collection complete")
+
+                        except Exception as e:
+                            print(f"❌ Error in weekly expiry tracking: {e}")
+                            import traceback
+                            traceback.print_exc()
+
+                    # STOCK MONTHLY EXPIRY TRACKING: Collect data every 5 minutes
+                    if not engine.ins_df.empty and engine.stocks_with_fo:
+                        try:
+                            print("📈 Collecting stock monthly expiry data...")
+                            stocks_collected = 0
+
+                            # Iterate through all F&O stocks (191 stocks)
+                            for symbol in engine.stocks_with_fo:
+                                try:
+                                    # Get stock price from stocks_data
+                                    if symbol not in stocks_data:
+                                        continue
+
+                                    stock_price = stocks_data[symbol].get("price")
+                                    if not stock_price or stock_price <= 0:
+                                        continue
+
+                                    # Get current month expiry for this stock
+                                    expiry_date = get_stock_expiry(engine.ins_df, symbol)
+                                    if not expiry_date:
+                                        continue
+
+                                    # Calculate ATM strike
+                                    atm_strike = get_stock_atm_strike(stock_price, symbol)
+
+                                    # Get ATM ± 10 strikes
+                                    strike_map = get_stock_strikes_for_expiry(
+                                        engine.ins_df, symbol, expiry_date, atm_strike, range_strikes=10
+                                    )
+
+                                    if strike_map:
+                                        # Collect options data
+                                        daily_df = collect_stock_expiry_data(kite, engine.ins_df, symbol, expiry_date, strike_map)
+
+                                        if not daily_df.empty:
+                                            # Save cumulative data
+                                            save_cumulative_stock_expiry_data(symbol, expiry_date, daily_df)
+                                            stocks_collected += 1
+
+                                except Exception as e:
+                                    print(f"❌ Error collecting data for {symbol}: {e}")
+                                    continue
+
+                            print(f"✅ Stock expiry data collection complete ({stocks_collected}/{len(engine.stocks_with_fo)} stocks)")
+
+                        except Exception as e:
+                            print(f"❌ Error in stock expiry tracking: {e}")
+                            import traceback
+                            traceback.print_exc()
+
                     log_chart_debug(f"📊 Checking for NIFTY in indices_data...")
                     log_chart_debug(f"📊 indices_data keys: {list(indices_data.keys())}")
                     
