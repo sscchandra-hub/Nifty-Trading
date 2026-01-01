@@ -659,43 +659,9 @@ def create_volume_intensity_wave():
         return None, {}
 
 # =========================
-# TELEGRAM ALERTS
+# VOLUME ALERTS (REMOVED TELEGRAM)
 # =========================
-
-def check_volume_alerts(send_alert_func):
-    """
-    Check for volume spike alerts and send to Telegram
-    
-    Args:
-        send_alert_func: Function to call for sending alerts
-    """
-    try:
-        if not volume_state.spike_queue:
-            return
-        
-        # Get latest spike
-        latest_spike = list(volume_state.spike_queue)[-1]
-        
-        # Only alert if spike >= 5.0x
-        if latest_spike.spike_ratio >= 5.0:
-            strike_label = get_strike_label(latest_spike.strike, volume_state.last_atm_strike)
-            
-            alert_msg = (
-                f"<b>⚡ VOLUME SPIKE ALERT - NIFTY</b>\n\n"
-                f"<b>Strike:</b> {latest_spike.strike} {latest_spike.option_type} ({strike_label})\n"
-                f"<b>Volume:</b> {format_number(latest_spike.volume)} (+{latest_spike.spike_ratio:.1f}x)\n"
-                f"<b>Time:</b> {latest_spike.timestamp.strftime('%I:%M:%S %p')}\n\n"
-                f"<b>Signal:</b> 🔥 STRONG {'BUY' if latest_spike.option_type == 'CE' else 'SELL'}\n"
-                f"<b>Avg Volume:</b> {format_number(latest_spike.avg_volume)}\n\n"
-                f"<b>Context:</b> {latest_spike.option_type} buying {'accelerating' if latest_spike.spike_ratio > 6 else 'strong'}\n"
-                f"<b>Bias:</b> {'Bullish' if latest_spike.option_type == 'CE' else 'Bearish'} momentum building\n\n"
-                f"⏰ {datetime.now().strftime('%I:%M:%S %p')}"
-            )
-            
-            send_alert_func(alert_msg, "warning")
-    
-    except Exception as e:
-        print(f"Error checking volume alerts: {e}")
+# Telegram alerts have been removed from this system
 
 # =========================
 # RESET FUNCTION
@@ -810,8 +776,6 @@ CACHE_DIR.mkdir(parents=True, exist_ok=True)
 load_dotenv()
 API_KEY = os.getenv("KITE_API_KEY")
 API_SECRET = os.getenv("KITE_API_SECRET")
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 # Security validation
 def validate_credentials():
@@ -836,9 +800,6 @@ def validate_credentials():
         issues.append("❌ KITE_API_KEY and KITE_API_SECRET are required in .env file")
     elif len(API_KEY) < 10 or len(API_SECRET) < 10:
         issues.append("⚠️ API credentials look invalid (too short)")
-
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        issues.append("⚠️ Telegram credentials missing - alerts will not work")
 
     # Check .gitignore exists and contains .env
     gitignore_file = Path(".gitignore")
@@ -2983,34 +2944,9 @@ def fetch_chartink_alerts(mode='LIVE'):
     return alerts
 
 # =========================
-# TELEGRAM ALERTS
+# TELEGRAM ALERTS (REMOVED)
 # =========================
-
-def send_telegram_alert(message):
-    """Send alert to Telegram"""
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("Telegram not configured")
-        return False
-    
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        payload = {
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": message,
-            "parse_mode": "HTML"
-        }
-        
-        response = requests.post(url, json=payload, timeout=10)
-        
-        if response.status_code == 200:
-            return True
-        else:
-            print(f"Telegram API error: {response.text}")
-            return False
-            
-    except Exception as e:
-        print(f"Telegram exception: {str(e)}")
-        return False
+# Telegram alert functionality has been removed from this system
 
 def add_alert(message, alert_type="info", cooldown_minutes=10):
     """Add alert to alert queue and send to Telegram with cooldown"""
@@ -3035,7 +2971,7 @@ def add_alert(message, alert_type="info", cooldown_minutes=10):
             return
 
     telegram_message = f"<b>🚨 ALERT - {timestamp}</b>\n\n{message}"
-    send_telegram_alert(telegram_message)
+    # send_telegram_alert(telegram_message)
     engine.last_stock_alert[message_hash] = now
 
 
@@ -3109,7 +3045,7 @@ def add_alert_enhanced(message, alert_type="info", priority="MEDIUM", category="
 
             engine.last_stock_alert[message_hash] = now
 
-        send_telegram_alert(telegram_msg)
+        # send_telegram_alert(telegram_msg)
 
 
 def get_alert_statistics():
@@ -3375,7 +3311,7 @@ def send_stock_alert(stock_name, alert_type, price, change_pct, net_flow, volume
 
     # Send to Telegram
     try:
-        send_telegram_alert(telegram_message)
+        # send_telegram_alert(telegram_message)
         print(f"📱 Stock Alert: {stock_name} - {signal}")
         engine.last_stock_alert[cooldown_key] = now
 
@@ -3482,7 +3418,7 @@ def send_nifty_enhanced_alert(score_result):
         message += f"#Nifty #Divergence #BearishRisk"
 
         try:
-            send_telegram_alert(message)
+            # send_telegram_alert(message)
             print(f"📱 {signal_text}: Score {total_score:+d}, Price {price_change_pct:+.2f}%")
             engine.nifty_universal_cooldown = now
             engine.nifty_last_alert_type = alert_type
@@ -3523,7 +3459,7 @@ def send_nifty_enhanced_alert(score_result):
         message += f"#Nifty #Divergence #BullishOpportunity"
 
         try:
-            send_telegram_alert(message)
+            # send_telegram_alert(message)
             print(f"📱 {signal_text}: Score {total_score:+d}, Price {price_change_pct:+.2f}%")
             engine.nifty_universal_cooldown = now
             engine.nifty_last_alert_type = alert_type
@@ -3559,7 +3495,7 @@ def send_nifty_enhanced_alert(score_result):
             message += f"⏰ {now.strftime('%I:%M:%S %p')}"
 
             try:
-                send_telegram_alert(message)
+                # send_telegram_alert(message)
                 print(f"📱 REVERSAL WARNING: BULLISH weakening to {total_score:+d}")
                 engine.nifty_last_alert_type = alert_type
                 return True
@@ -3576,7 +3512,7 @@ def send_nifty_enhanced_alert(score_result):
             message += f"⏰ {now.strftime('%I:%M:%S %p')}"
 
             try:
-                send_telegram_alert(message)
+                # send_telegram_alert(message)
                 print(f"📱 REVERSAL WARNING: BEARISH weakening to {total_score:+d}")
                 engine.nifty_last_alert_type = alert_type
                 return True
@@ -3660,7 +3596,7 @@ def send_nifty_enhanced_alert(score_result):
 
     # Send alert
     try:
-        send_telegram_alert(message)
+        # send_telegram_alert(message)
         print(f"📱 NIFTY {signal_text}: Score {total_score:+d}, Price {price_change_pct:+.2f}% (3-min confirmed)")
 
         # Update state
@@ -3790,7 +3726,7 @@ def send_nifty_comprehensive_alert(score_result):
 
     # Send alert
     try:
-        send_telegram_alert(telegram_message)
+        # send_telegram_alert(telegram_message)
         print(f"📱 NIFTY Comprehensive Alert: {full_signal} (Score: {total_score:+d})")
         engine.last_stock_alert[cooldown_key] = now
 
@@ -3847,7 +3783,7 @@ def send_stock_confluence_alert(confluence_stocks):
 
     # Send alert
     try:
-        send_telegram_alert(telegram_message)
+        # send_telegram_alert(telegram_message)
         print(f"📱 Stock Confluence Alert: {len(confluence_stocks)} stocks")
         return True
     except Exception as e:
@@ -5090,7 +5026,7 @@ def send_followup_alert(stock: str, opening_pct: float, current_pct: float, curr
 This stock triggered alert yesterday and now showing strong {signal.lower()} momentum at market open!
 """
 
-        send_telegram_message(message)
+        # send_telegram_message(message)
         print(f"📱 Sent follow-up alert for {stock}")
 
     except Exception as e:
@@ -6154,9 +6090,9 @@ def polling_loop():
                             )
                             
                             log_chart_debug(f"Volume data updated - spike_queue={len(volume_state.spike_queue)}, ce_pe_history={len(volume_state.ce_pe_history)}")
-                            
-                            # Check for volume spike alerts (>5x)
-                            check_volume_alerts(add_alert)
+
+                            # Check for volume spike alerts (>5x) - TELEGRAM ALERTS REMOVED
+                            # check_volume_alerts(add_alert)
 
                             # ============================================
                             # WEEKLY EXPIRY TRACKER DATA COLLECTION
@@ -6523,7 +6459,7 @@ def polling_loop():
 
                         # Send Telegram alert
                         try:
-                            send_telegram_message(alert_message, parse_mode='HTML')
+                            # send_telegram_message(alert_message, parse_mode='HTML')
                             print(f"📢 SMART ALERT: {stock_name} - Score: {score_result['total_score']:.0f} ({score_result['signal_strength']})")
 
                             # Determine alert type from signal strength
@@ -6554,7 +6490,7 @@ def polling_loop():
                     if engine.daily_score_history:
                         try:
                             summary_message = generate_daily_summary(engine.daily_score_history, stocks_data)
-                            send_telegram_message(summary_message, parse_mode='HTML')
+                            # send_telegram_message(summary_message, parse_mode='HTML')
                             print(f"📊 DAILY SUMMARY sent at {now.strftime('%H:%M:%S')}")
                             daily_summary_sent = True
                         except Exception as e:
@@ -6606,7 +6542,7 @@ def polling_loop():
                         )
 
                         try:
-                            send_telegram_message(alert_message, parse_mode='HTML')
+                            # send_telegram_message(alert_message, parse_mode='HTML')
                             print(f"📢 NIFTY MOMENTUM: {current_momentum_class} (Score: {momentum_score['total_score']:+d}/100)")
                             if is_reversal:
                                 print(f"   🔄 REVERSAL: {previous_momentum_class} → {current_momentum_class}")
@@ -6882,7 +6818,7 @@ def polling_loop():
                                     "#NiftyFutures #Bearish #VWAP #SuperTrend"
                                 )
 
-                            send_telegram_alert(telegram_msg)
+                            # send_telegram_alert(telegram_msg)
                             print(f"📱 Telegram Alert Sent: {signal} Signal")
 
                     else:
@@ -6963,7 +6899,7 @@ def polling_loop():
 
                             try:
                                 # DISABLED: Stock alerts temporarily disabled
-                                # send_telegram_alert(telegram_message)
+                                # # send_telegram_alert(telegram_message)
                                 print(f"🔕 ALERT DISABLED - NEW Top 10 Entry: #{rank} {stock_name} (Net Flow: {format_number(net_flow)})")
                             except Exception as e:
                                 print(f"Error sending Top 10 alert: {e}")
@@ -7427,7 +7363,7 @@ def start_polling():
         f"🔔 Alerts: <b>ACTIONABLE with Strike Prices</b>\n\n"
         "<i>You will receive real-time entry signals with exact strikes, entry, target & SL...</i>"
     )
-    send_telegram_alert(startup_msg)
+    # send_telegram_alert(startup_msg)
     
     return True
 
@@ -7441,7 +7377,7 @@ def stop_polling():
         f"⏰ Time: {datetime.now().strftime('%I:%M %p')}\n"
         "<i>Alerts paused until restart</i>"
     )
-    send_telegram_alert(stop_msg)
+    # send_telegram_alert(stop_msg)
 
 # =========================
 # STREAMLIT UI
@@ -8145,10 +8081,6 @@ if not API_KEY or not API_SECRET:
     st.error("❌ Missing credentials in .env file")
     st.stop()
 
-if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-    st.warning("⚠️ Telegram alerts not configured")
-else:
-    st.success(f"✅ Telegram alerts enabled (Chat ID: {TELEGRAM_CHAT_ID[-4:]}...)")
 
 if not kite:
     st.warning("⚠️ Please authenticate")
