@@ -5123,6 +5123,197 @@ def mark_alerts_followed_up(stocks_list: list):
     except Exception as e:
         print(f"❌ Error marking alerts as followed up: {e}")
 
+# ============================================
+# STOCK ENTRY TRACKING FUNCTIONS
+# Track how many times stocks enter Top 10 & Volume Spikes lists
+# ============================================
+
+def load_stock_entry_tracking(data_dir: str = "data"):
+    """
+    Load stock entry tracking data from JSON file.
+    Tracks separate counters for Top 10 Stocks and Volume Spikes lists.
+    """
+    try:
+        tracking_file = Path(data_dir) / "stock_entry_tracking.json"
+
+        if tracking_file.exists():
+            with open(tracking_file, 'r') as f:
+                data = json.load(f)
+            return data
+        else:
+            # Initialize new tracking structure
+            return {
+                "top10_stocks": {},      # {stock: {count: int, in_list: bool, last_seen: str}}
+                "volume_spikes": {},     # {stock: {count: int, in_list: bool, last_seen: str}}
+                "last_expiry_reset": None,
+                "current_expiry": None
+            }
+    except Exception as e:
+        print(f"❌ Error loading stock entry tracking: {e}")
+        return {
+            "top10_stocks": {},
+            "volume_spikes": {},
+            "last_expiry_reset": None,
+            "current_expiry": None
+        }
+
+def save_stock_entry_tracking(tracking_data: dict, data_dir: str = "data"):
+    """Save stock entry tracking data to JSON file."""
+    try:
+        os.makedirs(data_dir, exist_ok=True)
+        tracking_file = Path(data_dir) / "stock_entry_tracking.json"
+
+        with open(tracking_file, 'w') as f:
+            json.dump(tracking_data, f, indent=2)
+    except Exception as e:
+        print(f"❌ Error saving stock entry tracking: {e}")
+
+def get_current_month_expiry(ins_df: pd.DataFrame) -> Optional[datetime]:
+    """
+    Get current month NIFTY expiry date from live options data.
+    Returns the nearest upcoming expiry (current month).
+    """
+    try:
+        if ins_df.empty:
+            return None
+
+        # Get NIFTY options data
+        nifty_options = ins_df[
+            (ins_df['name'] == 'NIFTY') &
+            (ins_df['instrument_type'] == 'OPT')
+        ].copy()
+
+        if nifty_options.empty:
+            return None
+
+        # Get unique expiry dates
+        expiries = pd.to_datetime(nifty_options['expiry']).unique()
+        expiries = sorted([exp for exp in expiries if exp >= datetime.now()])
+
+        if expiries:
+            # First expiry is current month
+            return expiries[0]
+
+        return None
+    except Exception as e:
+        print(f"❌ Error getting current month expiry: {e}")
+        return None
+
+def check_and_reset_if_expired(tracking_data: dict, ins_df: pd.DataFrame) -> dict:
+    """
+    Check if current month expiry has passed and reset counters if needed.
+    Updates current_expiry from live data.
+    """
+    try:
+        current_expiry = get_current_month_expiry(ins_df)
+
+        if not current_expiry:
+            return tracking_data
+
+        current_expiry_date = current_expiry.date()
+        today = datetime.now().date()
+
+        # Store current expiry in tracking data
+        tracking_data["current_expiry"] = current_expiry_date.isoformat()
+
+        # Check if we need to reset (expiry has passed)
+        last_reset = tracking_data.get("last_expiry_reset")
+
+        if last_reset:
+            last_reset_date = datetime.fromisoformat(last_reset).date()
+
+            # If today > expiry AND we haven't reset since last expiry
+            if today > current_expiry_date and last_reset_date <= current_expiry_date:
+                print(f"🔄 Monthly expiry passed ({current_expiry_date}) - Resetting stock entry counters")
+                tracking_data["top10_stocks"] = {}
+                tracking_data["volume_spikes"] = {}
+                tracking_data["last_expiry_reset"] = today.isoformat()
+        else:
+            # First time setup - no reset needed, just store the date
+            tracking_data["last_expiry_reset"] = today.isoformat()
+
+        return tracking_data
+    except Exception as e:
+        print(f"❌ Error checking expiry reset: {e}")
+        return tracking_data
+
+def update_stock_entry_count(tracking_data: dict, list_type: str, current_stocks: list) -> dict:
+    """
+    Update stock entry counts for a specific list.
+
+    Args:
+        tracking_data: Current tracking data
+        list_type: "top10_stocks" or "volume_spikes"
+        current_stocks: List of stock symbols currently in the list
+
+    Returns:
+        Updated tracking data
+    """
+    try:
+        if list_type not in tracking_data:
+            tracking_data[list_type] = {}
+
+        list_data = tracking_data[list_type]
+        current_time = datetime.now().isoformat()
+
+        # Convert current_stocks to set for faster lookup
+        current_stocks_set = set(current_stocks)
+
+        # Check each stock currently in the list
+        for stock in current_stocks:
+            if stock not in list_data:
+                # New stock - initialize
+                list_data[stock] = {
+                    "count": 1,
+                    "in_list": True,
+                    "last_seen": current_time
+                }
+                print(f"📊 {list_type}: {stock} entered list (count: 1)")
+            else:
+                # Stock exists in tracking
+                if not list_data[stock]["in_list"]:
+                    # Stock was OUT, now it's IN - increment count
+                    list_data[stock]["count"] += 1
+                    list_data[stock]["in_list"] = True
+                    list_data[stock]["last_seen"] = current_time
+                    print(f"📊 {list_type}: {stock} re-entered list (count: {list_data[stock]['count']})")
+                else:
+                    # Stock was IN, still IN - no change, just update timestamp
+                    list_data[stock]["last_seen"] = current_time
+
+        # Mark stocks that are no longer in the list
+        for stock in list_data:
+            if stock not in current_stocks_set and list_data[stock]["in_list"]:
+                list_data[stock]["in_list"] = False
+                print(f"📊 {list_type}: {stock} exited list")
+
+        tracking_data[list_type] = list_data
+        return tracking_data
+    except Exception as e:
+        print(f"❌ Error updating stock entry count: {e}")
+        return tracking_data
+
+def get_stock_display_name(stock: str, list_type: str, tracking_data: dict) -> str:
+    """
+    Get stock display name with entry count in parentheses.
+
+    Args:
+        stock: Stock symbol
+        list_type: "top10_stocks" or "volume_spikes"
+        tracking_data: Current tracking data
+
+    Returns:
+        Formatted string like "SAIL (3)" or "SAIL" if no tracking data
+    """
+    try:
+        if list_type in tracking_data and stock in tracking_data[list_type]:
+            count = tracking_data[list_type][stock]["count"]
+            return f"{stock} ({count})"
+        else:
+            return stock
+    except Exception as e:
+        return stock
+
 def discover_indices_with_fo(ins_df: pd.DataFrame) -> list:
     """
     Discover all whitelisted indices from instruments data.
@@ -5925,6 +6116,44 @@ def polling_loop():
                     key=lambda x: x[1]['ce_flow'] + x[1]['pe_flow'],
                     reverse=True
                 )[:10]
+
+                # ============================================
+                # STOCK ENTRY TRACKING (Top 10 & Volume Spikes)
+                # ============================================
+                # Track how many times stocks enter these lists (resets at monthly expiry)
+                try:
+                    # Load tracking data
+                    stock_entry_tracking = load_stock_entry_tracking()
+
+                    # Check if monthly expiry passed and reset if needed
+                    stock_entry_tracking = check_and_reset_if_expired(stock_entry_tracking, engine.ins_df)
+
+                    # Update Top 10 Stocks tracking
+                    top_10_stock_names = [name for name, _ in top_10_stocks]
+                    stock_entry_tracking = update_stock_entry_count(
+                        stock_entry_tracking,
+                        "top10_stocks",
+                        top_10_stock_names
+                    )
+
+                    # Update Volume Spikes tracking
+                    volume_spike_names = [name for name, _ in volume_spikes]
+                    stock_entry_tracking = update_stock_entry_count(
+                        stock_entry_tracking,
+                        "volume_spikes",
+                        volume_spike_names
+                    )
+
+                    # Save tracking data
+                    save_stock_entry_tracking(stock_entry_tracking)
+
+                    # Store in session state for UI access
+                    st.session_state.stock_entry_tracking = stock_entry_tracking
+
+                except Exception as e:
+                    print(f"❌ Error in stock entry tracking: {e}")
+                    import traceback
+                    traceback.print_exc()
 
                 # ============================================
                 # STOCK CONFLUENCE TRACKING (3/3 Sections)
@@ -9685,10 +9914,13 @@ with st.expander("📈 View Top 10 Stocks (Live Rankings)", expanded=False):
                 col1, col2 = st.columns([3, 1])
 
                 with col1:
-                    # Stock name and sector
+                    # Stock name with entry count tracking
+                    tracking_data = st.session_state.get('stock_entry_tracking', {})
+                    display_name = get_stock_display_name(stock_name, "top10_stocks", tracking_data)
+
                     price_str = f"₹{stock_price:,.2f}" if stock_price else "N/A"
                     change_str = f"({change_pct:+.2f}%)" if change_pct is not None else ""
-                    st.markdown(f"**{rank}. {stock_name}** {price_str} {change_str}")
+                    st.markdown(f"**{rank}. {display_name}** {price_str} {change_str}")
                     st.caption(f"_{sector}_")
 
                     # CE/PE race bar with color-coded progress bar
@@ -9902,6 +10134,10 @@ if cached_data and "stocks_data" in cached_data:
                     price = spike['price']
                     change_pct = spike['change_pct']
 
+                    # Get stock display name with entry count tracking
+                    tracking_data = st.session_state.get('stock_entry_tracking', {})
+                    display_name = get_stock_display_name(stock_name, "volume_spikes", tracking_data)
+
                     price_str = f"₹{price:,.2f}" if price else "N/A"
                     if change_pct is not None:
                         change_emoji = "🟢" if change_pct > 0 else "🔴"
@@ -9909,7 +10145,7 @@ if cached_data and "stocks_data" in cached_data:
                     else:
                         change_str = ""
 
-                    st.markdown(f"**{i}. {stock_name}**")
+                    st.markdown(f"**{i}. {display_name}**")
                     st.caption(f"{price_str} {change_str}")
 
                 with col2:
