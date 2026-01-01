@@ -5680,10 +5680,10 @@ def auto_backup_after_market_close():
 # WEEKLY EXPIRY TRACKER FUNCTIONS
 # =========================
 
-def get_current_week_nifty_expiry(kite, ins_df):
+def get_nifty_weekly_expiries(kite, ins_df, num_weeks=4):
     """
-    Detect the current week's NIFTY options expiry from live data.
-    Returns: (expiry_date_str, expiry_datetime) or (None, None)
+    Detect the next 4 weekly NIFTY options expiries from live data.
+    Returns: List of tuples [(expiry_date_str, expiry_datetime), ...]
     """
     try:
         # Filter NIFTY options from instruments
@@ -5693,30 +5693,26 @@ def get_current_week_nifty_expiry(kite, ins_df):
         ].copy()
 
         if nifty_options.empty:
-            return None, None
+            return []
 
         # Get unique expiry dates
         nifty_options['expiry_date'] = pd.to_datetime(nifty_options['expiry'])
         expiries = sorted(nifty_options['expiry_date'].unique())
 
-        # Find the nearest upcoming expiry (current week)
+        # Find the next 4 upcoming expiries
         now = datetime.now()
-        current_week_expiry = None
+        upcoming_expiries = []
 
         for exp in expiries:
-            if exp >= now:
-                current_week_expiry = exp
-                break
+            if exp >= now and len(upcoming_expiries) < num_weeks:
+                expiry_str = exp.strftime("%Y-%m-%d")  # Changed format for filename
+                upcoming_expiries.append((expiry_str, exp))
 
-        if current_week_expiry:
-            expiry_str = current_week_expiry.strftime("%d%b%Y").upper()
-            return expiry_str, current_week_expiry
-
-        return None, None
+        return upcoming_expiries
 
     except Exception as e:
-        print(f"Error detecting NIFTY expiry: {e}")
-        return None, None
+        print(f"Error detecting NIFTY expiries: {e}")
+        return []
 
 def get_nifty_atm_strikes(spot_price, num_strikes=20):
     """
@@ -5738,7 +5734,7 @@ def load_weekly_expiry_data(expiry_str):
     Returns: DataFrame with existing data or empty DataFrame
     """
     try:
-        csv_path = Path(f"data/nifty_{expiry_str.lower()}.csv")
+        csv_path = Path(f"data/weekly_expiry/nifty_expiry_{expiry_str}.csv")
 
         if csv_path.exists():
             df = pd.read_csv(csv_path)
@@ -5764,7 +5760,7 @@ def save_weekly_expiry_data(expiry_str, df):
     Save cumulative data to CSV for the given expiry.
     """
     try:
-        csv_path = Path(f"data/nifty_{expiry_str.lower()}.csv")
+        csv_path = Path(f"data/weekly_expiry/nifty_expiry_{expiry_str}.csv")
         csv_path.parent.mkdir(parents=True, exist_ok=True)
 
         df.to_csv(csv_path, index=False)
@@ -5878,9 +5874,8 @@ def update_weekly_expiry_data(kite, ins_df, token_meta, all_quotes, expiry_str, 
         if not df_new.empty:
             save_weekly_expiry_data(expiry_str, df_new)
 
-            # Also store in session state for UI display
-            st.session_state.weekly_expiry_data = df_new
-            st.session_state.current_expiry_str = expiry_str
+            # Also store in session state for UI display (as dict with expiry as key)
+            st.session_state.weekly_expiry_data[expiry_str] = df_new
 
             print(f"✅ Updated weekly expiry tracker: {len(df_new)} rows for {expiry_str}")
 
@@ -5889,11 +5884,11 @@ def update_weekly_expiry_data(kite, ins_df, token_meta, all_quotes, expiry_str, 
         import traceback
         traceback.print_exc()
 
-# Initialize weekly expiry session state
+# Initialize weekly expiry session state (4 weeks)
 if 'weekly_expiry_data' not in st.session_state:
-    st.session_state.weekly_expiry_data = None
-if 'current_expiry_str' not in st.session_state:
-    st.session_state.current_expiry_str = None
+    st.session_state.weekly_expiry_data = {}  # Dict with expiry_str as key
+if 'weekly_expiries_list' not in st.session_state:
+    st.session_state.weekly_expiries_list = []  # List of (expiry_str, expiry_dt) tuples
 if 'last_expiry_update' not in st.session_state:
     st.session_state.last_expiry_update = None
 
@@ -6177,25 +6172,31 @@ def polling_loop():
                                 engine.expiry_update_counter = 0
 
                                 try:
-                                    # Detect current week expiry
-                                    expiry_str, expiry_dt = get_current_week_nifty_expiry(engine.kite, engine.ins_df)
+                                    # Detect all 4 weekly expiries
+                                    weekly_expiries = get_nifty_weekly_expiries(engine.kite, engine.ins_df, num_weeks=4)
 
-                                    if expiry_str:
-                                        log_chart_debug(f"Updating weekly expiry tracker for {expiry_str}")
+                                    if weekly_expiries:
+                                        log_chart_debug(f"Updating weekly expiry tracker for {len(weekly_expiries)} weeks")
 
-                                        # Update the weekly expiry data
-                                        update_weekly_expiry_data(
-                                            kite=engine.kite,
-                                            ins_df=engine.ins_df,
-                                            token_meta=engine.token_meta,
-                                            all_quotes=all_quotes,
-                                            expiry_str=expiry_str,
-                                            spot_price=nifty_data['price']
-                                        )
+                                        # Store the expiries list in session state
+                                        st.session_state.weekly_expiries_list = weekly_expiries
+
+                                        # Update data for all 4 weeks
+                                        for expiry_str, expiry_dt in weekly_expiries:
+                                            log_chart_debug(f"Processing expiry: {expiry_str}")
+
+                                            update_weekly_expiry_data(
+                                                kite=engine.kite,
+                                                ins_df=engine.ins_df,
+                                                token_meta=engine.token_meta,
+                                                all_quotes=all_quotes,
+                                                expiry_str=expiry_str,
+                                                spot_price=nifty_data['price']
+                                            )
 
                                         st.session_state.last_expiry_update = datetime.now()
                                     else:
-                                        log_chart_debug("Could not detect current week NIFTY expiry")
+                                        log_chart_debug("Could not detect NIFTY weekly expiries")
                                 except Exception as e:
                                     log_chart_debug(f"Weekly expiry tracker error: {e}")
                                     import traceback
@@ -8276,20 +8277,17 @@ st.markdown("")
 st.markdown("""
 <div style="border: 4px solid #000000; border-radius: 10px; padding: 1.5rem; margin: 1.5rem 0; background-color: #fafafa;">
     <h1 style="text-align: center; margin: 0;">📊 PART 1: NIFTY WEEKLY EXPIRY TRACKER</h1>
-    <p style="text-align: center; font-style: italic; margin: 0.5rem 0;">Track current week NIFTY options with cumulative daily aggregation (ATM ± 20 strikes)</p>
+    <p style="text-align: center; font-style: italic; margin: 0.5rem 0;">Track 4 weekly NIFTY options with cumulative daily aggregation (ATM ± 20 strikes)</p>
     <hr style="border: 1px solid #ddd; margin: 1rem 0;">
 </div>
 """, unsafe_allow_html=True)
 
 st.markdown("")
 
-# Display Weekly Expiry Tracker
-if st.session_state.weekly_expiry_data is not None and not st.session_state.weekly_expiry_data.empty:
-    df_display = st.session_state.weekly_expiry_data.copy()
-    expiry_str = st.session_state.current_expiry_str
+# Display Weekly Expiry Tracker with Tabs
+if st.session_state.weekly_expiries_list and len(st.session_state.weekly_expiries_list) > 0:
 
-    st.markdown(f"### 📅 Current Week Expiry: {expiry_str}")
-
+    # Show last update time
     if st.session_state.last_expiry_update:
         update_time = st.session_state.last_expiry_update
         time_ago = (datetime.now() - update_time).total_seconds()
@@ -8300,130 +8298,215 @@ if st.session_state.weekly_expiry_data is not None and not st.session_state.week
 
     st.markdown("---")
 
-    # Split by CE and PE for better visualization
-    col1, col2 = st.columns(2)
+    # Create tabs for each weekly expiry
+    tab_names = []
+    for i, (expiry_str, expiry_dt) in enumerate(st.session_state.weekly_expiries_list):
+        week_num = i + 1
+        expiry_display = expiry_dt.strftime("%d %b %Y")
+        tab_names.append(f"Week {week_num} ({expiry_display})")
 
-    with col1:
-        st.markdown("#### 🟢 CALL Options (CE)")
-        df_ce = df_display[df_display['Type'] == 'CE'].copy()
+    tabs = st.tabs(tab_names)
 
-        if not df_ce.empty:
-            # Format the display columns
-            df_ce_display = df_ce[[
-                'Strike', 'Cumulative_Flow', 'Cumulative_Volume',
-                'Daily_Flow', 'Daily_Volume', 'OI', 'OI_Change',
-                'Premium', 'IV', 'Delta', 'Theta', 'LTP'
-            ]].copy()
+    # Helper function to get ATM strike
+    def get_atm_strike_from_data(df):
+        """Get ATM strike (middle strike from the data)"""
+        if df.empty:
+            return None
+        strikes = sorted(df['Strike'].unique())
+        if len(strikes) > 0:
+            mid_idx = len(strikes) // 2
+            return strikes[mid_idx]
+        return None
 
-            # Format numbers
-            df_ce_display['Cumulative_Flow'] = df_ce_display['Cumulative_Flow'].apply(lambda x: format_number(x))
-            df_ce_display['Cumulative_Volume'] = df_ce_display['Cumulative_Volume'].apply(lambda x: f"{int(x):,}")
-            df_ce_display['Daily_Flow'] = df_ce_display['Daily_Flow'].apply(lambda x: format_number(x))
-            df_ce_display['Daily_Volume'] = df_ce_display['Daily_Volume'].apply(lambda x: f"{int(x):,}")
-            df_ce_display['OI'] = df_ce_display['OI'].apply(lambda x: f"{int(x):,}")
-            df_ce_display['OI_Change'] = df_ce_display['OI_Change'].apply(lambda x: f"{int(x):+,}")
-            df_ce_display['Premium'] = df_ce_display['Premium'].apply(lambda x: f"₹{x:.2f}")
-            df_ce_display['IV'] = df_ce_display['IV'].apply(lambda x: f"{x:.2f}%")
-            df_ce_display['Delta'] = df_ce_display['Delta'].apply(lambda x: f"{x:.4f}")
-            df_ce_display['Theta'] = df_ce_display['Theta'].apply(lambda x: f"{x:.4f}")
-            df_ce_display['LTP'] = df_ce_display['LTP'].apply(lambda x: f"₹{x:.2f}")
+    # Helper function to create styled dataframe with ATM highlighting
+    def style_dataframe_with_atm(df, atm_strike):
+        """Style dataframe with ATM strike highlighted in yellow"""
+        def highlight_atm(row):
+            if row['Strike'] == atm_strike:
+                return ['background-color: yellow'] * len(row)
+            return [''] * len(row)
 
-            # Rename columns for better readability
-            df_ce_display.columns = [
-                'Strike', 'Cum Flow', 'Cum Vol', 'Daily Flow', 'Daily Vol',
-                'OI', 'OI Δ', 'Premium', 'IV', 'Delta', 'Theta', 'LTP'
-            ]
+        if not df.empty:
+            return df.style.apply(highlight_atm, axis=1)
+        return df
 
-            st.dataframe(df_ce_display, use_container_width=True, hide_index=True, height=400)
-        else:
-            st.info("No CE data available yet")
+    # Populate each tab
+    for idx, (tab, (expiry_str, expiry_dt)) in enumerate(zip(tabs, st.session_state.weekly_expiries_list)):
+        with tab:
+            week_num = idx + 1
+            expiry_display = expiry_dt.strftime("%d %B %Y")
 
-    with col2:
-        st.markdown("#### 🔴 PUT Options (PE)")
-        df_pe = df_display[df_display['Type'] == 'PE'].copy()
+            st.markdown(f"### 📅 Week {week_num} Expiry: {expiry_display}")
 
-        if not df_pe.empty:
-            # Format the display columns
-            df_pe_display = df_pe[[
-                'Strike', 'Cumulative_Flow', 'Cumulative_Volume',
-                'Daily_Flow', 'Daily_Volume', 'OI', 'OI_Change',
-                'Premium', 'IV', 'Delta', 'Theta', 'LTP'
-            ]].copy()
+            # Check if we have data for this expiry
+            if expiry_str in st.session_state.weekly_expiry_data:
+                df_display = st.session_state.weekly_expiry_data[expiry_str].copy()
 
-            # Format numbers
-            df_pe_display['Cumulative_Flow'] = df_pe_display['Cumulative_Flow'].apply(lambda x: format_number(x))
-            df_pe_display['Cumulative_Volume'] = df_pe_display['Cumulative_Volume'].apply(lambda x: f"{int(x):,}")
-            df_pe_display['Daily_Flow'] = df_pe_display['Daily_Flow'].apply(lambda x: format_number(x))
-            df_pe_display['Daily_Volume'] = df_pe_display['Daily_Volume'].apply(lambda x: f"{int(x):,}")
-            df_pe_display['OI'] = df_pe_display['OI'].apply(lambda x: f"{int(x):,}")
-            df_pe_display['OI_Change'] = df_pe_display['OI_Change'].apply(lambda x: f"{int(x):+,}")
-            df_pe_display['Premium'] = df_pe_display['Premium'].apply(lambda x: f"₹{x:.2f}")
-            df_pe_display['IV'] = df_pe_display['IV'].apply(lambda x: f"{x:.2f}%")
-            df_pe_display['Delta'] = df_pe_display['Delta'].apply(lambda x: f"{x:.4f}")
-            df_pe_display['Theta'] = df_pe_display['Theta'].apply(lambda x: f"{x:.4f}")
-            df_pe_display['LTP'] = df_pe_display['LTP'].apply(lambda x: f"₹{x:.2f}")
+                if not df_display.empty:
+                    # Get ATM strike
+                    atm_strike = get_atm_strike_from_data(df_display)
 
-            # Rename columns for better readability
-            df_pe_display.columns = [
-                'Strike', 'Cum Flow', 'Cum Vol', 'Daily Flow', 'Daily Vol',
-                'OI', 'OI Δ', 'Premium', 'IV', 'Delta', 'Theta', 'LTP'
-            ]
+                    # ===== SUMMARY METRICS =====
+                    st.markdown("#### 📊 Summary Metrics")
 
-            st.dataframe(df_pe_display, use_container_width=True, hide_index=True, height=400)
-        else:
-            st.info("No PE data available yet")
+                    df_ce_summary = df_display[df_display['Type'] == 'CE']
+                    df_pe_summary = df_display[df_display['Type'] == 'PE']
 
-    # Summary statistics
+                    total_ce_flow = df_ce_summary['Cumulative_Flow'].sum() if not df_ce_summary.empty else 0
+                    total_pe_flow = df_pe_summary['Cumulative_Flow'].sum() if not df_pe_summary.empty else 0
+                    total_ce_volume = df_ce_summary['Cumulative_Volume'].sum() if not df_ce_summary.empty else 0
+                    total_pe_volume = df_pe_summary['Cumulative_Volume'].sum() if not df_pe_summary.empty else 0
+                    net_bias = total_ce_flow - total_pe_flow
+
+                    col1, col2, col3, col4 = st.columns(4)
+
+                    with col1:
+                        st.metric("Total CE Flow", format_number(total_ce_flow))
+
+                    with col2:
+                        st.metric("Total PE Flow", format_number(total_pe_flow))
+
+                    with col3:
+                        flow_sentiment = "🟢 BULLISH" if net_bias > 0 else "🔴 BEARISH" if net_bias < 0 else "⚪ NEUTRAL"
+                        st.metric("Net Bias (CE - PE)", format_number(net_bias))
+                        st.caption(flow_sentiment)
+
+                    with col4:
+                        total_volume = total_ce_volume + total_pe_volume
+                        st.metric("Total Volume", f"{int(total_volume):,}")
+
+                    # CE vs PE Progress Bar
+                    st.markdown("**CE vs PE Flow Distribution:**")
+                    total_flow = total_ce_flow + total_pe_flow
+                    if total_flow > 0:
+                        ce_pct = (total_ce_flow / total_flow) * 100
+                        pe_pct = 100 - ce_pct
+                        st.markdown(create_cepe_progress_bar(total_ce_flow, total_pe_flow, show_labels=True), unsafe_allow_html=True)
+                        st.caption(f"📊 CE: {ce_pct:.1f}% | PE: {pe_pct:.1f}%")
+
+                    st.markdown("---")
+
+                    # ===== DATA TABLE =====
+                    st.markdown("#### 📋 Strike Price Data")
+
+                    # Split by CE and PE
+                    col1, col2 = st.columns(2)
+
+                    with col1:
+                        st.markdown("##### 🟢 CALL Options (CE)")
+                        df_ce = df_display[df_display['Type'] == 'CE'].copy()
+
+                        if not df_ce.empty:
+                            # Format the display columns
+                            df_ce_display = df_ce[[
+                                'Strike', 'Cumulative_Flow', 'Cumulative_Volume',
+                                'Daily_Flow', 'Daily_Volume', 'OI', 'OI_Change',
+                                'Premium', 'IV', 'Delta', 'Theta', 'LTP'
+                            ]].copy()
+
+                            # Format numbers (keep raw for styling)
+                            df_ce_styled = df_ce_display.copy()
+                            df_ce_styled['Cumulative_Flow'] = df_ce_styled['Cumulative_Flow'].apply(lambda x: format_number(x))
+                            df_ce_styled['Cumulative_Volume'] = df_ce_styled['Cumulative_Volume'].apply(lambda x: f"{int(x):,}")
+                            df_ce_styled['Daily_Flow'] = df_ce_styled['Daily_Flow'].apply(lambda x: format_number(x))
+                            df_ce_styled['Daily_Volume'] = df_ce_styled['Daily_Volume'].apply(lambda x: f"{int(x):,}")
+                            df_ce_styled['OI'] = df_ce_styled['OI'].apply(lambda x: f"{int(x):,}")
+                            df_ce_styled['OI_Change'] = df_ce_styled['OI_Change'].apply(lambda x: f"{int(x):+,}")
+                            df_ce_styled['Premium'] = df_ce_styled['Premium'].apply(lambda x: f"₹{x:.2f}")
+                            df_ce_styled['IV'] = df_ce_styled['IV'].apply(lambda x: f"{x:.2f}%")
+                            df_ce_styled['Delta'] = df_ce_styled['Delta'].apply(lambda x: f"{x:.4f}")
+                            df_ce_styled['Theta'] = df_ce_styled['Theta'].apply(lambda x: f"{x:.4f}")
+                            df_ce_styled['LTP'] = df_ce_styled['LTP'].apply(lambda x: f"₹{x:.2f}")
+
+                            # Rename columns
+                            df_ce_styled.columns = [
+                                'Strike', 'Cum Flow', 'Cum Vol', 'Daily Flow', 'Daily Vol',
+                                'OI', 'OI Δ', 'Premium', 'IV', 'Delta', 'Theta', 'LTP'
+                            ]
+
+                            # Apply ATM highlighting
+                            styled_df_ce = style_dataframe_with_atm(df_ce_styled, atm_strike)
+
+                            st.dataframe(styled_df_ce, use_container_width=True, hide_index=True, height=400)
+                        else:
+                            st.info("No CE data available yet")
+
+                    with col2:
+                        st.markdown("##### 🔴 PUT Options (PE)")
+                        df_pe = df_display[df_display['Type'] == 'PE'].copy()
+
+                        if not df_pe.empty:
+                            # Format the display columns
+                            df_pe_display = df_pe[[
+                                'Strike', 'Cumulative_Flow', 'Cumulative_Volume',
+                                'Daily_Flow', 'Daily_Volume', 'OI', 'OI_Change',
+                                'Premium', 'IV', 'Delta', 'Theta', 'LTP'
+                            ]].copy()
+
+                            # Format numbers (keep raw for styling)
+                            df_pe_styled = df_pe_display.copy()
+                            df_pe_styled['Cumulative_Flow'] = df_pe_styled['Cumulative_Flow'].apply(lambda x: format_number(x))
+                            df_pe_styled['Cumulative_Volume'] = df_pe_styled['Cumulative_Volume'].apply(lambda x: f"{int(x):,}")
+                            df_pe_styled['Daily_Flow'] = df_pe_styled['Daily_Flow'].apply(lambda x: format_number(x))
+                            df_pe_styled['Daily_Volume'] = df_pe_styled['Daily_Volume'].apply(lambda x: f"{int(x):,}")
+                            df_pe_styled['OI'] = df_pe_styled['OI'].apply(lambda x: f"{int(x):,}")
+                            df_pe_styled['OI_Change'] = df_pe_styled['OI_Change'].apply(lambda x: f"{int(x):+,}")
+                            df_pe_styled['Premium'] = df_pe_styled['Premium'].apply(lambda x: f"₹{x:.2f}")
+                            df_pe_styled['IV'] = df_pe_styled['IV'].apply(lambda x: f"{x:.2f}%")
+                            df_pe_styled['Delta'] = df_pe_styled['Delta'].apply(lambda x: f"{x:.4f}")
+                            df_pe_styled['Theta'] = df_pe_styled['Theta'].apply(lambda x: f"{x:.4f}")
+                            df_pe_styled['LTP'] = df_pe_styled['LTP'].apply(lambda x: f"₹{x:.2f}")
+
+                            # Rename columns
+                            df_pe_styled.columns = [
+                                'Strike', 'Cum Flow', 'Cum Vol', 'Daily Flow', 'Daily Vol',
+                                'OI', 'OI Δ', 'Premium', 'IV', 'Delta', 'Theta', 'LTP'
+                            ]
+
+                            # Apply ATM highlighting
+                            styled_df_pe = style_dataframe_with_atm(df_pe_styled, atm_strike)
+
+                            st.dataframe(styled_df_pe, use_container_width=True, hide_index=True, height=400)
+                        else:
+                            st.info("No PE data available yet")
+
+                    st.markdown("---")
+
+                    # ===== DOWNLOAD BUTTON =====
+                    st.markdown("#### 💾 Export Data")
+
+                    csv_data = df_display.to_csv(index=False).encode('utf-8')
+                    filename = f"nifty_expiry_{expiry_str}.csv"
+
+                    st.download_button(
+                        label=f"📥 Download Week {week_num} CSV",
+                        data=csv_data,
+                        file_name=filename,
+                        mime='text/csv',
+                        key=f"download_{expiry_str}"
+                    )
+
+                    if atm_strike:
+                        st.caption(f"💡 **ATM Strike: {atm_strike}** (highlighted in yellow)")
+                    st.caption(f"📁 **File location**: data/weekly_expiry/{filename}")
+
+                else:
+                    st.info(f"⏳ Waiting for data for Week {week_num}...")
+            else:
+                st.info(f"⏳ Waiting for data for Week {week_num}...")
+
     st.markdown("---")
-    st.markdown("### 📊 Summary Statistics")
-
-    col1, col2, col3, col4 = st.columns(4)
-
-    df_ce_summary = df_display[df_display['Type'] == 'CE']
-    df_pe_summary = df_display[df_display['Type'] == 'PE']
-
-    total_ce_flow = df_ce_summary['Cumulative_Flow'].sum() if not df_ce_summary.empty else 0
-    total_pe_flow = df_pe_summary['Cumulative_Flow'].sum() if not df_pe_summary.empty else 0
-    total_ce_volume = df_ce_summary['Cumulative_Volume'].sum() if not df_ce_summary.empty else 0
-    total_pe_volume = df_pe_summary['Cumulative_Volume'].sum() if not df_pe_summary.empty else 0
-
-    with col1:
-        st.metric("Total CE Flow", format_number(total_ce_flow))
-
-    with col2:
-        st.metric("Total PE Flow", format_number(total_pe_flow))
-
-    with col3:
-        net_flow = total_ce_flow - total_pe_flow
-        flow_sentiment = "🟢 BULLISH" if net_flow > 0 else "🔴 BEARISH" if net_flow < 0 else "⚪ NEUTRAL"
-        st.metric("Net Flow", format_number(net_flow))
-        st.caption(flow_sentiment)
-
-    with col4:
-        total_volume = total_ce_volume + total_pe_volume
-        st.metric("Total Volume", f"{int(total_volume):,}")
-
-    # CE vs PE Progress Bar
-    st.markdown("**CE vs PE Flow Distribution:**")
-    total_flow = total_ce_flow + total_pe_flow
-    if total_flow > 0:
-        ce_pct = (total_ce_flow / total_flow) * 100
-        pe_pct = 100 - ce_pct
-        st.markdown(create_cepe_progress_bar(total_ce_flow, total_pe_flow, show_labels=True), unsafe_allow_html=True)
-        st.caption(f"📊 CE: {ce_pct:.1f}% | PE: {pe_pct:.1f}%")
-    else:
-        st.info("Waiting for data...")
-
-    st.markdown("---")
-    st.caption("💡 **Note**: Data is cumulative from the start of the week. Updates every 5 minutes. Automatic rollover when new week's expiry becomes available.")
+    st.caption("💡 **Note**: Data is cumulative from the start of each week. Updates every 5 minutes. ATM strike highlighted in yellow.")
 
 else:
     # Show empty state
     st.info("⏳ **Waiting for weekly expiry data...**")
     st.caption("Start polling to begin tracking NIFTY weekly options. Data will appear after the first 5-minute update cycle.")
 
-    # Show sample table structure
-    st.markdown("### Preview: Table Structure")
+    # Show sample tab structure
+    st.markdown("### Preview: Tabs Structure")
+    sample_tabs = st.tabs(["Week 1", "Week 2", "Week 3", "Week 4"])
+
     sample_df = pd.DataFrame({
         'Strike': ['—'] * 3,
         'Cum Flow': ['—'] * 3,
@@ -8439,15 +8522,20 @@ else:
         'LTP': ['—'] * 3
     })
 
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("#### 🟢 CALL Options (CE)")
-        st.dataframe(sample_df, use_container_width=True, hide_index=True)
-    with col2:
-        st.markdown("#### 🔴 PUT Options (PE)")
-        st.dataframe(sample_df, use_container_width=True, hide_index=True)
+    for i, sample_tab in enumerate(sample_tabs):
+        with sample_tab:
+            st.markdown(f"#### Week {i+1} - Waiting for data...")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("##### 🟢 CALL Options (CE)")
+                st.dataframe(sample_df, use_container_width=True, hide_index=True)
+            with col2:
+                st.markdown("##### 🔴 PUT Options (PE)")
+                st.dataframe(sample_df, use_container_width=True, hide_index=True)
 
 st.markdown("---")
+
+
 
 
 st.subheader("💹 Combined CE/PE Summary")
