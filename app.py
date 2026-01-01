@@ -8467,56 +8467,9 @@ else:
 
 st.markdown("---")
 
-
-
-
-st.subheader("💹 Combined CE/PE Summary")
-
 # Load cached data for PART 2
 cached_data = load_dashboard_cache()
 deltas = cached_data.get("deltas", {}) if cached_data else {}
-
-if cached_data:
-    indices_ce = cached_data.get("indices_ce_cod", 0.0)
-    indices_pe = cached_data.get("indices_pe_cod", 0.0)
-    stocks_ce = cached_data.get("stocks_ce_cod", 0.0)
-    stocks_pe = cached_data.get("stocks_pe_cod", 0.0)
-    indices_net = indices_ce - indices_pe
-    stocks_net = stocks_ce - stocks_pe
-    total_net = indices_net + stocks_net
-    
-    if abs(total_net) < 10000:
-        overall_sentiment = "⚪ NEUTRAL"
-    elif total_net > 0:
-        overall_sentiment = "🟢 BULLISH"
-    else:
-        overall_sentiment = "🔴 BEARISH"
-    
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.markdown(f"### 📊 Indices ({len(engine.indices_with_fo)})")
-        st.metric("CE Flow", format_number(indices_ce))
-        st.metric("PE Flow", format_number(indices_pe))
-        net_color = "🟢" if indices_net > 0 else ("🔴" if indices_net < 0 else "⚪")
-        st.metric(f"{net_color} Net", format_number(indices_net))
-    with col2:
-        st.markdown(f"### 📈 Stocks ({len(engine.stocks_with_fo)})")
-        st.metric("CE Flow", format_number(stocks_ce))
-        st.metric("PE Flow", format_number(stocks_pe))
-        net_color = "🟢" if stocks_net > 0 else ("🔴" if stocks_net < 0 else "⚪")
-        st.metric(f"{net_color} Net", format_number(stocks_net))
-    with col3:
-        st.markdown("### 💰 Total Market")
-        total_ce = indices_ce + stocks_ce
-        total_pe = indices_pe + stocks_pe
-        st.metric("Total CE", format_number(total_ce))
-        st.metric("Total PE", format_number(total_pe))
-        st.markdown(f"<h3>{overall_sentiment}</h3>", unsafe_allow_html=True)
-        st.metric("Net Flow", format_number(total_net))
-else:
-    st.info("Start polling to see data")
-
-
 
 st.markdown("---")
 st.markdown("")
