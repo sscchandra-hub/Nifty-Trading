@@ -1,4 +1,4 @@
-# app.py - LIVE MOMENTUM TRADING SYSTEM - PHASE 1 COMPLETE
+# app.py - FLOWMASTER PRO - ADVANCED OPTIONS FLOW ANALYTICS
 # ✅ K/M Number Formatting - Applied throughout dashboard
 # ✅ Individual Index Momentum Trackers (5 separate sections)
 # ✅ Interactive Nifty Charts (CE & PE Flow vs Spot Price)
@@ -5678,7 +5678,7 @@ def auto_backup_after_market_close():
 
 def polling_loop():
     print("\n" + "="*50)
-    print("STARTING LIVE MOMENTUM TRACKER")
+    print("STARTING FLOWMASTER PRO")
     print("Polling every 10 seconds with actionable alerts")
     print("="*50 + "\n")
 
@@ -7159,7 +7159,7 @@ def start_polling():
     print("✅ Polling thread started")
     
     startup_msg = (
-        "<b>🚀 LIVE MOMENTUM SYSTEM STARTED</b>\n\n"
+        "<b>🚀 FLOWMASTER PRO STARTED</b>\n\n"
         f"📅 Date: {datetime.now().strftime('%d %b %Y')}\n"
         f"⏰ Time: {datetime.now().strftime('%I:%M %p')}\n"
         f"📊 Tracking: {len(engine.indices_with_fo)} Indices + {len(engine.stocks_with_fo)} Stocks\n"
@@ -7176,7 +7176,7 @@ def stop_polling():
     print("Stopping polling...")
     
     stop_msg = (
-        "<b>🛑 LIVE MOMENTUM SYSTEM STOPPED</b>\n\n"
+        "<b>🛑 FLOWMASTER PRO STOPPED</b>\n\n"
         f"⏰ Time: {datetime.now().strftime('%I:%M %p')}\n"
         "<i>Alerts paused until restart</i>"
     )
@@ -7185,7 +7185,7 @@ def stop_polling():
 # =========================
 # STREAMLIT UI
 # =========================
-st.set_page_config(page_title="APEX AI TRADING", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="FlowMaster Pro", layout="wide", initial_sidebar_state="expanded")
 
 if AUTOREFRESH_AVAILABLE and st.session_state.get("auto_refresh_toggle", True) and st.session_state.get("polling_running", False):
     st.session_state.refresh_count += 1
@@ -7791,9 +7791,9 @@ with st.sidebar:
 
 st.markdown('''
 <div style="text-align: center; margin-bottom: 2rem;">
-    <p class="main-header">⚡ APEX AI TRADING ⚡</p>
+    <p class="main-header">⚡ FLOWMASTER PRO ⚡</p>
     <p style="font-size: 1.1rem; color: #1565c0; font-weight: 600; letter-spacing: 3px; margin-top: -0.5rem; text-shadow: 0 1px 3px rgba(21, 101, 192, 0.3);">
-        NEXT-GENERATION MOMENTUM ANALYTICS
+        ADVANCED OPTIONS FLOW ANALYTICS
     </p>
 </div>
 
@@ -10532,4 +10532,4 @@ else:
 st.markdown("---")
 
 
-st.caption("🔥 Live Momentum Trading System - Actionable Alerts with Strike Prices! 🚀")
+st.caption("🔥 FlowMaster Pro - Professional Options Flow Analytics 🚀")
