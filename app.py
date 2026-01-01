@@ -8472,6 +8472,10 @@ st.markdown("---")
 
 st.subheader("💹 Combined CE/PE Summary")
 
+# Load cached data for PART 2
+cached_data = load_dashboard_cache()
+deltas = cached_data.get("deltas", {}) if cached_data else {}
+
 if cached_data:
     indices_ce = cached_data.get("indices_ce_cod", 0.0)
     indices_pe = cached_data.get("indices_pe_cod", 0.0)
