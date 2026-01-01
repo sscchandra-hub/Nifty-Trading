@@ -3379,6 +3379,14 @@ def send_stock_alert(stock_name, alert_type, price, change_pct, net_flow, volume
         print(f"📱 Stock Alert: {stock_name} - {signal}")
         engine.last_stock_alert[cooldown_key] = now
 
+        # Save to alert history for next-day follow-up tracking
+        save_alert_to_history(
+            stock=stock_name,
+            alert_type=alert_type,
+            score=0,  # This function doesn't have score, so use 0
+            price=price
+        )
+
         # 🚀 TRIGGER ROCKET ANIMATION (Stars for stocks)
         # Fixed count of 4 stars/sparkles for stock alerts
         if 'rocket_triggers' not in st.session_state:
@@ -4922,6 +4930,199 @@ def get_top_stocks_by_flow(data_dir: str = "data/stock_expiry", top_n: int = 10)
         print(f"❌ Error getting top stocks: {e}")
         return pd.DataFrame()
 
+# ============================================
+# ALERT FOLLOW-UP TRACKER FUNCTIONS
+# ============================================
+
+def save_alert_to_history(stock: str, alert_type: str, score: int, price: float, data_dir: str = "data"):
+    """
+    Save stock alert to history for next-day tracking.
+
+    Args:
+        stock: Stock symbol (e.g., "RELIANCE")
+        alert_type: "BULLISH" or "BEARISH"
+        score: Alert score
+        price: Stock price at alert time
+    """
+    try:
+        os.makedirs(data_dir, exist_ok=True)
+        history_file = Path(data_dir) / "alert_history.csv"
+
+        # Prepare new alert entry
+        new_alert = {
+            'date': datetime.now().strftime('%Y-%m-%d'),
+            'time': datetime.now().strftime('%H:%M:%S'),
+            'stock': stock,
+            'alert_type': alert_type,
+            'score': score,
+            'alert_price': price,
+            'followed_up': False  # Will be set to True after 9:20 AM check
+        }
+
+        # Load existing history or create new
+        if history_file.exists():
+            df = pd.read_csv(history_file)
+            # Append new alert
+            df = pd.concat([df, pd.DataFrame([new_alert])], ignore_index=True)
+        else:
+            df = pd.DataFrame([new_alert])
+
+        # Keep only last 30 days
+        df['date'] = pd.to_datetime(df['date'])
+        cutoff_date = datetime.now() - timedelta(days=30)
+        df = df[df['date'] >= cutoff_date]
+
+        # Save
+        df.to_csv(history_file, index=False)
+        print(f"✅ Saved {stock} alert to history")
+
+    except Exception as e:
+        print(f"❌ Error saving alert to history: {e}")
+
+def get_yesterday_alerts() -> pd.DataFrame:
+    """
+    Get all stock alerts from yesterday that haven't been followed up yet.
+
+    Returns:
+        DataFrame with columns: stock, alert_type, score, alert_price
+    """
+    try:
+        history_file = Path("data/alert_history.csv")
+
+        if not history_file.exists():
+            return pd.DataFrame()
+
+        df = pd.read_csv(history_file)
+        df['date'] = pd.to_datetime(df['date'])
+
+        # Get yesterday's date
+        yesterday = (datetime.now() - timedelta(days=1)).date()
+
+        # Filter yesterday's alerts that haven't been followed up
+        yesterday_alerts = df[
+            (df['date'].dt.date == yesterday) &
+            (df['followed_up'] == False)
+        ]
+
+        return yesterday_alerts[['stock', 'alert_type', 'score', 'alert_price']]
+
+    except Exception as e:
+        print(f"❌ Error getting yesterday alerts: {e}")
+        return pd.DataFrame()
+
+def check_opening_momentum(kite, stocks_list: list) -> list:
+    """
+    Check opening momentum for list of stocks at 9:20 AM.
+    Returns stocks with >1% or <-1% opening change.
+
+    Args:
+        kite: KiteConnect instance
+        stocks_list: List of stock symbols
+
+    Returns:
+        List of dicts with stock, opening_pct, signal
+    """
+    try:
+        if not stocks_list:
+            return []
+
+        momentum_stocks = []
+
+        for stock in stocks_list:
+            try:
+                # Get stock quote
+                quote = kite.quote(f"NSE:{stock}")
+
+                if f"NSE:{stock}" in quote:
+                    q = quote[f"NSE:{stock}"]
+
+                    current_price = q.get('last_price', 0)
+                    open_price = q.get('ohlc', {}).get('open', 0)
+                    prev_close = q.get('ohlc', {}).get('close', 0)
+
+                    if prev_close > 0 and open_price > 0:
+                        # Calculate opening % change from previous close
+                        opening_pct = ((open_price - prev_close) / prev_close) * 100
+                        current_pct = ((current_price - prev_close) / prev_close) * 100
+
+                        # Check if opening > ±1%
+                        if abs(opening_pct) >= 1.0:
+                            signal = "BULLISH" if opening_pct > 0 else "BEARISH"
+
+                            momentum_stocks.append({
+                                'stock': stock,
+                                'opening_pct': opening_pct,
+                                'current_pct': current_pct,
+                                'current_price': current_price,
+                                'prev_close': prev_close,
+                                'signal': signal
+                            })
+
+            except Exception as e:
+                print(f"❌ Error checking {stock}: {e}")
+                continue
+
+        return momentum_stocks
+
+    except Exception as e:
+        print(f"❌ Error in check_opening_momentum: {e}")
+        return []
+
+def send_followup_alert(stock: str, opening_pct: float, current_pct: float, current_price: float, signal: str):
+    """
+    Send priority Telegram alert for follow-up opportunity.
+    """
+    try:
+        emoji = "🟢" if signal == "BULLISH" else "🔴"
+        action = "BUY" if signal == "BULLISH" else "AVOID/SHORT"
+
+        message = f"""
+🔥 **ALERT FOLLOW-UP - MOMENTUM DETECTED**
+
+{emoji} **{stock}** - {signal}
+
+📊 **Opening:** {opening_pct:+.2f}%
+📈 **Current:** {current_pct:+.2f}%
+💰 **Price:** ₹{current_price:.2f}
+
+⚡ **Action:** {action}
+
+This stock triggered alert yesterday and now showing strong {signal.lower()} momentum at market open!
+"""
+
+        send_telegram_message(message)
+        print(f"📱 Sent follow-up alert for {stock}")
+
+    except Exception as e:
+        print(f"❌ Error sending follow-up alert: {e}")
+
+def mark_alerts_followed_up(stocks_list: list):
+    """
+    Mark yesterday's alerts as followed up to avoid duplicate alerts.
+    """
+    try:
+        history_file = Path("data/alert_history.csv")
+
+        if not history_file.exists():
+            return
+
+        df = pd.read_csv(history_file)
+        df['date'] = pd.to_datetime(df['date'])
+
+        yesterday = (datetime.now() - timedelta(days=1)).date()
+
+        # Mark as followed up
+        df.loc[
+            (df['date'].dt.date == yesterday) &
+            (df['stock'].isin(stocks_list)),
+            'followed_up'
+        ] = True
+
+        df.to_csv(history_file, index=False)
+
+    except Exception as e:
+        print(f"❌ Error marking alerts as followed up: {e}")
+
 def discover_indices_with_fo(ins_df: pd.DataFrame) -> list:
     """
     Discover all whitelisted indices from instruments data.
@@ -5835,6 +6036,17 @@ def polling_loop():
                             send_telegram_message(alert_message, parse_mode='HTML')
                             print(f"📢 SMART ALERT: {stock_name} - Score: {score_result['total_score']:.0f} ({score_result['signal_strength']})")
 
+                            # Determine alert type from signal strength
+                            alert_type = "BULLISH" if score_result['signal_strength'] in ['VERY STRONG', 'STRONG'] else "NEUTRAL"
+
+                            # Save to alert history for next-day follow-up tracking
+                            save_alert_to_history(
+                                stock=stock_name,
+                                alert_type=alert_type,
+                                score=int(score_result['total_score']),
+                                price=stock_data.get('price', 0)
+                            )
+
                             # Update cooldown
                             engine.alert_cooldowns[stock_name] = now
                         except Exception as e:
@@ -6314,6 +6526,71 @@ def polling_loop():
                     "last_update": datetime.now().isoformat()
                 }
                 save_dashboard_cache(cache_data)
+
+                # ============================================
+                # ALERT FOLLOW-UP TRACKER - 9:20 AM CHECK
+                # ============================================
+                # Check yesterday's alerts for opening momentum at 9:20 AM
+                current_time = datetime.now()
+
+                # Initialize follow-up flag if not exists
+                if not hasattr(engine, 'followup_checked_today'):
+                    engine.followup_checked_today = False
+
+                # Reset flag at midnight
+                if current_time.hour == 0 and current_time.minute == 0:
+                    engine.followup_checked_today = False
+
+                # Execute at 9:20 AM (±2 minute window) once per day
+                if (current_time.hour == 9 and 20 <= current_time.minute <= 22 and
+                    not engine.followup_checked_today):
+                    try:
+                        print("🔍 ALERT FOLLOW-UP TRACKER - Checking yesterday's alerts...")
+
+                        # Get yesterday's alerts that haven't been followed up
+                        yesterday_alerts = get_yesterday_alerts()
+
+                        if not yesterday_alerts.empty:
+                            print(f"📋 Found {len(yesterday_alerts)} alerts from yesterday")
+
+                            # Get list of stock symbols to check
+                            stocks_to_check = yesterday_alerts['stock'].unique().tolist()
+                            print(f"📊 Checking momentum for: {', '.join(stocks_to_check)}")
+
+                            # Check opening momentum for these stocks
+                            momentum_stocks = check_opening_momentum(kite, stocks_to_check)
+
+                            if momentum_stocks:
+                                print(f"🎯 Found {len(momentum_stocks)} stocks with significant opening momentum!")
+
+                                # Send priority alerts for each stock
+                                alerted_stocks = []
+                                for stock_data in momentum_stocks:
+                                    send_followup_alert(
+                                        stock=stock_data['stock'],
+                                        opening_pct=stock_data['opening_pct'],
+                                        current_pct=stock_data['current_pct'],
+                                        current_price=stock_data['current_price'],
+                                        signal=stock_data['signal']
+                                    )
+                                    alerted_stocks.append(stock_data['stock'])
+
+                                # Mark these alerts as followed up
+                                mark_alerts_followed_up(alerted_stocks)
+                                print(f"✅ Follow-up alerts sent for {len(alerted_stocks)} stocks")
+                            else:
+                                print("ℹ️ No stocks showing significant opening momentum (>±1%)")
+                        else:
+                            print("ℹ️ No alerts from yesterday to follow up")
+
+                        # Mark as checked for today
+                        engine.followup_checked_today = True
+                        print("✅ Alert follow-up check complete for today")
+
+                    except Exception as e:
+                        print(f"❌ Error in alert follow-up tracker: {e}")
+                        import traceback
+                        traceback.print_exc()
 
                 # PHASE 1: Update chart data every 5 minutes (30 polls = 5 min at 10 sec intervals)
                 engine.chart_update_counter += 1
@@ -9185,6 +9462,164 @@ if cached_data:
 
 else:
     st.info("⏳ Start polling to see live momentum data")
+
+st.markdown("---")
+
+# ============================================
+# ALERT FOLLOW-UP TRACKER
+# ============================================
+st.markdown(create_enhanced_section_header("Alert Follow-Up Tracker", "📌"), unsafe_allow_html=True)
+
+with st.expander("📌 View Alert Follow-Up Tracker", expanded=False):
+    try:
+        from pathlib import Path
+        import pandas as pd
+
+        # Load alert history
+        history_file = Path("data/alert_history.csv")
+
+        if history_file.exists():
+            alert_history = pd.read_csv(history_file)
+            alert_history['date'] = pd.to_datetime(alert_history['date'])
+
+            # Get yesterday's date
+            yesterday = (datetime.now() - timedelta(days=1)).date()
+            today = datetime.now().date()
+
+            # Filter yesterday's alerts
+            yesterday_alerts = alert_history[
+                alert_history['date'].dt.date == yesterday
+            ].copy()
+
+            # Get today's followed-up alerts
+            followed_up_today = alert_history[
+                (alert_history['date'].dt.date == yesterday) &
+                (alert_history['followed_up'] == True)
+            ].copy()
+
+            if not yesterday_alerts.empty:
+                # Display statistics
+                total_alerts = len(yesterday_alerts)
+                followed_up_count = len(followed_up_today)
+                pending_count = total_alerts - followed_up_count
+
+                col1, col2, col3 = st.columns(3)
+
+                with col1:
+                    st.metric("Yesterday's Alerts", total_alerts)
+
+                with col2:
+                    st.metric("Followed Up Today", followed_up_count,
+                             delta=f"{(followed_up_count/total_alerts*100):.0f}%" if total_alerts > 0 else "0%")
+
+                with col3:
+                    st.metric("Pending", pending_count)
+
+                st.markdown("---")
+
+                # Display followed-up alerts with current status
+                if not followed_up_today.empty:
+                    st.markdown("### 🎯 Stocks That Triggered Follow-Up Alerts Today")
+
+                    # Get current prices for these stocks if available
+                    if cached_data and "stocks_data" in cached_data:
+                        current_stocks_data = cached_data["stocks_data"]
+
+                        display_data = []
+                        for _, alert in followed_up_today.iterrows():
+                            stock = alert['stock']
+                            alert_type = alert['alert_type']
+                            alert_price = alert['alert_price']
+
+                            # Get current data if available
+                            if stock in current_stocks_data:
+                                current_price = current_stocks_data[stock].get('price', 0)
+                                current_change = current_stocks_data[stock].get('change_pct', 0)
+
+                                if current_price > 0 and alert_price > 0:
+                                    move_from_alert = ((current_price - alert_price) / alert_price) * 100
+                                else:
+                                    move_from_alert = 0
+
+                                signal = "🟢 BULLISH" if alert_type == "BULLISH" else "🔴 BEARISH"
+
+                                display_data.append({
+                                    'Stock': stock,
+                                    'Signal': signal,
+                                    'Alert Price': f"₹{alert_price:.2f}",
+                                    'Current Price': f"₹{current_price:.2f}",
+                                    'Today\'s Change': f"{current_change:+.2f}%",
+                                    'Move from Alert': f"{move_from_alert:+.2f}%"
+                                })
+
+                        if display_data:
+                            df_display = pd.DataFrame(display_data)
+                            st.dataframe(df_display, use_container_width=True, hide_index=True)
+                        else:
+                            st.info("💡 Current price data not available. Start polling to see live prices.")
+                    else:
+                        # Just show the basic alert info
+                        display_data = []
+                        for _, alert in followed_up_today.iterrows():
+                            signal = "🟢 BULLISH" if alert['alert_type'] == "BULLISH" else "🔴 BEARISH"
+                            display_data.append({
+                                'Stock': alert['stock'],
+                                'Signal': signal,
+                                'Alert Price': f"₹{alert['alert_price']:.2f}",
+                                'Alert Time': alert['time'],
+                                'Score': alert['score']
+                            })
+
+                        df_display = pd.DataFrame(display_data)
+                        st.dataframe(df_display, use_container_width=True, hide_index=True)
+
+                    st.markdown("---")
+
+                # Display pending follow-ups
+                pending_alerts = yesterday_alerts[
+                    yesterday_alerts['followed_up'] == False
+                ].copy()
+
+                if not pending_alerts.empty:
+                    st.markdown("### ⏳ Pending Follow-Ups (No Significant Opening Momentum)")
+
+                    display_data = []
+                    for _, alert in pending_alerts.iterrows():
+                        signal = "🟢 BULLISH" if alert['alert_type'] == "BULLISH" else "🔴 BEARISH"
+                        display_data.append({
+                            'Stock': alert['stock'],
+                            'Signal': signal,
+                            'Alert Price': f"₹{alert['alert_price']:.2f}",
+                            'Alert Time': alert['time'],
+                            'Score': alert['score']
+                        })
+
+                    df_display = pd.DataFrame(display_data)
+                    st.dataframe(df_display, use_container_width=True, hide_index=True)
+
+                    st.info("💡 These stocks didn't show >±1% opening momentum at 9:20 AM today")
+
+            else:
+                st.info("📭 No alerts from yesterday. Alerts will appear here once you receive stock alerts.")
+
+            # Show instructions
+            st.markdown("---")
+            st.markdown("""
+            ### 📖 How It Works
+
+            1. **Alert Capture**: Every stock alert sent via Telegram is automatically saved to history
+            2. **Daily Check**: At 9:20 AM, system checks yesterday's alerted stocks for opening momentum
+            3. **Follow-Up Alert**: If opening change is >±1%, priority Telegram alert is sent
+            4. **Tracking**: Dashboard shows which alerts were followed up and their current performance
+
+            **Success Pattern**: Stocks showing >±1% opening often continue strong momentum throughout the day!
+            """)
+
+        else:
+            st.info("📭 No alert history yet. Start receiving stock alerts to begin tracking follow-up opportunities!")
+
+    except Exception as e:
+        st.error(f"❌ Error loading alert history: {e}")
 
 st.markdown("---")
 
