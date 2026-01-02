@@ -3387,6 +3387,11 @@ def send_stock_alert(stock_name, alert_type, price, change_pct, net_flow, volume
             price=price
         )
 
+        # Check for recurring alert pattern (last 7 days)
+        recurring_data = check_recurring_alert(stock_name, alert_type, 0)
+        if recurring_data:
+            send_recurring_alert(stock_name, alert_type, 0, recurring_data)
+
         # 🚀 TRIGGER ROCKET ANIMATION (Stars for stocks)
         # Fixed count of 4 stars/sparkles for stock alerts
         if 'rocket_triggers' not in st.session_state:
@@ -5124,6 +5129,196 @@ def mark_alerts_followed_up(stocks_list: list):
         print(f"❌ Error marking alerts as followed up: {e}")
 
 # ============================================
+# RECURRING ALERT DETECTION FUNCTIONS
+# ============================================
+
+def check_recurring_alert(stock: str, alert_type: str, score: int, data_dir: str = "data") -> dict:
+    """
+    Check if stock was alerted in the last 7 days.
+
+    Args:
+        stock: Stock symbol
+        alert_type: Current alert type (BULLISH/BEARISH)
+        score: Current alert score
+
+    Returns:
+        dict with: is_recurring, days_since_last, total_count, last_alert, all_alerts, trend
+        Returns None if not a recurring alert
+    """
+    try:
+        history_file = Path(data_dir) / "alert_history.csv"
+
+        if not history_file.exists():
+            return None
+
+        df = pd.read_csv(history_file)
+        df['date'] = pd.to_datetime(df['date'])
+
+        # Get last 7 days of alerts for this stock
+        seven_days_ago = datetime.now() - timedelta(days=7)
+        today = datetime.now().date()
+
+        stock_alerts = df[
+            (df['stock'] == stock) &
+            (df['date'] >= seven_days_ago) &
+            (df['date'].dt.date < today)  # Exclude today
+        ].copy()
+
+        if stock_alerts.empty:
+            return None  # No previous alerts in last 7 days
+
+        # Sort by date descending (most recent first)
+        stock_alerts = stock_alerts.sort_values('date', ascending=False)
+
+        # Get most recent alert
+        last_alert = stock_alerts.iloc[0]
+        last_alert_date = last_alert['date'].date()
+
+        # Calculate days since last alert
+        days_since = (today - last_alert_date).days
+
+        # Count total alerts in last 7 days
+        total_count = len(stock_alerts)
+
+        # Analyze trend (all same signal or mixed?)
+        signal_types = stock_alerts['alert_type'].unique()
+        if len(signal_types) == 1 and signal_types[0] == alert_type:
+            # All same signal as current
+            trend = f"All {alert_type}"
+        elif len(signal_types) == 1 and signal_types[0] != alert_type:
+            # Signal reversal
+            trend = f"REVERSAL: Was {signal_types[0]}, now {alert_type}"
+        else:
+            # Mixed signals
+            trend = "Mixed signals"
+
+        # Analyze score trend (if we have scores)
+        score_trend = None
+        if not stock_alerts['score'].isna().all():
+            prev_scores = stock_alerts['score'].dropna().tolist()
+            if prev_scores and score > 0:
+                if len(prev_scores) >= 2:
+                    # Compare average of previous scores with current
+                    avg_prev_score = sum(prev_scores) / len(prev_scores)
+                    if score > avg_prev_score * 1.1:  # 10% higher
+                        score_trend = "UP"
+                    elif score < avg_prev_score * 0.9:  # 10% lower
+                        score_trend = "DOWN"
+                    else:
+                        score_trend = "STABLE"
+                elif len(prev_scores) == 1:
+                    if score > prev_scores[0] * 1.1:
+                        score_trend = "UP"
+                    elif score < prev_scores[0] * 0.9:
+                        score_trend = "DOWN"
+                    else:
+                        score_trend = "STABLE"
+
+        return {
+            'is_recurring': True,
+            'days_since_last': days_since,
+            'total_count': total_count,
+            'last_alert': {
+                'date': last_alert_date,
+                'type': last_alert['alert_type'],
+                'score': last_alert['score'] if not pd.isna(last_alert['score']) else 0
+            },
+            'all_alerts': stock_alerts[['date', 'alert_type', 'score']].to_dict('records'),
+            'trend': trend,
+            'score_trend': score_trend
+        }
+
+    except Exception as e:
+        print(f"❌ Error checking recurring alert: {e}")
+        return None
+
+def send_recurring_alert(stock: str, current_alert_type: str, current_score: int, recurring_data: dict):
+    """
+    Send Telegram alert for recurring pattern detection.
+
+    Args:
+        stock: Stock symbol
+        current_alert_type: Current alert type (BULLISH/BEARISH)
+        current_score: Current alert score
+        recurring_data: Data from check_recurring_alert()
+    """
+    try:
+        if not recurring_data or not recurring_data.get('is_recurring'):
+            return
+
+        days_since = recurring_data['days_since_last']
+        total_count = recurring_data['total_count']
+        last_alert = recurring_data['last_alert']
+        trend = recurring_data['trend']
+        score_trend = recurring_data['score_trend']
+
+        # Build time descriptor
+        if days_since == 1:
+            time_desc = "Yesterday"
+        elif days_since == 2:
+            time_desc = "2 days ago"
+        elif days_since == 3:
+            time_desc = "3 days ago"
+        else:
+            time_desc = f"{days_since} days ago"
+
+        # Build alert message
+        emoji = "🔥" if total_count >= 3 else "🔄"
+
+        message = f"{emoji} <b>RECURRING ALERT - {stock}</b>\n\n"
+
+        # Current alert
+        message += f"<b>Today:</b> {current_alert_type}"
+        if current_score > 0:
+            message += f" (Score: {current_score})"
+        message += "\n"
+
+        # Last alert
+        message += f"<b>Last alert:</b> {time_desc} - {last_alert['type']}"
+        if last_alert['score'] > 0:
+            message += f" (Score: {int(last_alert['score'])})"
+        message += "\n\n"
+
+        # Frequency
+        message += f"🔄 <b>{total_count} alerts</b> in last 7 days\n"
+
+        # Trend analysis
+        if "All" in trend:
+            message += f"📊 {trend} - <b>Strong trend!</b>\n"
+        elif "REVERSAL" in trend:
+            message += f"⚠️ {trend}\n"
+        else:
+            message += f"📊 {trend}\n"
+
+        # Score trend
+        if score_trend:
+            if score_trend == "UP":
+                message += f"📈 Score trending <b>UP</b>\n"
+            elif score_trend == "DOWN":
+                message += f"📉 Score trending <b>DOWN</b>\n"
+            else:
+                message += f"📊 Score <b>STABLE</b>\n"
+
+        message += "\n"
+
+        # Action recommendation
+        if total_count >= 3 and "All" in trend:
+            message += "⚡ <b>High conviction - Sustained momentum!</b>\n"
+        elif "REVERSAL" in trend:
+            message += "⚠️ <b>Caution - Signal changed direction!</b>\n"
+        else:
+            message += "👀 <b>Monitor closely - Building pattern</b>\n"
+
+        message += f"\n⏰ {datetime.now().strftime('%I:%M:%S %p')}"
+
+        # Send alert
+        send_telegram_message(message, parse_mode='HTML')
+        print(f"🔥 RECURRING ALERT sent for {stock} ({total_count} alerts in 7 days)")
+
+    except Exception as e:
+        print(f"❌ Error sending recurring alert: {e}")
+
+# ============================================
 # STOCK ENTRY TRACKING FUNCTIONS
 # Track how many times stocks enter Top 10 & Volume Spikes lists
 # ============================================
@@ -6275,6 +6470,20 @@ def polling_loop():
                                 score=int(score_result['total_score']),
                                 price=stock_data.get('price', 0)
                             )
+
+                            # Check for recurring alert pattern (last 7 days)
+                            recurring_data = check_recurring_alert(
+                                stock_name,
+                                alert_type,
+                                int(score_result['total_score'])
+                            )
+                            if recurring_data:
+                                send_recurring_alert(
+                                    stock_name,
+                                    alert_type,
+                                    int(score_result['total_score']),
+                                    recurring_data
+                                )
 
                             # Update cooldown
                             engine.alert_cooldowns[stock_name] = now
