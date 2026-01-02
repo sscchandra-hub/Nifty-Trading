@@ -874,7 +874,14 @@ class EngineState:
     nifty_last_alert_score: int = 0  # Score when last alert was sent
     nifty_universal_cooldown: datetime = None  # Universal cooldown for all NIFTY alerts
 
-engine = EngineState()
+# =========================
+# ENGINE INITIALIZATION
+# =========================
+# CRITICAL FIX: Store engine in session_state to persist across Streamlit reruns
+if 'engine' not in st.session_state:
+    print("🔧 Initializing new EngineState in session_state...")
+    st.session_state.engine = EngineState()
+engine = st.session_state.engine
 
 # =========================
 # NIFTY FUTURES HELPER
