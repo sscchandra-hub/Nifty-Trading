@@ -5872,6 +5872,18 @@ if 'weekly_expiries_list' not in st.session_state:
 if 'last_expiry_update' not in st.session_state:
     st.session_state.last_expiry_update = None
 
+# Initialize stock expiry session state
+if 'stock_expiry_summary' not in st.session_state:
+    st.session_state.stock_expiry_summary = {}  # Dict with symbol as key
+if 'last_stock_expiry_update' not in st.session_state:
+    st.session_state.last_stock_expiry_update = None
+if 'favorite_stocks' not in st.session_state:
+    st.session_state.favorite_stocks = []  # User's pinned stocks
+if 'stock_sort_by' not in st.session_state:
+    st.session_state.stock_sort_by = 'Net Flow (Absolute)'  # Default sort option
+if 'show_all_stocks' not in st.session_state:
+    st.session_state.show_all_stocks = False  # Toggle for expand button
+
 def polling_loop():
     print("\n" + "="*50)
     print("STARTING FLOWMASTER PRO")
@@ -7176,14 +7188,42 @@ def polling_loop():
                                             daily_df = collect_stock_expiry_data(kite, engine.ins_df, symbol, expiry_date, strike_map)
 
                                             if not daily_df.empty:
-                                                # Save cumulative data
-                                                save_cumulative_stock_expiry_data(symbol, expiry_date, daily_df)
-                                                stocks_collected += 1
+                                                # Save cumulative data to CSV
+                                                cumulative_df = save_cumulative_stock_expiry_data(symbol, expiry_date, daily_df)
+
+                                                # Load into session_state for UI display
+                                                if not cumulative_df.empty:
+                                                    # Calculate summary metrics from cumulative data
+                                                    ce_data = cumulative_df[cumulative_df['type'] == 'CE']
+                                                    pe_data = cumulative_df[cumulative_df['type'] == 'PE']
+
+                                                    total_ce_flow = ce_data['cumulative_flow'].sum() if not ce_data.empty else 0
+                                                    total_pe_flow = abs(pe_data['cumulative_flow'].sum()) if not pe_data.empty else 0
+                                                    total_ce_volume = ce_data['cumulative_volume'].sum() if not ce_data.empty else 0
+                                                    total_pe_volume = pe_data['cumulative_volume'].sum() if not pe_data.empty else 0
+                                                    net_flow = total_ce_flow - total_pe_flow
+
+                                                    # Store in session_state
+                                                    st.session_state.stock_expiry_summary[symbol] = {
+                                                        'symbol': symbol,
+                                                        'expiry': expiry_date,
+                                                        'ce_flow': total_ce_flow,
+                                                        'pe_flow': total_pe_flow,
+                                                        'net_flow': net_flow,
+                                                        'ce_volume': total_ce_volume,
+                                                        'pe_volume': total_pe_volume,
+                                                        'total_volume': total_ce_volume + total_pe_volume,
+                                                        'price': stock_price,
+                                                        'data': cumulative_df  # Full strike-wise data
+                                                    }
+                                                    stocks_collected += 1
 
                                     except Exception as e:
                                         print(f"❌ Error collecting data for {symbol}: {e}")
                                         continue
 
+                                # Update last collection timestamp
+                                st.session_state.last_stock_expiry_update = datetime.now()
                                 print(f"✅ Stock expiry data collection complete ({stocks_collected}/{len(engine.stocks_with_fo)} stocks)")
 
                             except Exception as e:
@@ -8984,18 +9024,400 @@ st.markdown("""
 
 st.markdown("")
 
-# Placeholder for new PART 2 architecture
-st.info("🔧 **PART 2: STOCKS ANALYSIS** - Coming Soon")
+# ===========================================================================
+# PART 2: STOCK MONTHLY EXPIRY TRACKING - TOP 10
+# ===========================================================================
+
 st.markdown("""
-This section is being redesigned with a similar architecture to PART 1: NIFTY WEEKLY EXPIRY TRACKER.
+<div style="border: 4px solid #000000; border-radius: 10px; padding: 1.5rem; margin: 1.5rem 0; background-color: #fafafa;">
+    <h1 style="text-align: center; margin: 0;">📈 PART 2: STOCK MONTHLY EXPIRY TRACKING - TOP 10</h1>
+    <p style="text-align: center; font-style: italic; margin: 0.5rem 0;">Monthly expiry tracking for all 191 F&O stocks with cumulative daily aggregation</p>
+    <hr style="border: 1px solid #ddd; margin: 1rem 0;">
+</div>
+""", unsafe_allow_html=True)
 
-**Planned Features:**
-- Monthly expiry tracking for F&O stocks
-- Strike-wise CE/PE flow analysis
-- Cumulative daily aggregation
-- Multi-stock comparison tables
+st.markdown("")
 
-Stay tuned for updates! 🚀
-""")
+# Check if we have stock data
+if st.session_state.stock_expiry_summary:
+
+    # Show last update time
+    if st.session_state.last_stock_expiry_update:
+        update_time = st.session_state.last_stock_expiry_update
+        time_ago = (datetime.now() - update_time).total_seconds()
+        if time_ago < 60:
+            st.success(f"🟢 Live • Updated {int(time_ago)}s ago")
+        else:
+            st.info(f"📦 Last updated {int(time_ago/60)}m ago")
+
+    st.markdown("---")
+
+    # ========================================
+    # SECTION 1: PINNED STOCKS (FAVORITES)
+    # ========================================
+    if st.session_state.favorite_stocks:
+        st.markdown("## ⭐ Pinned Stocks (Favorites)")
+        st.markdown("")
+
+        pinned_data = []
+        for symbol in st.session_state.favorite_stocks:
+            if symbol in st.session_state.stock_expiry_summary:
+                stock_info = st.session_state.stock_expiry_summary[symbol]
+                pinned_data.append({
+                    'Symbol': symbol,
+                    'Expiry': stock_info['expiry'].strftime('%d %b %Y'),
+                    'CE Flow': format_number(stock_info['ce_flow']),
+                    'PE Flow': format_number(stock_info['pe_flow']),
+                    'Net Flow': format_number(stock_info['net_flow']),
+                    'CE Volume': f"{int(stock_info['ce_volume']):,}",
+                    'PE Volume': f"{int(stock_info['pe_volume']):,}",
+                    'Total Volume': f"{int(stock_info['total_volume']):,}",
+                    'Sentiment': '🟢 BULLISH' if stock_info['net_flow'] > 0 else '🔴 BEARISH' if stock_info['net_flow'] < 0 else '⚪ NEUTRAL'
+                })
+
+        if pinned_data:
+            pinned_df = pd.DataFrame(pinned_data)
+            st.dataframe(pinned_df, use_container_width=True, hide_index=True, height=min(len(pinned_data) * 35 + 38, 200))
+
+        st.markdown("---")
+
+    # ========================================
+    # SECTION 2: SORTING & FILTERING
+    # ========================================
+    st.markdown("## 📊 Top Stocks Analysis")
+    st.markdown("")
+
+    # Sort dropdown and search box
+    col1, col2 = st.columns([3, 2])
+
+    with col1:
+        sort_options = [
+            'Net Flow (Absolute)',
+            'CE Flow (Highest)',
+            'PE Flow (Highest)',
+            'Total Volume (Highest)',
+            'Price (Highest)'
+        ]
+        st.session_state.stock_sort_by = st.selectbox(
+            "Sort by:",
+            sort_options,
+            index=sort_options.index(st.session_state.stock_sort_by),
+            key="stock_sort_dropdown"
+        )
+
+    with col2:
+        search_query = st.text_input("🔍 Search stock:", "", key="stock_search")
+
+    st.markdown("")
+
+    # ========================================
+    # SECTION 3: SUMMARY METRICS (TOP 10)
+    # ========================================
+    # Filter and sort stocks
+    stocks_list = list(st.session_state.stock_expiry_summary.values())
+
+    # Apply search filter
+    if search_query:
+        stocks_list = [s for s in stocks_list if search_query.upper() in s['symbol'].upper()]
+
+    # Apply sorting
+    if st.session_state.stock_sort_by == 'Net Flow (Absolute)':
+        stocks_list = sorted(stocks_list, key=lambda x: abs(x['net_flow']), reverse=True)
+    elif st.session_state.stock_sort_by == 'CE Flow (Highest)':
+        stocks_list = sorted(stocks_list, key=lambda x: x['ce_flow'], reverse=True)
+    elif st.session_state.stock_sort_by == 'PE Flow (Highest)':
+        stocks_list = sorted(stocks_list, key=lambda x: x['pe_flow'], reverse=True)
+    elif st.session_state.stock_sort_by == 'Total Volume (Highest)':
+        stocks_list = sorted(stocks_list, key=lambda x: x['total_volume'], reverse=True)
+    elif st.session_state.stock_sort_by == 'Price (Highest)':
+        stocks_list = sorted(stocks_list, key=lambda x: x.get('price', 0), reverse=True)
+
+    # Get top 10 and remaining stocks
+    top_10_stocks = stocks_list[:10]
+    remaining_stocks = stocks_list[10:]
+
+    # Calculate summary metrics for Top 10
+    if top_10_stocks:
+        total_ce_top10 = sum(s['ce_flow'] for s in top_10_stocks)
+        total_pe_top10 = sum(s['pe_flow'] for s in top_10_stocks)
+        net_bias_top10 = total_ce_top10 - total_pe_top10
+        total_volume_top10 = sum(s['total_volume'] for s in top_10_stocks)
+
+        st.markdown("### 📈 Summary Metrics (Top 10 Stocks)")
+
+        col1, col2, col3, col4 = st.columns(4)
+
+        with col1:
+            st.metric("Total CE Flow", format_number(total_ce_top10))
+
+        with col2:
+            st.metric("Total PE Flow", format_number(total_pe_top10))
+
+        with col3:
+            sentiment_top10 = "🟢 BULLISH" if net_bias_top10 > 0 else "🔴 BEARISH" if net_bias_top10 < 0 else "⚪ NEUTRAL"
+            st.metric("Net Bias", format_number(net_bias_top10))
+            st.caption(sentiment_top10)
+
+        with col4:
+            st.metric("Total Volume", f"{int(total_volume_top10):,}")
+
+        st.markdown("---")
+
+        # ========================================
+        # SECTION 4: TOP 10 TABLE
+        # ========================================
+        st.markdown("### 🏆 Top 10 Stocks")
+        st.markdown("")
+
+        # Build table data
+        table_data = []
+        for idx, stock in enumerate(top_10_stocks, 1):
+            # Create action buttons column content
+            is_favorited = stock['symbol'] in st.session_state.favorite_stocks
+
+            table_data.append({
+                'Rank': idx,
+                'Symbol': stock['symbol'],
+                'Expiry': stock['expiry'].strftime('%d %b %Y'),
+                'CE Flow': format_number(stock['ce_flow']),
+                'PE Flow': format_number(stock['pe_flow']),
+                'Net Flow': format_number(stock['net_flow']),
+                'CE Vol': f"{int(stock['ce_volume']):,}",
+                'PE Vol': f"{int(stock['pe_volume']):,}",
+                'Total Vol': f"{int(stock['total_volume']):,}",
+                'Sentiment': '🟢 BULLISH' if stock['net_flow'] > 0 else '🔴 BEARISH' if stock['net_flow'] < 0 else '⚪ NEUTRAL',
+                '_symbol_raw': stock['symbol'],  # For buttons
+                '_is_favorited': is_favorited
+            })
+
+        top10_df = pd.DataFrame(table_data)
+
+        # Display table
+        st.dataframe(
+            top10_df[['Rank', 'Symbol', 'Expiry', 'CE Flow', 'PE Flow', 'Net Flow',
+                      'CE Vol', 'PE Vol', 'Total Vol', 'Sentiment']],
+            use_container_width=True,
+            hide_index=True,
+            height=400
+        )
+
+        st.markdown("")
+
+        # Action buttons for each stock (Favorite + Details + Download)
+        st.markdown("**Actions:**")
+
+        for idx, row in enumerate(table_data):
+            symbol = row['_symbol_raw']
+            is_fav = row['_is_favorited']
+
+            col_fav, col_detail, col_download, col_spacer = st.columns([1, 2, 2, 5])
+
+            with col_fav:
+                fav_label = "⭐ " if is_fav else "☆ "
+                if st.button(fav_label, key=f"fav_{symbol}_top10_{idx}", use_container_width=True):
+                    if is_fav:
+                        st.session_state.favorite_stocks.remove(symbol)
+                    else:
+                        st.session_state.favorite_stocks.append(symbol)
+                    st.rerun()
+
+            with col_detail:
+                if st.button(f"📊 Details", key=f"details_{symbol}_top10_{idx}", use_container_width=True):
+                    # Toggle expander (we'll show details below)
+                    st.session_state[f'show_details_{symbol}'] = not st.session_state.get(f'show_details_{symbol}', False)
+                    st.rerun()
+
+            with col_download:
+                stock_info = st.session_state.stock_expiry_summary[symbol]
+                expiry_str = stock_info['expiry'].strftime('%d%b%Y').upper()
+                csv_data = stock_info['data'].to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="📥 CSV",
+                    data=csv_data,
+                    file_name=f"{symbol}_{expiry_str}.csv",
+                    mime='text/csv',
+                    key=f"download_{symbol}_top10_{idx}",
+                    use_container_width=True
+                )
+
+        # Show expandable strike details
+        for row in table_data:
+            symbol = row['_symbol_raw']
+            if st.session_state.get(f'show_details_{symbol}', False):
+                with st.expander(f"📊 Strike-wise Details: {symbol}", expanded=True):
+                    stock_info = st.session_state.stock_expiry_summary[symbol]
+                    strike_df = stock_info['data'].copy()
+
+                    if not strike_df.empty:
+                        # Separate CE and PE
+                        ce_strikes = strike_df[strike_df['type'] == 'CE'].copy()
+                        pe_strikes = strike_df[strike_df['type'] == 'PE'].copy()
+
+                        # Format for display
+                        def format_strike_df(df):
+                            df_display = df.copy()
+                            df_display['cumulative_flow'] = df_display['cumulative_flow'].apply(lambda x: format_number(x))
+                            df_display['cumulative_volume'] = df_display['cumulative_volume'].apply(lambda x: f"{int(x):,}")
+                            df_display['daily_flow'] = df_display['daily_flow'].apply(lambda x: format_number(x))
+                            df_display['daily_volume'] = df_display['daily_volume'].apply(lambda x: f"{int(x):,}")
+                            df_display['last_price'] = df_display['last_price'].apply(lambda x: f"₹{x:.2f}")
+                            df_display['oi'] = df_display['oi'].apply(lambda x: f"{int(x):,}")
+                            df_display.columns = ['Strike', 'Type', 'Cum Flow', 'Cum Vol', 'Daily Flow', 'Daily Vol', 'LTP', 'OI']
+                            return df_display[['Strike', 'Cum Flow', 'Cum Vol', 'Daily Flow', 'Daily Vol', 'LTP', 'OI']]
+
+                        col_ce, col_pe = st.columns(2)
+
+                        with col_ce:
+                            st.markdown("#### 📈 Call Options (CE)")
+                            if not ce_strikes.empty:
+                                ce_display = format_strike_df(ce_strikes)
+                                st.dataframe(ce_display, use_container_width=True, hide_index=True, height=300)
+                            else:
+                                st.info("No CE data available")
+
+                        with col_pe:
+                            st.markdown("#### 📉 Put Options (PE)")
+                            if not pe_strikes.empty:
+                                pe_display = format_strike_df(pe_strikes)
+                                st.dataframe(pe_display, use_container_width=True, hide_index=True, height=300)
+                            else:
+                                st.info("No PE data available")
+                    else:
+                        st.warning("No strike data available")
+
+        st.markdown("---")
+
+        # ========================================
+        # SECTION 5: EXPAND BUTTON + REMAINING STOCKS
+        # ========================================
+        if remaining_stocks:
+            st.markdown(f"### 📋 Showing Top 10 of {len(stocks_list)} Stocks")
+
+            if st.button(f"🔽 Show All {len(remaining_stocks)} Remaining Stocks", key="expand_stocks_btn", use_container_width=True):
+                st.session_state.show_all_stocks = not st.session_state.show_all_stocks
+                st.rerun()
+
+            if st.session_state.show_all_stocks:
+                st.markdown("")
+                st.markdown("#### All Remaining Stocks")
+
+                # Build remaining stocks table
+                remaining_data = []
+                for idx, stock in enumerate(remaining_stocks, 11):
+                    remaining_data.append({
+                        'Rank': idx,
+                        'Symbol': stock['symbol'],
+                        'Expiry': stock['expiry'].strftime('%d %b %Y'),
+                        'CE Flow': format_number(stock['ce_flow']),
+                        'PE Flow': format_number(stock['pe_flow']),
+                        'Net Flow': format_number(stock['net_flow']),
+                        'CE Vol': f"{int(stock['ce_volume']):,}",
+                        'PE Vol': f"{int(stock['pe_volume']):,}",
+                        'Total Vol': f"{int(stock['total_volume']):,}",
+                        'Sentiment': '🟢 BULLISH' if stock['net_flow'] > 0 else '🔴 BEARISH' if stock['net_flow'] < 0 else '⚪ NEUTRAL'
+                    })
+
+                remaining_df = pd.DataFrame(remaining_data)
+                st.dataframe(
+                    remaining_df,
+                    use_container_width=True,
+                    hide_index=True,
+                    height=600
+                )
+
+                if st.button("🔼 Hide Remaining Stocks", key="collapse_stocks_btn", use_container_width=True):
+                    st.session_state.show_all_stocks = False
+                    st.rerun()
+
+        st.markdown("---")
+
+        # ========================================
+        # SECTION 6: DOWNLOAD OPTIONS
+        # ========================================
+        st.markdown("### 💾 Download Options")
+        st.markdown("")
+
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            # Download Top 10 Summary
+            top10_summary = pd.DataFrame([{
+                'Symbol': s['symbol'],
+                'Expiry': s['expiry'].strftime('%d %b %Y'),
+                'CE Flow': s['ce_flow'],
+                'PE Flow': s['pe_flow'],
+                'Net Flow': s['net_flow'],
+                'CE Volume': s['ce_volume'],
+                'PE Volume': s['pe_volume'],
+                'Total Volume': s['total_volume']
+            } for s in top_10_stocks])
+
+            csv_top10 = top10_summary.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="📥 Download Top 10 Summary",
+                data=csv_top10,
+                file_name=f"top10_stocks_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime='text/csv',
+                key="download_top10_summary",
+                use_container_width=True
+            )
+
+        with col2:
+            # Download All Stocks Summary
+            all_summary = pd.DataFrame([{
+                'Symbol': s['symbol'],
+                'Expiry': s['expiry'].strftime('%d %b %Y'),
+                'CE Flow': s['ce_flow'],
+                'PE Flow': s['pe_flow'],
+                'Net Flow': s['net_flow'],
+                'CE Volume': s['ce_volume'],
+                'PE Volume': s['pe_volume'],
+                'Total Volume': s['total_volume']
+            } for s in stocks_list])
+
+            csv_all = all_summary.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label=f"📥 Download All {len(stocks_list)} Stocks",
+                data=csv_all,
+                file_name=f"all_stocks_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime='text/csv',
+                key="download_all_stocks",
+                use_container_width=True
+            )
+
+        with col3:
+            # Download with Strike Details (Combined)
+            st.info("Individual stock CSVs available via 📥 CSV buttons above")
+
+        st.markdown("---")
+        st.caption(f"💡 **Tracking {len(stocks_list)} F&O stocks** | Data updates every 5 minutes | Cumulative from start of month")
+
+    else:
+        st.warning("⚠️ No stock data available. Top 10 will appear once data is collected.")
+
+else:
+    # Show empty state
+    st.info("⏳ **Waiting for stock expiry data...**")
+    st.caption("Start polling to begin tracking F&O stock options. Data will appear after the first 5-minute update cycle (approximately 2 minutes).")
+
+    st.markdown("---")
+    st.markdown("### Preview: What's Coming")
+
+    # Show sample table structure
+    sample_data = pd.DataFrame({
+        'Rank': [1, 2, 3],
+        'Symbol': ['RELIANCE', 'TCS', 'HDFCBANK'],
+        'Expiry': ['30 Jan 2026', '30 Jan 2026', '30 Jan 2026'],
+        'CE Flow': ['—', '—', '—'],
+        'PE Flow': ['—', '—', '—'],
+        'Net Flow': ['—', '—', '—'],
+        'CE Vol': ['—', '—', '—'],
+        'PE Vol': ['—', '—', '—'],
+        'Total Vol': ['—', '—', '—'],
+        'Sentiment': ['⚪ NEUTRAL', '⚪ NEUTRAL', '⚪ NEUTRAL']
+    })
+
+    st.dataframe(sample_data, use_container_width=True, hide_index=True, height=150)
+    st.caption("Sample preview - actual data will populate automatically")
 
 st.markdown("---")
