@@ -8430,6 +8430,130 @@ if st.session_state.weekly_expiries_list and len(st.session_state.weekly_expirie
     st.markdown("---")
     st.caption("💡 **Note**: Data is cumulative from the start of each week. Updates every 5 minutes. ATM strike highlighted in yellow.")
 
+    # ===== CE/PE SUMMARY FOR ALL 4 WEEKS =====
+    st.markdown("---")
+    st.markdown("## 📊 CE/PE Summary - All 4 Weeks")
+    st.markdown("")
+
+    # Prepare summary data for all 4 weeks
+    summary_data = []
+
+    for idx, (expiry_str, expiry_dt) in enumerate(st.session_state.weekly_expiries_list):
+        week_num = idx + 1
+        expiry_display = expiry_dt.strftime("%d %b %Y")
+
+        if expiry_str in st.session_state.weekly_expiry_data:
+            df = st.session_state.weekly_expiry_data[expiry_str]
+
+            if not df.empty:
+                df_ce = df[df['Type'] == 'CE']
+                df_pe = df[df['Type'] == 'PE']
+
+                total_ce_flow = df_ce['Cumulative_Flow'].sum() if not df_ce.empty else 0
+                total_pe_flow = df_pe['Cumulative_Flow'].sum() if not df_pe.empty else 0
+                total_ce_volume = df_ce['Cumulative_Volume'].sum() if not df_ce.empty else 0
+                total_pe_volume = df_pe['Cumulative_Volume'].sum() if not df_pe.empty else 0
+                net_bias = total_ce_flow - total_pe_flow
+
+                summary_data.append({
+                    'Week': f'Week {week_num}',
+                    'Expiry': expiry_display,
+                    'CE_Flow': total_ce_flow,
+                    'PE_Flow': total_pe_flow,
+                    'Net_Bias': net_bias,
+                    'CE_Volume': total_ce_volume,
+                    'PE_Volume': total_pe_volume,
+                    'Total_Volume': total_ce_volume + total_pe_volume,
+                    'Sentiment': '🟢 BULLISH' if net_bias > 0 else '🔴 BEARISH' if net_bias < 0 else '⚪ NEUTRAL'
+                })
+
+    if summary_data:
+        # Create DataFrame for display
+        summary_df = pd.DataFrame(summary_data)
+
+        # Format for display
+        summary_display = summary_df.copy()
+        summary_display['CE Flow'] = summary_display['CE_Flow'].apply(lambda x: format_number(x))
+        summary_display['PE Flow'] = summary_display['PE_Flow'].apply(lambda x: format_number(x))
+        summary_display['Net Bias (CE-PE)'] = summary_display['Net_Bias'].apply(lambda x: format_number(x))
+        summary_display['CE Volume'] = summary_display['CE_Volume'].apply(lambda x: f"{int(x):,}")
+        summary_display['PE Volume'] = summary_display['PE_Volume'].apply(lambda x: f"{int(x):,}")
+        summary_display['Total Volume'] = summary_display['Total_Volume'].apply(lambda x: f"{int(x):,}")
+
+        # Select columns for display
+        display_cols = ['Week', 'Expiry', 'CE Flow', 'PE Flow', 'Net Bias (CE-PE)',
+                       'CE Volume', 'PE Volume', 'Total Volume', 'Sentiment']
+
+        st.dataframe(
+            summary_display[display_cols],
+            use_container_width=True,
+            hide_index=True,
+            height=200
+        )
+
+        # Overall Summary Metrics
+        st.markdown("---")
+        st.markdown("### 📈 Overall Summary (All Weeks Combined)")
+
+        total_ce_all = summary_df['CE_Flow'].sum()
+        total_pe_all = summary_df['PE_Flow'].sum()
+        net_bias_all = total_ce_all - total_pe_all
+        total_volume_all = summary_df['Total_Volume'].sum()
+
+        col1, col2, col3, col4 = st.columns(4)
+
+        with col1:
+            st.metric("Total CE Flow (All Weeks)", format_number(total_ce_all))
+
+        with col2:
+            st.metric("Total PE Flow (All Weeks)", format_number(total_pe_all))
+
+        with col3:
+            overall_sentiment = "🟢 BULLISH" if net_bias_all > 0 else "🔴 BEARISH" if net_bias_all < 0 else "⚪ NEUTRAL"
+            st.metric("Net Bias (All Weeks)", format_number(net_bias_all))
+            st.caption(overall_sentiment)
+
+        with col4:
+            st.metric("Total Volume (All Weeks)", f"{int(total_volume_all):,}")
+
+        # CE vs PE Distribution
+        st.markdown("**Overall CE vs PE Flow Distribution:**")
+        total_flow_all = total_ce_all + total_pe_all
+        if total_flow_all > 0:
+            ce_pct_all = (total_ce_all / total_flow_all) * 100
+            pe_pct_all = 100 - ce_pct_all
+            st.markdown(create_cepe_progress_bar(total_ce_all, total_pe_all, show_labels=True), unsafe_allow_html=True)
+            st.caption(f"📊 CE: {ce_pct_all:.1f}% | PE: {pe_pct_all:.1f}%")
+
+        # Download CSV for Summary
+        st.markdown("---")
+        st.markdown("### 💾 Download Summary CSV")
+
+        # Prepare CSV data with original values
+        csv_summary = summary_df.copy()
+        csv_summary = csv_summary.rename(columns={
+            'CE_Flow': 'CE Flow',
+            'PE_Flow': 'PE Flow',
+            'Net_Bias': 'Net Bias (CE-PE)',
+            'CE_Volume': 'CE Volume',
+            'PE_Volume': 'PE Volume',
+            'Total_Volume': 'Total Volume'
+        })
+
+        csv_data = csv_summary.to_csv(index=False).encode('utf-8')
+
+        st.download_button(
+            label="📥 Download 4-Week Summary CSV",
+            data=csv_data,
+            file_name=f"nifty_weekly_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            mime='text/csv',
+            key="download_summary_all_weeks"
+        )
+
+        st.caption("📁 Summary includes all 4 weeks of data with CE/PE flow, volumes, and net bias")
+    else:
+        st.info("⏳ No summary data available yet. Start polling to collect data.")
+
 else:
     # Show empty state
     st.info("⏳ **Waiting for weekly expiry data...**")
