@@ -4240,18 +4240,31 @@ def ensure_instruments(kite: KiteConnect) -> pd.DataFrame:
     """
     Load instruments from cache file or Zerodha API
     Cache location: .cache/instruments.parquet
+    Cache expires after 24 hours (refreshes daily)
     """
+    # Check if cache exists and is fresh (less than 24 hours old)
+    cache_valid = False
     if INSTRUMENTS_FILE.exists():
         try:
-            print(f"📂 Loading instruments from cache: {INSTRUMENTS_FILE}")
-            df = pd.read_parquet(INSTRUMENTS_FILE)
-            need = {"segment","name","tradingsymbol","instrument_token","expiry","strike","instrument_type"}
-            if need.issubset(df.columns):
-                print(f"✅ Loaded {len(df)} instruments from cache")
-                return df
+            # Get absolute path
+            cache_path = INSTRUMENTS_FILE.absolute()
+            print(f"📂 Found cache file: {cache_path}")
+
+            # Check cache age
+            cache_age = datetime.now() - datetime.fromtimestamp(INSTRUMENTS_FILE.stat().st_mtime)
+            hours_old = cache_age.total_seconds() / 3600
+            print(f"📅 Cache age: {hours_old:.1f} hours old")
+
+            if hours_old < 24:
+                df = pd.read_parquet(INSTRUMENTS_FILE)
+                need = {"segment","name","tradingsymbol","instrument_token","expiry","strike","instrument_type"}
+                if need.issubset(df.columns):
+                    print(f"✅ Loaded {len(df)} instruments from cache (fresh)")
+                    return df
+            else:
+                print(f"⚠️ Cache expired (older than 24 hours), fetching fresh data...")
         except Exception as e:
-            print(f"⚠️ Cache file corrupted, will fetch from API: {e}")
-            pass
+            print(f"⚠️ Cache file error: {e}")
 
     print("🌐 Fetching instruments from Zerodha API (this may take 10-15 seconds)...")
     try:
@@ -4280,7 +4293,8 @@ def ensure_instruments(kite: KiteConnect) -> pd.DataFrame:
     try:
         INSTRUMENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
         df.to_parquet(INSTRUMENTS_FILE, index=False)
-        print(f"💾 Saved instruments to cache: {INSTRUMENTS_FILE}")
+        cache_path = INSTRUMENTS_FILE.absolute()
+        print(f"💾 Saved {len(df)} instruments to cache: {cache_path}")
     except Exception as e:
         print(f"⚠️ Could not save to cache: {e}")
 
@@ -7926,37 +7940,68 @@ with st.sidebar:
 
     # Build Instruments Button (if tokens not available)
     if not engine.subscribe_tokens:
-        if st.button("🔧 Build Instruments", use_container_width=True, key="build_instruments_btn"):
-            if not kite:
-                st.error("❌ Not authenticated! Please login first.")
-            else:
-                try:
-                    with st.spinner("Loading instruments from Zerodha..."):
-                        if engine.ins_df.empty:
+        col_a, col_b = st.columns(2)
+        with col_a:
+            if st.button("🔧 Build", use_container_width=True, key="build_instruments_btn"):
+                if not kite:
+                    st.error("❌ Not authenticated! Please login first.")
+                else:
+                    try:
+                        with st.spinner("Loading instruments from Zerodha..."):
+                            if engine.ins_df.empty:
+                                engine.ins_df = ensure_instruments(kite)
+                                st.success(f"✅ Loaded {len(engine.ins_df)} instruments")
+
+                        with st.spinner("Discovering indices..."):
+                            if not engine.indices_with_fo:
+                                engine.indices_with_fo = discover_indices_with_fo(engine.ins_df)
+                                st.success(f"✅ Found {len(engine.indices_with_fo)} indices")
+
+                        with st.spinner("Discovering stocks..."):
+                            if not engine.stocks_with_fo:
+                                engine.stocks_with_fo = discover_stocks_with_fo(engine.ins_df)
+                                st.success(f"✅ Found {len(engine.stocks_with_fo)} stocks")
+
+                        with st.spinner("Building subscription tokens..."):
+                            if not engine.subscribe_tokens:
+                                engine.subscribe_tokens = build_subscriptions(kite, engine.ins_df)
+                                st.success(f"✅ Built {len(engine.subscribe_tokens)} subscription tokens!")
+
+                        st.balloons()
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ Build failed: {str(e)}")
+                        import traceback
+                        st.code(traceback.format_exc())
+
+        with col_b:
+            if st.button("🔄 Refresh", use_container_width=True, key="refresh_instruments_btn", help="Delete cache and fetch fresh data"):
+                if not kite:
+                    st.error("❌ Not authenticated!")
+                else:
+                    try:
+                        # Delete cache to force fresh download
+                        if INSTRUMENTS_FILE.exists():
+                            INSTRUMENTS_FILE.unlink()
+                            st.info("🗑️ Deleted old cache")
+
+                        # Force fresh build
+                        with st.spinner("Fetching fresh instruments..."):
                             engine.ins_df = ensure_instruments(kite)
-                            st.success(f"✅ Loaded {len(engine.ins_df)} instruments")
+                            st.success(f"✅ Downloaded {len(engine.ins_df)} instruments")
 
-                    with st.spinner("Discovering indices..."):
-                        if not engine.indices_with_fo:
-                            engine.indices_with_fo = discover_indices_with_fo(engine.ins_df)
-                            st.success(f"✅ Found {len(engine.indices_with_fo)} indices")
+                        # Clear and rebuild everything
+                        engine.indices_with_fo = discover_indices_with_fo(engine.ins_df)
+                        engine.stocks_with_fo = discover_stocks_with_fo(engine.ins_df)
+                        engine.subscribe_tokens = build_subscriptions(kite, engine.ins_df)
 
-                    with st.spinner("Discovering stocks..."):
-                        if not engine.stocks_with_fo:
-                            engine.stocks_with_fo = discover_stocks_with_fo(engine.ins_df)
-                            st.success(f"✅ Found {len(engine.stocks_with_fo)} stocks")
-
-                    with st.spinner("Building subscription tokens..."):
-                        if not engine.subscribe_tokens:
-                            engine.subscribe_tokens = build_subscriptions(kite, engine.ins_df)
-                            st.success(f"✅ Built {len(engine.subscribe_tokens)} subscription tokens!")
-
-                    st.balloons()
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"❌ Build failed: {str(e)}")
-                    import traceback
-                    st.code(traceback.format_exc())
+                        st.success(f"✅ Refreshed! {len(engine.subscribe_tokens)} tokens ready")
+                        st.balloons()
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ Refresh failed: {str(e)}")
+                        import traceback
+                        st.code(traceback.format_exc())
 
     # Polling Control Buttons
     col1, col2 = st.columns(2)
