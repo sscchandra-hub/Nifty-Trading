@@ -8318,6 +8318,21 @@ if not engine.stocks_with_fo:
 else:
     print(f"✅ Stocks already discovered: {len(engine.stocks_with_fo)}")
 
+# Initialize weekly expiries list for UI display (even before data collection)
+if not st.session_state.weekly_expiries_list and not engine.ins_df.empty:
+    print("🔍 Initializing weekly expiries list for UI...")
+    try:
+        next_expiries = get_next_nifty_expiries(engine.ins_df, num_expiries=4)
+        if next_expiries:
+            st.session_state.weekly_expiries_list = [
+                (exp.strftime('%d%b%Y').upper(), exp) for exp in next_expiries
+            ]
+            print(f"✅ Initialized {len(next_expiries)} weekly expiries for display")
+            for idx, (expiry_str, expiry_dt) in enumerate(st.session_state.weekly_expiries_list):
+                print(f"   Week {idx+1}: {expiry_dt.strftime('%d %b %Y')} ({expiry_str})")
+    except Exception as e:
+        print(f"⚠️ Failed to initialize weekly expiries: {e}")
+
 # Build subscription tokens (if not already built)
 if not engine.subscribe_tokens and not engine.ins_df.empty:
     print("🔧 Building subscription tokens...")
