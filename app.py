@@ -5871,782 +5871,339 @@ def polling_loop():
     print("Polling every 10 seconds with actionable alerts")
     print("="*50 + "\n")
 
-    current_date = datetime.now().date()
-    daily_summary_sent = False  # Track if daily summary sent today
+    try:
+        current_date = datetime.now().date()
+        daily_summary_sent = False  # Track if daily summary sent today
 
-    while not engine.stop_flag:
-        try:
-            if datetime.now().date() != current_date:
-                print(f"🗓️ New trading day detected - clearing caches")
-                engine.cached_prev_close.clear()
-                engine.first_15min_range.clear()
-                engine.range_status.clear()
-                # MEMORY FIX: Force garbage collection on new day
-                import gc
-                gc.collect()
-                print("✅ Memory cleanup - garbage collection done")
+        while not engine.stop_flag:
+            try:
+                if datetime.now().date() != current_date:
+                    print(f"🗓️ New trading day detected - clearing caches")
+                    engine.cached_prev_close.clear()
+                    engine.first_15min_range.clear()
+                    engine.range_status.clear()
+                    # MEMORY FIX: Force garbage collection on new day
+                    import gc
+                    gc.collect()
+                    print("✅ Memory cleanup - garbage collection done")
 
-                engine.futures_volume_history.clear()
-                engine.chart_update_counter = 0
-                reset_volume_data()  # Reset volume charts  # PHASE 1: Reset chart counter
+                    engine.futures_volume_history.clear()
+                    engine.chart_update_counter = 0
+                    reset_volume_data()  # Reset volume charts  # PHASE 1: Reset chart counter
 
-                # Reset smart alert tracking for new day
-                engine.alert_cooldowns.clear()
-                engine.daily_score_history.clear()
-                engine.nifty_momentum_state = None
-                engine.nifty_momentum_last_alert = None
-                daily_summary_sent = False
-                print("✅ Smart alert tracking reset for new day")
+                    # Reset smart alert tracking for new day
+                    engine.alert_cooldowns.clear()
+                    engine.daily_score_history.clear()
+                    engine.nifty_momentum_state = None
+                    engine.nifty_momentum_last_alert = None
+                    daily_summary_sent = False
+                    print("✅ Smart alert tracking reset for new day")
 
-                current_date = datetime.now().date()
-            
-            if not engine.subscribe_tokens or engine.token_meta.empty:
-                time.sleep(1)
-                continue
-            
-            chunks = [engine.subscribe_tokens[i:i+500] for i in range(0, len(engine.subscribe_tokens), 500)]
-            all_quotes = {}
-            for chunk in chunks:
-                try:
-                    quotes = engine.kite.quote(chunk)
-                    all_quotes.update(quotes)
-                except Exception as e:
-                    print(f"Poll error: {e}")
-            
-            if all_quotes:
-                indices_data = {}
-                stocks_data = {}
-                
-                for idx_name in engine.indices_with_fo:
-                    idx_meta = engine.token_meta[
-                        (engine.token_meta.get("index_name") == idx_name) | 
-                        (engine.token_meta.get("name") == idx_name)
-                    ].copy()
+                    current_date = datetime.now().date()
+
+                if not engine.subscribe_tokens or engine.token_meta.empty:
+                    time.sleep(1)
+                    continue
+
+                chunks = [engine.subscribe_tokens[i:i+500] for i in range(0, len(engine.subscribe_tokens), 500)]
+                all_quotes = {}
+                for chunk in chunks:
+                    try:
+                        quotes = engine.kite.quote(chunk)
+                        all_quotes.update(quotes)
+                    except Exception as e:
+                        print(f"Poll error: {e}")
+
+                if all_quotes:
+                    indices_data = {}
+                    stocks_data = {}
+
+                    for idx_name in engine.indices_with_fo:
+                        idx_meta = engine.token_meta[
+                            (engine.token_meta.get("index_name") == idx_name) | 
+                            (engine.token_meta.get("name") == idx_name)
+                        ].copy()
                     
-                    if "category" in idx_meta.columns:
-                        idx_meta = idx_meta[idx_meta["category"] == "INDEX"]
+                        if "category" in idx_meta.columns:
+                            idx_meta = idx_meta[idx_meta["category"] == "INDEX"]
                     
-                    if idx_meta.empty:
-                        continue
+                        if idx_meta.empty:
+                            continue
                         
-                    ce_flow = 0.0
-                    pe_flow = 0.0
+                        ce_flow = 0.0
+                        pe_flow = 0.0
                     
-                    spot_rows = idx_meta[idx_meta.get("type") == "SPOT"]
-                    index_price = None
-                    index_change_pct = None
+                        spot_rows = idx_meta[idx_meta.get("type") == "SPOT"]
+                        index_price = None
+                        index_change_pct = None
                     
-                    if not spot_rows.empty:
-                        spot_token = int(spot_rows.iloc[0]["instrument_token"])
-                        spot_token_str = str(spot_token)
+                        if not spot_rows.empty:
+                            spot_token = int(spot_rows.iloc[0]["instrument_token"])
+                            spot_token_str = str(spot_token)
                         
-                        if spot_token_str in all_quotes:
-                            quote = all_quotes[spot_token_str]
-                            index_price = quote.get("last_price", None)
+                            if spot_token_str in all_quotes:
+                                quote = all_quotes[spot_token_str]
+                                index_price = quote.get("last_price", None)
                             
-                            net_change = quote.get("net_change", None)
-                            prev_close = None
+                                net_change = quote.get("net_change", None)
+                                prev_close = None
                             
-                            if net_change is not None and index_price:
-                                prev_close = index_price - net_change
-                                if prev_close > 0:
-                                    engine.cached_prev_close[idx_name] = prev_close
-                                    index_change_pct = (net_change / prev_close) * 100
-                                    print(f"✓ {idx_name} SPOT: Price={index_price:.2f}, Net Change={net_change:+.2f}, Prev Close={prev_close:.2f}, Change={index_change_pct:+.2f}% [CACHED]")
-                                else:
-                                    index_change_pct = None
-                            else:
-                                if idx_name in engine.cached_prev_close:
-                                    prev_close = engine.cached_prev_close[idx_name]
-                                    if prev_close > 0 and index_price:
-                                        index_change_pct = ((index_price - prev_close) / prev_close) * 100
-                                        print(f"✓ {idx_name} SPOT: Price={index_price:.2f}, Prev Close={prev_close:.2f} (cached), Change={index_change_pct:+.2f}%")
+                                if net_change is not None and index_price:
+                                    prev_close = index_price - net_change
+                                    if prev_close > 0:
+                                        engine.cached_prev_close[idx_name] = prev_close
+                                        index_change_pct = (net_change / prev_close) * 100
+                                        print(f"✓ {idx_name} SPOT: Price={index_price:.2f}, Net Change={net_change:+.2f}, Prev Close={prev_close:.2f}, Change={index_change_pct:+.2f}% [CACHED]")
                                     else:
                                         index_change_pct = None
                                 else:
-                                    prev_close = quote.get("last_close", None) or quote.get("previous_close", None)
-                                    
-                                    if prev_close is None:
-                                        ohlc = quote.get("ohlc", {})
-                                        if isinstance(ohlc, dict):
-                                            prev_close = ohlc.get("previous_close", None) or ohlc.get("last_close", None)
-                                    
-                                    if prev_close and prev_close > 0 and index_price:
-                                        engine.cached_prev_close[idx_name] = prev_close
-                                        index_change_pct = ((index_price - prev_close) / prev_close) * 100
-                                        print(f"✓ {idx_name} SPOT: Price={index_price:.2f}, Prev Close={prev_close:.2f}, Change={index_change_pct:+.2f}% [CACHED]")
-                                    else:
-                                        ohlc = quote.get("ohlc", {})
-                                        if isinstance(ohlc, dict):
-                                            open_price = ohlc.get("open", None)
-                                            if open_price and open_price > 0 and index_price:
-                                                index_change_pct = ((index_price - open_price) / open_price) * 100
-                                                print(f"⚠️ {idx_name} SPOT: Price={index_price:.2f}, Open={open_price:.2f}, Change={index_change_pct:+.2f}% (FALLBACK - no cache)")
-                                            else:
-                                                index_change_pct = None
-                                                print(f"❌ {idx_name} SPOT: Could not calculate change %")
-                    
-                    for _, row in idx_meta.iterrows():
-                        token = int(row["instrument_token"])
-                        token_str = str(token)
-                        if token_str in all_quotes:
-                            quote_data = all_quotes[token_str]
-                            volume = quote_data.get("volume", 0)
-                            if "type" in row and row["type"] == "CE":
-                                ce_flow += volume
-                            elif "type" in row and row["type"] == "PE":
-                                pe_flow += volume
-                            elif "instrument_type" in row:
-                                if row["instrument_type"] == "CE":
-                                    ce_flow += volume
-                                elif row["instrument_type"] == "PE":
-                                    pe_flow += volume
-                    
-                    indices_data[idx_name] = {
-                        "ce_flow": ce_flow,
-                        "pe_flow": pe_flow,
-                        "net_flow": ce_flow - pe_flow,
-                        "price": index_price,
-                        "change_pct": index_change_pct
-                    }
-                    
-                    now = datetime.now()
-                    print(f"DEBUG: Processing {idx_name}, Time={now.strftime('%H:%M:%S')}, After 9:30? {now.time() >= dt_time(9, 30)}")
-                    
-                    if now.time() >= dt_time(9, 30):
-                        if idx_name not in engine.first_15min_range:
-                            print(f"DEBUG: Getting first 15min range for {idx_name}")
-                            get_first_15min_range(idx_name, now)
-                        
-                        futures_volume = None
-                        avg_volume = None
-                        
-                        fut_meta = engine.token_meta[
-                            (engine.token_meta.get("index_name") == idx_name) &
-                            (engine.token_meta.get("type") == "FUT") &
-                            (engine.token_meta.get("category") == "INDEX")
-                        ]
-                        
-                        print(f"DEBUG: {idx_name} - Found {len(fut_meta)} futures contracts")
-                        
-                        if not fut_meta.empty:
-                            fut_token = int(fut_meta.iloc[0]["instrument_token"])
-                            fut_token_str = str(fut_token)
-                            
-                            if fut_token_str in all_quotes:
-                                quote_data = all_quotes[fut_token_str]
-                                futures_volume = quote_data.get("volume", 0)
-                                
-                                print(f"DEBUG: {idx_name} Futures Volume = {futures_volume:,}")
-                                
-                                if idx_name not in engine.futures_volume_history:
-                                    engine.futures_volume_history[idx_name] = deque(maxlen=15)
-                                
-                                engine.futures_volume_history[idx_name].append(futures_volume)
-                                
-                                if len(engine.futures_volume_history[idx_name]) >= 5:
-                                    avg_volume = np.mean(list(engine.futures_volume_history[idx_name]))
-                                    print(f"DEBUG: {idx_name} Avg Volume = {avg_volume:,.0f}, Ratio = {futures_volume/avg_volume:.2f}x")
-                        
-                        if index_price and idx_name in engine.first_15min_range:
-                            print(f"DEBUG: {idx_name} has range data, checking breakout...")
-                            
-                            sentiment_text, _, _, _, _, _, _ = get_smart_sentiment(index_change_pct, ce_flow - pe_flow)
-                            
-                            range_status, alert_message = check_range_breakout(
-                                idx_name, 
-                                index_price, 
-                                sentiment_text, 
-                                futures_volume, 
-                                avg_volume
-                            )
-                            
-                            print(f"DEBUG: {idx_name} Range Status = {range_status}")
-                            
-                            indices_data[idx_name]["range_status"] = range_status
-                            indices_data[idx_name]["range_high"] = engine.first_15min_range[idx_name]["high"]
-                            indices_data[idx_name]["range_low"] = engine.first_15min_range[idx_name]["low"]
-                            indices_data[idx_name]["futures_volume"] = futures_volume
-                            indices_data[idx_name]["avg_volume"] = avg_volume
-                            
-                            if alert_message:
-                                add_alert(alert_message, "warning")
-                        else:
-                            print(f"DEBUG: {idx_name} - Missing data. Price={index_price}, Has Range={idx_name in engine.first_15min_range}")
-                    
-                    # PHASE 1: Save historical data to CSV
-                    # DEBUG: Log why data might not save
-                    print(f"[HIST] {idx_name}: price={index_price}, change%={index_change_pct}, ce_flow={ce_flow:.0f}, pe_flow={pe_flow:.0f}")
-                    
-                    if not index_price:
-                        print(f"⚠️ [HIST] {idx_name} - SKIP: No index_price")
-                    elif index_change_pct is None:
-                        print(f"⚠️ [HIST] {idx_name} - SKIP: index_change_pct is None (price={index_price:.2f})")
-                    
-                    if index_price and index_change_pct is not None:
-                        print(f"✅ [HIST] {idx_name} - SAVING data to CSV")
-                        sentiment_text, _, _, _, _, _, _ = get_smart_sentiment(index_change_pct, ce_flow - pe_flow)
-                        
-                        hist_row = {
-                            'timestamp': datetime.now().isoformat(),
-                            'index_name': idx_name,
-                            'spot_price': index_price,
-                            'price_change_pct': index_change_pct,
-                            'ce_flow': ce_flow,
-                            'pe_flow': pe_flow,
-                            'net_flow': ce_flow - pe_flow,
-                            'delta_1min_ce': None,
-                            'delta_1min_pe': None,
-                            'delta_5min_ce': None,
-                            'delta_5min_pe': None,
-                            'sentiment': sentiment_text,
-                            'range_status': indices_data[idx_name].get('range_status', 'N/A'),
-                            'futures_volume': indices_data[idx_name].get('futures_volume'),
-                            'avg_volume': indices_data[idx_name].get('avg_volume'),
-                            'volume_ratio': None
-                        }
-                        
-                        save_historical_data(idx_name, hist_row)
-                
-                # ============================================
-                # VOLUME CHARTS DATA COLLECTION (REQUIREMENT 4)
-                # ============================================
-                if 'NIFTY' in indices_data:
-                    nifty_data = indices_data['NIFTY']
-                    if nifty_data.get('price'):
-                        try:
-                            log_chart_debug(f"Calling update_volume_data for NIFTY (spot={nifty_data['price']:.2f})")
-                            
-                            update_volume_data(
-                                kite=engine.kite,
-                                ins_df=engine.ins_df,
-                                index_name='NIFTY',
-                                spot_price=nifty_data['price'],
-                                all_quotes=all_quotes,
-                                token_meta=engine.token_meta
-                            )
-                            
-                            log_chart_debug(f"Volume data updated - spike_queue={len(volume_state.spike_queue)}, ce_pe_history={len(volume_state.ce_pe_history)}")
-
-                            # Check for volume spike alerts (>5x) - TELEGRAM ALERTS REMOVED
-                            # check_volume_alerts(add_alert)
-
-                            # ============================================
-                            # WEEKLY EXPIRY TRACKER DATA COLLECTION
-                            # Update every 5 minutes (30 polling cycles at 10s each)
-                            # ============================================
-                            if not hasattr(engine, 'expiry_update_counter'):
-                                engine.expiry_update_counter = 0
-
-                            engine.expiry_update_counter += 1
-
-                            # Update every 30 cycles (5 minutes)
-                            if engine.expiry_update_counter >= 30:
-                                engine.expiry_update_counter = 0
-
-                                try:
-                                    # Detect all 4 weekly expiries
-                                    weekly_expiries = get_nifty_weekly_expiries(engine.kite, engine.ins_df, num_weeks=4)
-
-                                    if weekly_expiries:
-                                        log_chart_debug(f"Updating weekly expiry tracker for {len(weekly_expiries)} weeks")
-
-                                        # Store the expiries list in session state
-                                        st.session_state.weekly_expiries_list = weekly_expiries
-
-                                        # Update data for all 4 weeks
-                                        for expiry_str, expiry_dt in weekly_expiries:
-                                            log_chart_debug(f"Processing expiry: {expiry_str}")
-
-                                            update_weekly_expiry_data(
-                                                kite=engine.kite,
-                                                ins_df=engine.ins_df,
-                                                token_meta=engine.token_meta,
-                                                all_quotes=all_quotes,
-                                                expiry_str=expiry_str,
-                                                spot_price=nifty_data['price']
-                                            )
-
-                                        st.session_state.last_expiry_update = datetime.now()
-                                    else:
-                                        log_chart_debug("Could not detect NIFTY weekly expiries")
-                                except Exception as e:
-                                    log_chart_debug(f"Weekly expiry tracker error: {e}")
-                                    import traceback
-                                    log_chart_debug(f"Traceback: {traceback.format_exc()}")
-
-                        except Exception as e:
-                            log_chart_debug(f"Volume charts error: {e}")
-                            import traceback
-                            log_chart_debug(f"Traceback: {traceback.format_exc()}")
-                    else:
-                        log_chart_debug(f"NIFTY data missing price - nifty_data={nifty_data}")
-                else:
-                    log_chart_debug(f"NIFTY not in indices_data - available={list(indices_data.keys())}")
-                
-                for stock_name in engine.stocks_with_fo:
-                    stock_meta = engine.token_meta[
-                        (engine.token_meta["name"] == stock_name) & 
-                        (engine.token_meta.get("category", "STOCK") == "STOCK")
-                    ].copy()
-                    if stock_meta.empty:
-                        continue
-                    
-                    ce_flow = 0.0
-                    pe_flow = 0.0
-                    stock_price = None
-                    stock_change_pct = None
-                    
-                    # Get stock futures price
-                    fut_rows = stock_meta[stock_meta.get("type") == "FUT"]
-                    if not fut_rows.empty:
-                        fut_token = int(fut_rows.iloc[0]["instrument_token"])
-                        fut_token_str = str(fut_token)
-                        
-                        if fut_token_str in all_quotes:
-                            fut_quote = all_quotes[fut_token_str]
-                            stock_price = fut_quote.get("last_price", None)
-
-                            # Calculate change % - Try multiple methods
-                            stock_change_pct = None
-
-                            # Method 1: Direct change percentage from Kite (most reliable)
-                            # BUT: Skip if it's exactly 0 (likely market closed or no data)
-                            change_value = fut_quote.get("change")
-                            if change_value is not None and change_value != 0:
-                                stock_change_pct = change_value
-
-                            # Method 2: Calculate from net_change
-                            if stock_change_pct is None and stock_price:
-                                net_change = fut_quote.get("net_change")
-                                if net_change is not None and net_change != 0:
-                                    prev_close = stock_price - net_change
-                                    if prev_close > 0:
-                                        stock_change_pct = (net_change / prev_close) * 100
-
-                            # Method 3: Use OHLC data (works even when market closed)
-                            if stock_change_pct is None and stock_price:
-                                ohlc = fut_quote.get("ohlc", {})
-                                if isinstance(ohlc, dict):
-                                    # Try different previous close fields
-                                    prev_close = (ohlc.get("previous_close") or
-                                                 ohlc.get("prev_close") or
-                                                 ohlc.get("close"))
-
-                                    # If prev_close is same as current price, it's likely today's close
-                                    # So check if there's an open price different from close
-                                    if prev_close and prev_close > 0:
-                                        # If close == last_price, use open as reference (intraday change)
-                                        open_price = ohlc.get("open")
-                                        if abs(prev_close - stock_price) < 0.01 and open_price:
-                                            # Market might be closed, calculate from open
-                                            if abs(open_price - stock_price) > 0.01:
-                                                stock_change_pct = ((stock_price - open_price) / open_price) * 100
+                                    if idx_name in engine.cached_prev_close:
+                                        prev_close = engine.cached_prev_close[idx_name]
+                                        if prev_close > 0 and index_price:
+                                            index_change_pct = ((index_price - prev_close) / prev_close) * 100
+                                            print(f"✓ {idx_name} SPOT: Price={index_price:.2f}, Prev Close={prev_close:.2f} (cached), Change={index_change_pct:+.2f}%")
                                         else:
-                                            # Normal case: calculate from previous close
-                                            stock_change_pct = ((stock_price - prev_close) / prev_close) * 100
+                                            index_change_pct = None
+                                    else:
+                                        prev_close = quote.get("last_close", None) or quote.get("previous_close", None)
+                                    
+                                        if prev_close is None:
+                                            ohlc = quote.get("ohlc", {})
+                                            if isinstance(ohlc, dict):
+                                                prev_close = ohlc.get("previous_close", None) or ohlc.get("last_close", None)
+                                    
+                                        if prev_close and prev_close > 0 and index_price:
+                                            engine.cached_prev_close[idx_name] = prev_close
+                                            index_change_pct = ((index_price - prev_close) / prev_close) * 100
+                                            print(f"✓ {idx_name} SPOT: Price={index_price:.2f}, Prev Close={prev_close:.2f}, Change={index_change_pct:+.2f}% [CACHED]")
+                                        else:
+                                            ohlc = quote.get("ohlc", {})
+                                            if isinstance(ohlc, dict):
+                                                open_price = ohlc.get("open", None)
+                                                if open_price and open_price > 0 and index_price:
+                                                    index_change_pct = ((index_price - open_price) / open_price) * 100
+                                                    print(f"⚠️ {idx_name} SPOT: Price={index_price:.2f}, Open={open_price:.2f}, Change={index_change_pct:+.2f}% (FALLBACK - no cache)")
+                                                else:
+                                                    index_change_pct = None
+                                                    print(f"❌ {idx_name} SPOT: Could not calculate change %")
                     
-                    # Calculate CE/PE flows from options
-                    for _, row in stock_meta.iterrows():
-                        token = int(row["instrument_token"])
-                        token_str = str(token)
-                        if token_str in all_quotes:
-                            quote_data = all_quotes[token_str]
-                            volume = quote_data.get("volume", 0)
-                            if "type" in row and row["type"] == "CE":
-                                ce_flow += volume
-                            elif "type" in row and row["type"] == "PE":
-                                pe_flow += volume
-                            elif "instrument_type" in row:
-                                if row["instrument_type"] == "CE":
+                        for _, row in idx_meta.iterrows():
+                            token = int(row["instrument_token"])
+                            token_str = str(token)
+                            if token_str in all_quotes:
+                                quote_data = all_quotes[token_str]
+                                volume = quote_data.get("volume", 0)
+                                if "type" in row and row["type"] == "CE":
                                     ce_flow += volume
-                                elif row["instrument_type"] == "PE":
+                                elif "type" in row and row["type"] == "PE":
                                     pe_flow += volume
+                                elif "instrument_type" in row:
+                                    if row["instrument_type"] == "CE":
+                                        ce_flow += volume
+                                    elif row["instrument_type"] == "PE":
+                                        pe_flow += volume
                     
-                    stocks_data[stock_name] = {
-                        "price": stock_price,
-                        "change_pct": stock_change_pct,
-                        "ce_flow": ce_flow,
-                        "pe_flow": pe_flow,
-                        "net_flow": ce_flow - pe_flow
-                    }
-
-                # Log stock data collection with sample
-                if stocks_data:
-                    print(f"✅ Collected data for {len(stocks_data)} stocks")
-                    # Show sample with change % to verify it's working
-                    sample_stocks = list(stocks_data.items())[:3]
-                    for name, data in sample_stocks:
-                        chg = data.get('change_pct')
-                        if chg is not None:
-                            print(f"   {name}: ₹{data.get('price'):.2f} ({chg:+.2f}%)")
-                        else:
-                            print(f"   {name}: ₹{data.get('price'):.2f} (change% = None)")
-
-                    # DEBUG: Show what raw data looks like for first stock
-                    if len(stocks_data) > 0:
-                        first_stock = list(stocks_data.keys())[0]
-                        fut_rows_debug = engine.token_meta[
-                            (engine.token_meta["name"] == first_stock) &
-                            (engine.token_meta.get("type") == "FUT")
-                        ]
-                        if not fut_rows_debug.empty:
-                            fut_token_debug = str(int(fut_rows_debug.iloc[0]["instrument_token"]))
-                            if fut_token_debug in all_quotes:
-                                quote_debug = all_quotes[fut_token_debug]
-                                print(f"   DEBUG {first_stock} quote: change={quote_debug.get('change')}, net_change={quote_debug.get('net_change')}")
-                                ohlc_debug = quote_debug.get('ohlc', {})
-                                if ohlc_debug:
-                                    print(f"   DEBUG {first_stock} OHLC: open={ohlc_debug.get('open')}, close={ohlc_debug.get('close')}, prev_close={ohlc_debug.get('previous_close')}")
-
-                # ====================
-                # MOMENTUM STOCKS TRACKING
-                # ====================
-                momentum_tracking = load_momentum_tracking()
-
-                # Check each stock for momentum conditions
-                for stock_name, stock_data in stocks_data.items():
-                    stock_price = stock_data.get('price')
-                    if stock_price is None:
-                        continue
-
-                    # Check momentum condition
-                    momentum_signal = check_momentum_conditions(stock_name, stock_price)
-
-                    if momentum_signal:
-                        # Initialize tracking for this stock if needed
-                        if stock_name not in momentum_tracking:
-                            momentum_tracking[stock_name] = {'bullish': 0, 'bearish': 0}
-
-                        # Increment count based on signal
-                        if momentum_signal == 'BULLISH':
-                            momentum_tracking[stock_name]['bullish'] += 1
-                            print(f"🟢 MOMENTUM: {stock_name} Bullish count = {momentum_tracking[stock_name]['bullish']}")
-                        elif momentum_signal == 'BEARISH':
-                            momentum_tracking[stock_name]['bearish'] += 1
-                            print(f"🔴 MOMENTUM: {stock_name} Bearish count = {momentum_tracking[stock_name]['bearish']}")
-
-                # Save updated tracking
-                if momentum_tracking:
-                    save_momentum_tracking(momentum_tracking)
-
-                # Store in session state for UI
-                st.session_state.momentum_tracking = momentum_tracking
-
-                # ====================
-                # SMART SCORING ALERT SYSTEM
-                # ====================
-                # Build Top 10 Stocks list (sorted by net_flow)
-                top_10_stocks = sorted(
-                    [(name, data) for name, data in stocks_data.items() if data.get('net_flow') is not None],
-                    key=lambda x: abs(x[1]['net_flow']),
-                    reverse=True
-                )[:10]
-
-                # Build Volume Spikes list (stocks by total activity: ce_flow + pe_flow)
-                volume_spikes = sorted(
-                    [(name, data) for name, data in stocks_data.items()
-                     if data.get('ce_flow') is not None and data.get('pe_flow') is not None],
-                    key=lambda x: x[1]['ce_flow'] + x[1]['pe_flow'],
-                    reverse=True
-                )[:10]
-
-                # ============================================
-                # STOCK ENTRY TRACKING (Top 10 & Volume Spikes)
-                # ============================================
-                # Track how many times stocks enter these lists (resets at monthly expiry)
-                try:
-                    # Load tracking data
-                    stock_entry_tracking = load_stock_entry_tracking()
-
-                    # Check if monthly expiry passed and reset if needed
-                    stock_entry_tracking = check_and_reset_if_expired(stock_entry_tracking, engine.ins_df)
-
-                    # Update Top 10 Stocks tracking
-                    top_10_stock_names = [name for name, _ in top_10_stocks]
-                    stock_entry_tracking = update_stock_entry_count(
-                        stock_entry_tracking,
-                        "top10_stocks",
-                        top_10_stock_names
-                    )
-
-                    # Update Volume Spikes tracking
-                    volume_spike_names = [name for name, _ in volume_spikes]
-                    stock_entry_tracking = update_stock_entry_count(
-                        stock_entry_tracking,
-                        "volume_spikes",
-                        volume_spike_names
-                    )
-
-                    # Save tracking data
-                    save_stock_entry_tracking(stock_entry_tracking)
-
-                    # Store in session state for UI access
-                    st.session_state.stock_entry_tracking = stock_entry_tracking
-
-                except Exception as e:
-                    print(f"❌ Error in stock entry tracking: {e}")
-                    import traceback
-                    traceback.print_exc()
-
-                # ============================================
-                # STOCK CONFLUENCE TRACKING (3/3 Sections)
-                # ============================================
-                # Initialize confluence tracking in session state
-                if 'stock_confluence_counts' not in st.session_state:
-                    st.session_state.stock_confluence_counts = {}
-
-                # Get stocks in all 3 sections
-                top_10_names = set([name for name, _ in top_10_stocks])
-                volume_spike_names = set([name for name, _ in volume_spikes])
-
-                # Get Chartink alert stocks (from Gmail)
-                chartink_stocks = set()
-                if hasattr(st.session_state, 'chartink_alerts') and st.session_state.chartink_alerts:
-                    for alert in st.session_state.chartink_alerts:
-                        # Each alert has 'stocks' field which is a list
-                        if 'stocks' in alert and alert['stocks']:
-                            chartink_stocks.update(alert['stocks'])
-
-                # Find stocks in ALL 3 sections
-                confluence_stocks = top_10_names & volume_spike_names & chartink_stocks
-
-                # Update counts
-                current_counts = {}
-                for stock_name in confluence_stocks:
-                    if stock_name in st.session_state.stock_confluence_counts:
-                        # Increment count
-                        current_counts[stock_name] = st.session_state.stock_confluence_counts[stock_name] + 1
-                    else:
-                        # New stock
-                        current_counts[stock_name] = 1
-
-                # Check if list has changed
-                list_changed = (set(current_counts.keys()) != set(st.session_state.stock_confluence_counts.keys())) or \
-                               any(current_counts.get(s) != st.session_state.stock_confluence_counts.get(s) for s in current_counts)
-
-                # Update session state
-                st.session_state.stock_confluence_counts = current_counts
-
-                # Send alert if list changed (Option 1: Alert on EVERY change)
-                if list_changed and current_counts:
-                    send_stock_confluence_alert(current_counts)
-
-                # Calculate scores for all stocks
-                all_scores = []
-                now = datetime.now()
-
-                for stock_name, stock_data in stocks_data.items():
-                    # Skip if missing price or change_pct
-                    if stock_data.get('price') is None or stock_data.get('change_pct') is None:
-                        continue
-
-                    # Calculate score
-                    score_result = calculate_stock_score(
-                        stock_name,
-                        top_10_stocks,
-                        volume_spikes,
-                        momentum_tracking,
-                        stocks_data
-                    )
-
-                    # Store score for daily summary
-                    all_scores.append({
-                        'stock_name': stock_name,
-                        'score': score_result['total_score'],
-                        'signal_strength': score_result['signal_strength'],
-                        'num_lists': score_result['num_lists'],
-                        'timestamp': now
-                    })
-
-                    # Check if score meets alert threshold (≥50)
-                    if score_result['total_score'] >= 50:
-                        # Check cooldown (5 minutes = 300 seconds)
-                        last_alert_time = engine.alert_cooldowns.get(stock_name)
-                        if last_alert_time:
-                            time_since_alert = (now - last_alert_time).total_seconds()
-                            if time_since_alert < 300:  # 5 minutes
-                                continue  # Skip - still in cooldown
-
-                        # Get momentum data for this stock
-                        momentum_data = momentum_tracking.get(stock_name, {'bullish': 0, 'bearish': 0})
-
-                        # Get volume spike data if present
-                        volume_spike_data = None
-                        for name, data in volume_spikes:
-                            if name == stock_name:
-                                volume_spike_data = data
-                                break
-
-                        # Get rank in top 10 stocks
-                        top10_rank = None
-                        for idx, (name, _) in enumerate(top_10_stocks, 1):
-                            if name == stock_name:
-                                top10_rank = idx
-                                break
-
-                        # Create alert message
-                        alert_message = create_smart_alert_message(
-                            stock_name,
-                            score_result,
-                            momentum_data,
-                            volume_spike_data,
-                            top10_rank
-                        )
-
-                        # Send Telegram alert
-                        try:
-                            # send_telegram_message(alert_message, parse_mode='HTML')
-                            print(f"📢 SMART ALERT: {stock_name} - Score: {score_result['total_score']:.0f} ({score_result['signal_strength']})")
-
-                            # Determine alert type from signal strength
-                            alert_type = "BULLISH" if score_result['signal_strength'] in ['VERY STRONG', 'STRONG'] else "NEUTRAL"
-
-                            # Save to alert history for next-day follow-up tracking
-                            save_alert_to_history(
-                                stock=stock_name,
-                                alert_type=alert_type,
-                                score=int(score_result['total_score']),
-                                price=stock_data.get('price', 0)
-                            )
-
-                            # Update cooldown
-                            engine.alert_cooldowns[stock_name] = now
-                        except Exception as e:
-                            print(f"❌ Failed to send smart alert for {stock_name}: {e}")
-
-                # Store scores in session state and engine
-                st.session_state.smart_scores = all_scores
-                engine.daily_score_history.extend(all_scores)
-
-                # ====================
-                # DAILY SUMMARY AT MARKET CLOSE
-                # ====================
-                # Send daily summary at 3:30 PM (market close) - only once per day
-                if not daily_summary_sent and now.hour == 15 and now.minute >= 30:
-                    if engine.daily_score_history:
-                        try:
-                            summary_message = generate_daily_summary(engine.daily_score_history, stocks_data)
-                            # send_telegram_message(summary_message, parse_mode='HTML')
-                            print(f"📊 DAILY SUMMARY sent at {now.strftime('%H:%M:%S')}")
-                            daily_summary_sent = True
-                        except Exception as e:
-                            print(f"❌ Failed to send daily summary: {e}")
-
-                # ====================
-                # NIFTY MOMENTUM ALERT SYSTEM
-                # ====================
-                # Calculate NIFTY momentum score and send alerts for state changes
-                try:
-                    # Get VWAP/SuperTrend strategy data
-                    vwap_st_strategy = st.session_state.get('vwap_st_strategy', None)
-
-                    # Calculate momentum score
-                    momentum_score = calculate_nifty_momentum_score(
-                        indices_data,
-                        stocks_data,
-                        volume_state,
-                        vwap_st_strategy
-                    )
-
-                    current_momentum_class = momentum_score['momentum_class']
-                    previous_momentum_class = engine.nifty_momentum_state
-
-                    # Check if momentum changed (reversal detection)
-                    is_reversal = False
-                    if previous_momentum_class and previous_momentum_class != current_momentum_class:
-                        is_reversal = True
-
-                    # Check cooldown (15 minutes for momentum alerts)
-                    should_send_alert = False
-                    if engine.nifty_momentum_last_alert:
-                        time_since_alert = (now - engine.nifty_momentum_last_alert).total_seconds()
-                        # For reversals, send immediately. For same state, wait 15 minutes
-                        if is_reversal:
-                            should_send_alert = True
-                        elif time_since_alert >= 900:  # 15 minutes
-                            should_send_alert = True
-                    else:
-                        # First alert
-                        should_send_alert = True
-
-                    # Send alert if conditions met
-                    if should_send_alert:
-                        alert_message = create_nifty_momentum_alert(
-                            momentum_score,
-                            is_reversal=is_reversal,
-                            previous_class=previous_momentum_class
-                        )
-
-                        try:
-                            # send_telegram_message(alert_message, parse_mode='HTML')
-                            print(f"📢 NIFTY MOMENTUM: {current_momentum_class} (Score: {momentum_score['total_score']:+d}/100)")
-                            if is_reversal:
-                                print(f"   🔄 REVERSAL: {previous_momentum_class} → {current_momentum_class}")
-
-                            # Update state
-                            engine.nifty_momentum_state = current_momentum_class
-                            engine.nifty_momentum_last_alert = now
-                        except Exception as e:
-                            print(f"❌ Failed to send NIFTY momentum alert: {e}")
-                    else:
-                        # Just update state, no alert
-                        engine.nifty_momentum_state = current_momentum_class
-                        print(f"📊 NIFTY Momentum: {current_momentum_class} (Score: {momentum_score['total_score']:+d}/100) [Cooldown: {int(900 - time_since_alert)}s]")
-
-                    # Store in session state for UI
-                    st.session_state.nifty_momentum_score = momentum_score
-
-                except Exception as e:
-                    print(f"❌ Error in NIFTY momentum calculation: {e}")
-                    import traceback
-                    traceback.print_exc()
-
-                total_indices_ce = sum(d["ce_flow"] for d in indices_data.values())
-                total_indices_pe = sum(d["pe_flow"] for d in indices_data.values())
-                total_stocks_ce = sum(d["ce_flow"] for d in stocks_data.values())
-                total_stocks_pe = sum(d["pe_flow"] for d in stocks_data.values())
-                total_ce = total_indices_ce + total_stocks_ce
-                total_pe = total_indices_pe + total_stocks_pe
-                net_flow = total_ce - total_pe
-                
-                if abs(net_flow) < 10000:
-                    composite_score = 50.0
-                    signal_band = "Sideways"
-                    stance = "Wait"
-                elif net_flow > 0:
-                    composite_score = min(100, 50 + (net_flow / 1000))
-                    signal_band = "Bullish" if composite_score > 65 else "Mild Bullish"
-                    stance = "Long" if composite_score > 65 else "Wait"
-                else:
-                    composite_score = max(0, 50 - (abs(net_flow) / 1000))
-                    signal_band = "Bearish" if composite_score < 35 else "Mild Bearish"
-                    stance = "Short" if composite_score < 35 else "Wait"
-                
-                # ====================
-                # PROCESS STOCKS DATA
-                # ====================
-                for stock_name in engine.stocks_with_fo:
-                    try:
-                        stock_meta = engine.token_meta[
-                            (engine.token_meta.get("name") == stock_name) &
-                            (engine.token_meta.get("category") == "STOCK")
-                        ].copy()
+                        indices_data[idx_name] = {
+                            "ce_flow": ce_flow,
+                            "pe_flow": pe_flow,
+                            "net_flow": ce_flow - pe_flow,
+                            "price": index_price,
+                            "change_pct": index_change_pct
+                        }
+                    
+                        now = datetime.now()
+                        print(f"DEBUG: Processing {idx_name}, Time={now.strftime('%H:%M:%S')}, After 9:30? {now.time() >= dt_time(9, 30)}")
+                    
+                        if now.time() >= dt_time(9, 30):
+                            if idx_name not in engine.first_15min_range:
+                                print(f"DEBUG: Getting first 15min range for {idx_name}")
+                                get_first_15min_range(idx_name, now)
                         
+                            futures_volume = None
+                            avg_volume = None
+                        
+                            fut_meta = engine.token_meta[
+                                (engine.token_meta.get("index_name") == idx_name) &
+                                (engine.token_meta.get("type") == "FUT") &
+                                (engine.token_meta.get("category") == "INDEX")
+                            ]
+                        
+                            print(f"DEBUG: {idx_name} - Found {len(fut_meta)} futures contracts")
+                        
+                            if not fut_meta.empty:
+                                fut_token = int(fut_meta.iloc[0]["instrument_token"])
+                                fut_token_str = str(fut_token)
+                            
+                                if fut_token_str in all_quotes:
+                                    quote_data = all_quotes[fut_token_str]
+                                    futures_volume = quote_data.get("volume", 0)
+                                
+                                    print(f"DEBUG: {idx_name} Futures Volume = {futures_volume:,}")
+                                
+                                    if idx_name not in engine.futures_volume_history:
+                                        engine.futures_volume_history[idx_name] = deque(maxlen=15)
+                                
+                                    engine.futures_volume_history[idx_name].append(futures_volume)
+                                
+                                    if len(engine.futures_volume_history[idx_name]) >= 5:
+                                        avg_volume = np.mean(list(engine.futures_volume_history[idx_name]))
+                                        print(f"DEBUG: {idx_name} Avg Volume = {avg_volume:,.0f}, Ratio = {futures_volume/avg_volume:.2f}x")
+                        
+                            if index_price and idx_name in engine.first_15min_range:
+                                print(f"DEBUG: {idx_name} has range data, checking breakout...")
+                            
+                                sentiment_text, _, _, _, _, _, _ = get_smart_sentiment(index_change_pct, ce_flow - pe_flow)
+                            
+                                range_status, alert_message = check_range_breakout(
+                                    idx_name, 
+                                    index_price, 
+                                    sentiment_text, 
+                                    futures_volume, 
+                                    avg_volume
+                                )
+                            
+                                print(f"DEBUG: {idx_name} Range Status = {range_status}")
+                            
+                                indices_data[idx_name]["range_status"] = range_status
+                                indices_data[idx_name]["range_high"] = engine.first_15min_range[idx_name]["high"]
+                                indices_data[idx_name]["range_low"] = engine.first_15min_range[idx_name]["low"]
+                                indices_data[idx_name]["futures_volume"] = futures_volume
+                                indices_data[idx_name]["avg_volume"] = avg_volume
+                            
+                                if alert_message:
+                                    add_alert(alert_message, "warning")
+                            else:
+                                print(f"DEBUG: {idx_name} - Missing data. Price={index_price}, Has Range={idx_name in engine.first_15min_range}")
+                    
+                        # PHASE 1: Save historical data to CSV
+                        # DEBUG: Log why data might not save
+                        print(f"[HIST] {idx_name}: price={index_price}, change%={index_change_pct}, ce_flow={ce_flow:.0f}, pe_flow={pe_flow:.0f}")
+                    
+                        if not index_price:
+                            print(f"⚠️ [HIST] {idx_name} - SKIP: No index_price")
+                        elif index_change_pct is None:
+                            print(f"⚠️ [HIST] {idx_name} - SKIP: index_change_pct is None (price={index_price:.2f})")
+                    
+                        if index_price and index_change_pct is not None:
+                            print(f"✅ [HIST] {idx_name} - SAVING data to CSV")
+                            sentiment_text, _, _, _, _, _, _ = get_smart_sentiment(index_change_pct, ce_flow - pe_flow)
+                        
+                            hist_row = {
+                                'timestamp': datetime.now().isoformat(),
+                                'index_name': idx_name,
+                                'spot_price': index_price,
+                                'price_change_pct': index_change_pct,
+                                'ce_flow': ce_flow,
+                                'pe_flow': pe_flow,
+                                'net_flow': ce_flow - pe_flow,
+                                'delta_1min_ce': None,
+                                'delta_1min_pe': None,
+                                'delta_5min_ce': None,
+                                'delta_5min_pe': None,
+                                'sentiment': sentiment_text,
+                                'range_status': indices_data[idx_name].get('range_status', 'N/A'),
+                                'futures_volume': indices_data[idx_name].get('futures_volume'),
+                                'avg_volume': indices_data[idx_name].get('avg_volume'),
+                                'volume_ratio': None
+                            }
+                        
+                            save_historical_data(idx_name, hist_row)
+                
+                    # ============================================
+                    # VOLUME CHARTS DATA COLLECTION (REQUIREMENT 4)
+                    # ============================================
+                    if 'NIFTY' in indices_data:
+                        nifty_data = indices_data['NIFTY']
+                        if nifty_data.get('price'):
+                            try:
+                                log_chart_debug(f"Calling update_volume_data for NIFTY (spot={nifty_data['price']:.2f})")
+                            
+                                update_volume_data(
+                                    kite=engine.kite,
+                                    ins_df=engine.ins_df,
+                                    index_name='NIFTY',
+                                    spot_price=nifty_data['price'],
+                                    all_quotes=all_quotes,
+                                    token_meta=engine.token_meta
+                                )
+                            
+                                log_chart_debug(f"Volume data updated - spike_queue={len(volume_state.spike_queue)}, ce_pe_history={len(volume_state.ce_pe_history)}")
+
+                                # Check for volume spike alerts (>5x) - TELEGRAM ALERTS REMOVED
+                                # check_volume_alerts(add_alert)
+
+                                # ============================================
+                                # WEEKLY EXPIRY TRACKER DATA COLLECTION
+                                # Update every 5 minutes (30 polling cycles at 10s each)
+                                # ============================================
+                                if not hasattr(engine, 'expiry_update_counter'):
+                                    engine.expiry_update_counter = 0
+
+                                engine.expiry_update_counter += 1
+
+                                # Update every 30 cycles (5 minutes)
+                                if engine.expiry_update_counter >= 30:
+                                    engine.expiry_update_counter = 0
+
+                                    try:
+                                        # Detect all 4 weekly expiries
+                                        weekly_expiries = get_nifty_weekly_expiries(engine.kite, engine.ins_df, num_weeks=4)
+
+                                        if weekly_expiries:
+                                            log_chart_debug(f"Updating weekly expiry tracker for {len(weekly_expiries)} weeks")
+
+                                            # Store the expiries list in session state
+                                            st.session_state.weekly_expiries_list = weekly_expiries
+
+                                            # Update data for all 4 weeks
+                                            for expiry_str, expiry_dt in weekly_expiries:
+                                                log_chart_debug(f"Processing expiry: {expiry_str}")
+
+                                                update_weekly_expiry_data(
+                                                    kite=engine.kite,
+                                                    ins_df=engine.ins_df,
+                                                    token_meta=engine.token_meta,
+                                                    all_quotes=all_quotes,
+                                                    expiry_str=expiry_str,
+                                                    spot_price=nifty_data['price']
+                                                )
+
+                                            st.session_state.last_expiry_update = datetime.now()
+                                        else:
+                                            log_chart_debug("Could not detect NIFTY weekly expiries")
+                                    except Exception as e:
+                                        log_chart_debug(f"Weekly expiry tracker error: {e}")
+                                        import traceback
+                                        log_chart_debug(f"Traceback: {traceback.format_exc()}")
+
+                            except Exception as e:
+                                log_chart_debug(f"Volume charts error: {e}")
+                                import traceback
+                                log_chart_debug(f"Traceback: {traceback.format_exc()}")
+                        else:
+                            log_chart_debug(f"NIFTY data missing price - nifty_data={nifty_data}")
+                    else:
+                        log_chart_debug(f"NIFTY not in indices_data - available={list(indices_data.keys())}")
+                
+                    for stock_name in engine.stocks_with_fo:
+                        stock_meta = engine.token_meta[
+                            (engine.token_meta["name"] == stock_name) & 
+                            (engine.token_meta.get("category", "STOCK") == "STOCK")
+                        ].copy()
                         if stock_meta.empty:
                             continue
-                        
-                        stock_ce_flow = 0.0
-                        stock_pe_flow = 0.0
+                    
+                        ce_flow = 0.0
+                        pe_flow = 0.0
                         stock_price = None
                         stock_change_pct = None
-                        
+                    
                         # Get stock futures price
                         fut_rows = stock_meta[stock_meta.get("type") == "FUT"]
                         if not fut_rows.empty:
                             fut_token = int(fut_rows.iloc[0]["instrument_token"])
                             fut_token_str = str(fut_token)
-                            
+                        
                             if fut_token_str in all_quotes:
                                 fut_quote = all_quotes[fut_token_str]
                                 stock_price = fut_quote.get("last_price", None)
@@ -6689,8 +6246,8 @@ def polling_loop():
                                             else:
                                                 # Normal case: calculate from previous close
                                                 stock_change_pct = ((stock_price - prev_close) / prev_close) * 100
-                        
-                        # Calculate CE/PE flows
+                    
+                        # Calculate CE/PE flows from options
                         for _, row in stock_meta.iterrows():
                             token = int(row["instrument_token"])
                             token_str = str(token)
@@ -6698,211 +6255,701 @@ def polling_loop():
                                 quote_data = all_quotes[token_str]
                                 volume = quote_data.get("volume", 0)
                                 if "type" in row and row["type"] == "CE":
-                                    stock_ce_flow += volume
+                                    ce_flow += volume
                                 elif "type" in row and row["type"] == "PE":
-                                    stock_pe_flow += volume
-                        
-                        # Store stock data
+                                    pe_flow += volume
+                                elif "instrument_type" in row:
+                                    if row["instrument_type"] == "CE":
+                                        ce_flow += volume
+                                    elif row["instrument_type"] == "PE":
+                                        pe_flow += volume
+                    
                         stocks_data[stock_name] = {
                             "price": stock_price,
                             "change_pct": stock_change_pct,
-                            "ce_flow": stock_ce_flow,
-                            "pe_flow": stock_pe_flow,
-                            "net_flow": stock_ce_flow - stock_pe_flow
+                            "ce_flow": ce_flow,
+                            "pe_flow": pe_flow,
+                            "net_flow": ce_flow - pe_flow
                         }
+
+                    # Log stock data collection with sample
+                    if stocks_data:
+                        print(f"✅ Collected data for {len(stocks_data)} stocks")
+                        # Show sample with change % to verify it's working
+                        sample_stocks = list(stocks_data.items())[:3]
+                        for name, data in sample_stocks:
+                            chg = data.get('change_pct')
+                            if chg is not None:
+                                print(f"   {name}: ₹{data.get('price'):.2f} ({chg:+.2f}%)")
+                            else:
+                                print(f"   {name}: ₹{data.get('price'):.2f} (change% = None)")
+
+                        # DEBUG: Show what raw data looks like for first stock
+                        if len(stocks_data) > 0:
+                            first_stock = list(stocks_data.keys())[0]
+                            fut_rows_debug = engine.token_meta[
+                                (engine.token_meta["name"] == first_stock) &
+                                (engine.token_meta.get("type") == "FUT")
+                            ]
+                            if not fut_rows_debug.empty:
+                                fut_token_debug = str(int(fut_rows_debug.iloc[0]["instrument_token"]))
+                                if fut_token_debug in all_quotes:
+                                    quote_debug = all_quotes[fut_token_debug]
+                                    print(f"   DEBUG {first_stock} quote: change={quote_debug.get('change')}, net_change={quote_debug.get('net_change')}")
+                                    ohlc_debug = quote_debug.get('ohlc', {})
+                                    if ohlc_debug:
+                                        print(f"   DEBUG {first_stock} OHLC: open={ohlc_debug.get('open')}, close={ohlc_debug.get('close')}, prev_close={ohlc_debug.get('previous_close')}")
+
+                    # ====================
+                    # MOMENTUM STOCKS TRACKING
+                    # ====================
+                    momentum_tracking = load_momentum_tracking()
+
+                    # Check each stock for momentum conditions
+                    for stock_name, stock_data in stocks_data.items():
+                        stock_price = stock_data.get('price')
+                        if stock_price is None:
+                            continue
+
+                        # Check momentum condition
+                        momentum_signal = check_momentum_conditions(stock_name, stock_price)
+
+                        if momentum_signal:
+                            # Initialize tracking for this stock if needed
+                            if stock_name not in momentum_tracking:
+                                momentum_tracking[stock_name] = {'bullish': 0, 'bearish': 0}
+
+                            # Increment count based on signal
+                            if momentum_signal == 'BULLISH':
+                                momentum_tracking[stock_name]['bullish'] += 1
+                                print(f"🟢 MOMENTUM: {stock_name} Bullish count = {momentum_tracking[stock_name]['bullish']}")
+                            elif momentum_signal == 'BEARISH':
+                                momentum_tracking[stock_name]['bearish'] += 1
+                                print(f"🔴 MOMENTUM: {stock_name} Bearish count = {momentum_tracking[stock_name]['bearish']}")
+
+                    # Save updated tracking
+                    if momentum_tracking:
+                        save_momentum_tracking(momentum_tracking)
+
+                    # Store in session state for UI
+                    st.session_state.momentum_tracking = momentum_tracking
+
+                    # ====================
+                    # SMART SCORING ALERT SYSTEM
+                    # ====================
+                    # Build Top 10 Stocks list (sorted by net_flow)
+                    top_10_stocks = sorted(
+                        [(name, data) for name, data in stocks_data.items() if data.get('net_flow') is not None],
+                        key=lambda x: abs(x[1]['net_flow']),
+                        reverse=True
+                    )[:10]
+
+                    # Build Volume Spikes list (stocks by total activity: ce_flow + pe_flow)
+                    volume_spikes = sorted(
+                        [(name, data) for name, data in stocks_data.items()
+                         if data.get('ce_flow') is not None and data.get('pe_flow') is not None],
+                        key=lambda x: x[1]['ce_flow'] + x[1]['pe_flow'],
+                        reverse=True
+                    )[:10]
+
+                    # ============================================
+                    # STOCK ENTRY TRACKING (Top 10 & Volume Spikes)
+                    # ============================================
+                    # Track how many times stocks enter these lists (resets at monthly expiry)
+                    try:
+                        # Load tracking data
+                        stock_entry_tracking = load_stock_entry_tracking()
+
+                        # Check if monthly expiry passed and reset if needed
+                        stock_entry_tracking = check_and_reset_if_expired(stock_entry_tracking, engine.ins_df)
+
+                        # Update Top 10 Stocks tracking
+                        top_10_stock_names = [name for name, _ in top_10_stocks]
+                        stock_entry_tracking = update_stock_entry_count(
+                            stock_entry_tracking,
+                            "top10_stocks",
+                            top_10_stock_names
+                        )
+
+                        # Update Volume Spikes tracking
+                        volume_spike_names = [name for name, _ in volume_spikes]
+                        stock_entry_tracking = update_stock_entry_count(
+                            stock_entry_tracking,
+                            "volume_spikes",
+                            volume_spike_names
+                        )
+
+                        # Save tracking data
+                        save_stock_entry_tracking(stock_entry_tracking)
+
+                        # Store in session state for UI access
+                        st.session_state.stock_entry_tracking = stock_entry_tracking
+
                     except Exception as e:
-                        pass
+                        print(f"❌ Error in stock entry tracking: {e}")
+                        import traceback
+                        traceback.print_exc()
 
-                # Log top stocks by net flow
-                if stocks_data and len(stocks_data) > 0:
-                    top_5 = sorted(stocks_data.items(), key=lambda x: abs(x[1].get("net_flow", 0)), reverse=True)[:5]
-                    print(f"📊 Top 5 stocks by net flow: {', '.join([s[0] for s in top_5])}")
-                
-                
-                flow_snapshot = {
-                    "timestamp": datetime.now().isoformat(),
-                    "indices_ce": total_indices_ce,
-                    "indices_pe": total_indices_pe,
-                    "stocks_ce": total_stocks_ce,
-                    "stocks_pe": total_stocks_pe,
-                    "indices_net": total_indices_ce - total_indices_pe,
-                    "stocks_net": total_stocks_ce - total_stocks_pe,
-                    "indices_data": indices_data,
-                    "stocks_data": stocks_data
-                }
-                
-                deltas = calculate_deltas(flow_snapshot)
-                flow_history.append(flow_snapshot)
-                save_flow_history(flow_snapshot)
-                
+                    # ============================================
+                    # STOCK CONFLUENCE TRACKING (3/3 Sections)
+                    # ============================================
+                    # Initialize confluence tracking in session state
+                    if 'stock_confluence_counts' not in st.session_state:
+                        st.session_state.stock_confluence_counts = {}
 
-                # ====================
-                # NIFTY FUTURES DATA COLLECTION
-                # ====================
-                nifty_futures_data = None
-                if engine.nifty_fut_token:
-                    fut_token_str = str(engine.nifty_fut_token)
-                    if fut_token_str in all_quotes:
-                        fut_quote = all_quotes[fut_token_str]
-                        
-                        fut_price = fut_quote.get('last_price', 0)
-                        fut_net_change = fut_quote.get('net_change', 0)
-                        fut_prev_close = fut_price - fut_net_change if fut_net_change else 0
-                        fut_change_pct = (fut_net_change / fut_prev_close * 100) if fut_prev_close > 0 else 0
-                        
-                        fut_oi = fut_quote.get('oi', 0)
-                        fut_oi_day_low = fut_quote.get('oi_day_low', 0)
-                        
-                        fut_volume = fut_quote.get('volume', 0)
-                        fut_buy_qty = fut_quote.get('buy_quantity', 0)
-                        fut_sell_qty = fut_quote.get('sell_quantity', 0)
-                        
-                        # Calculate buyers vs sellers
-                        if fut_change_pct > 0:
-                            buyers = fut_buy_qty if fut_buy_qty > 0 else fut_volume * 0.6
-                            sellers = fut_sell_qty if fut_sell_qty > 0 else fut_volume * 0.4
+                    # Get stocks in all 3 sections
+                    top_10_names = set([name for name, _ in top_10_stocks])
+                    volume_spike_names = set([name for name, _ in volume_spikes])
+
+                    # Get Chartink alert stocks (from Gmail)
+                    chartink_stocks = set()
+                    if hasattr(st.session_state, 'chartink_alerts') and st.session_state.chartink_alerts:
+                        for alert in st.session_state.chartink_alerts:
+                            # Each alert has 'stocks' field which is a list
+                            if 'stocks' in alert and alert['stocks']:
+                                chartink_stocks.update(alert['stocks'])
+
+                    # Find stocks in ALL 3 sections
+                    confluence_stocks = top_10_names & volume_spike_names & chartink_stocks
+
+                    # Update counts
+                    current_counts = {}
+                    for stock_name in confluence_stocks:
+                        if stock_name in st.session_state.stock_confluence_counts:
+                            # Increment count
+                            current_counts[stock_name] = st.session_state.stock_confluence_counts[stock_name] + 1
                         else:
-                            buyers = fut_buy_qty if fut_buy_qty > 0 else fut_volume * 0.4
-                            sellers = fut_sell_qty if fut_sell_qty > 0 else fut_volume * 0.6
-                        
-                        nifty_futures_data = {
-                            'price': fut_price,
-                            'change_pct': fut_change_pct,
-                            'buyers': int(buyers),
-                            'sellers': int(sellers),
-                            'oi': int(fut_oi),
-                            'oi_change': int(fut_oi - fut_oi_day_low) if fut_oi_day_low else 0,
-                            'symbol': engine.nifty_fut_symbol,
-                            'expiry': engine.nifty_fut_expiry
-                        }
-                        # Store in session state to persist across refreshes
-                        st.session_state.nifty_futures_data = nifty_futures_data
-                        print(f"✓ Futures: {engine.nifty_fut_symbol} Price={fut_price:.2f} Change={fut_change_pct:+.2f}% OI={fut_oi}")
+                            # New stock
+                            current_counts[stock_name] = 1
 
-                # ============================================
-                # VWAP & SUPERTREND STRATEGY CALCULATION
-                # ============================================
-                vwap_st_strategy = None
-                try:
-                    # Fetch 15-min candles for strategy
-                    candles_15min = fetch_nifty_futures_15min_candles()
+                    # Check if list has changed
+                    list_changed = (set(current_counts.keys()) != set(st.session_state.stock_confluence_counts.keys())) or \
+                                   any(current_counts.get(s) != st.session_state.stock_confluence_counts.get(s) for s in current_counts)
 
-                    if candles_15min and len(candles_15min) >= 8:
-                        # Calculate VWAP
-                        vwap = calculate_vwap(candles_15min)
+                    # Update session state
+                    st.session_state.stock_confluence_counts = current_counts
 
-                        # Calculate SuperTrend (ATR=7, Multiplier=3.0)
-                        supertrend_value, supertrend_trend = calculate_supertrend(candles_15min, atr_period=7, multiplier=3.0)
+                    # Send alert if list changed (Option 1: Alert on EVERY change)
+                    if list_changed and current_counts:
+                        send_stock_confluence_alert(current_counts)
 
-                        # Detect signal
-                        signal = detect_vwap_supertrend_signal(candles_15min, vwap, supertrend_value, supertrend_trend)
+                    # Calculate scores for all stocks
+                    all_scores = []
+                    now = datetime.now()
 
-                        # Get last candle and current price
-                        last_candle = candles_15min[-1]
-                        ltp = nifty_futures_data['price'] if nifty_futures_data else last_candle['close']
+                    for stock_name, stock_data in stocks_data.items():
+                        # Skip if missing price or change_pct
+                        if stock_data.get('price') is None or stock_data.get('change_pct') is None:
+                            continue
 
-                        vwap_st_strategy = {
-                            'vwap': vwap,
-                            'supertrend_value': supertrend_value,
-                            'supertrend_trend': supertrend_trend,
-                            'signal': signal,
-                            'last_candle': last_candle,
-                            'ltp': ltp,
-                            'candles_count': len(candles_15min)
-                        }
+                        # Calculate score
+                        score_result = calculate_stock_score(
+                            stock_name,
+                            top_10_stocks,
+                            volume_spikes,
+                            momentum_tracking,
+                            stocks_data
+                        )
 
-                        # Store in session state
-                        st.session_state.vwap_st_strategy = vwap_st_strategy
+                        # Store score for daily summary
+                        all_scores.append({
+                            'stock_name': stock_name,
+                            'score': score_result['total_score'],
+                            'signal_strength': score_result['signal_strength'],
+                            'num_lists': score_result['num_lists'],
+                            'timestamp': now
+                        })
 
-                        print(f"✓ VWAP & SuperTrend: Signal={signal}, VWAP=₹{vwap:.2f}, ST=₹{supertrend_value:.2f} ({supertrend_trend})")
+                        # Check if score meets alert threshold (≥50)
+                        if score_result['total_score'] >= 50:
+                            # Check cooldown (5 minutes = 300 seconds)
+                            last_alert_time = engine.alert_cooldowns.get(stock_name)
+                            if last_alert_time:
+                                time_since_alert = (now - last_alert_time).total_seconds()
+                                if time_since_alert < 300:  # 5 minutes
+                                    continue  # Skip - still in cooldown
 
-                        # Check for signal change and send Telegram alert
-                        previous_signal = st.session_state.get('vwap_st_previous_signal', 'NEUTRAL')
+                            # Get momentum data for this stock
+                            momentum_data = momentum_tracking.get(stock_name, {'bullish': 0, 'bearish': 0})
 
-                        if signal != previous_signal and signal != 'NEUTRAL':
-                            # Signal changed to BULLISH or BEARISH
-                            st.session_state.vwap_st_previous_signal = signal
+                            # Get volume spike data if present
+                            volume_spike_data = None
+                            for name, data in volume_spikes:
+                                if name == stock_name:
+                                    volume_spike_data = data
+                                    break
+
+                            # Get rank in top 10 stocks
+                            top10_rank = None
+                            for idx, (name, _) in enumerate(top_10_stocks, 1):
+                                if name == stock_name:
+                                    top10_rank = idx
+                                    break
+
+                            # Create alert message
+                            alert_message = create_smart_alert_message(
+                                stock_name,
+                                score_result,
+                                momentum_data,
+                                volume_spike_data,
+                                top10_rank
+                            )
 
                             # Send Telegram alert
-                            if signal == 'BULLISH':
-                                telegram_msg = (
-                                    "🚨 <b>NIFTY FUTURES - BULLISH SIGNAL 🟢</b>\n\n"
-                                    f"📈 <b>Strategy:</b> VWAP + SuperTrend (15-min)\n"
-                                    f"⏰ <b>Time:</b> {datetime.now().strftime('%H:%M:%S')}\n\n"
-                                    "<b>✅ Entry Conditions Met:</b>\n"
-                                    f"• SuperTrend: 🟢 GREEN (₹{supertrend_value:.2f})\n"
-                                    f"• VWAP: ₹{vwap:.2f} (Above ST)\n"
-                                    f"• Candle: 🟢 GREEN (₹{last_candle['close']:.2f})\n"
-                                    f"• Position: Above VWAP ✓\n\n"
-                                    f"💡 <b>Recommendation:</b> GO LONG\n"
-                                    f"📊 <b>LTP:</b> ₹{ltp:.2f}\n"
-                                    f"🎯 <b>Watch for:</b> Price sustaining above VWAP\n\n"
-                                    "#NiftyFutures #Bullish #VWAP #SuperTrend"
-                                )
-                            else:  # BEARISH
-                                telegram_msg = (
-                                    "🚨 <b>NIFTY FUTURES - BEARISH SIGNAL 🔴</b>\n\n"
-                                    f"📉 <b>Strategy:</b> VWAP + SuperTrend (15-min)\n"
-                                    f"⏰ <b>Time:</b> {datetime.now().strftime('%H:%M:%S')}\n\n"
-                                    "<b>✅ Entry Conditions Met:</b>\n"
-                                    f"• SuperTrend: 🔴 RED (₹{supertrend_value:.2f})\n"
-                                    f"• VWAP: ₹{vwap:.2f} (Below ST)\n"
-                                    f"• Candle: 🔴 RED (₹{last_candle['close']:.2f})\n"
-                                    f"• Position: Below VWAP ✓\n\n"
-                                    f"💡 <b>Recommendation:</b> GO SHORT\n"
-                                    f"📊 <b>LTP:</b> ₹{ltp:.2f}\n"
-                                    f"🎯 <b>Watch for:</b> Price sustaining below VWAP\n\n"
-                                    "#NiftyFutures #Bearish #VWAP #SuperTrend"
+                            try:
+                                # send_telegram_message(alert_message, parse_mode='HTML')
+                                print(f"📢 SMART ALERT: {stock_name} - Score: {score_result['total_score']:.0f} ({score_result['signal_strength']})")
+
+                                # Determine alert type from signal strength
+                                alert_type = "BULLISH" if score_result['signal_strength'] in ['VERY STRONG', 'STRONG'] else "NEUTRAL"
+
+                                # Save to alert history for next-day follow-up tracking
+                                save_alert_to_history(
+                                    stock=stock_name,
+                                    alert_type=alert_type,
+                                    score=int(score_result['total_score']),
+                                    price=stock_data.get('price', 0)
                                 )
 
-                            # send_telegram_alert(telegram_msg)
-                            print(f"📱 Telegram Alert Sent: {signal} Signal")
+                                # Update cooldown
+                                engine.alert_cooldowns[stock_name] = now
+                            except Exception as e:
+                                print(f"❌ Failed to send smart alert for {stock_name}: {e}")
 
+                    # Store scores in session state and engine
+                    st.session_state.smart_scores = all_scores
+                    engine.daily_score_history.extend(all_scores)
+
+                    # ====================
+                    # DAILY SUMMARY AT MARKET CLOSE
+                    # ====================
+                    # Send daily summary at 3:30 PM (market close) - only once per day
+                    if not daily_summary_sent and now.hour == 15 and now.minute >= 30:
+                        if engine.daily_score_history:
+                            try:
+                                summary_message = generate_daily_summary(engine.daily_score_history, stocks_data)
+                                # send_telegram_message(summary_message, parse_mode='HTML')
+                                print(f"📊 DAILY SUMMARY sent at {now.strftime('%H:%M:%S')}")
+                                daily_summary_sent = True
+                            except Exception as e:
+                                print(f"❌ Failed to send daily summary: {e}")
+
+                    # ====================
+                    # NIFTY MOMENTUM ALERT SYSTEM
+                    # ====================
+                    # Calculate NIFTY momentum score and send alerts for state changes
+                    try:
+                        # Get VWAP/SuperTrend strategy data
+                        vwap_st_strategy = st.session_state.get('vwap_st_strategy', None)
+
+                        # Calculate momentum score
+                        momentum_score = calculate_nifty_momentum_score(
+                            indices_data,
+                            stocks_data,
+                            volume_state,
+                            vwap_st_strategy
+                        )
+
+                        current_momentum_class = momentum_score['momentum_class']
+                        previous_momentum_class = engine.nifty_momentum_state
+
+                        # Check if momentum changed (reversal detection)
+                        is_reversal = False
+                        if previous_momentum_class and previous_momentum_class != current_momentum_class:
+                            is_reversal = True
+
+                        # Check cooldown (15 minutes for momentum alerts)
+                        should_send_alert = False
+                        if engine.nifty_momentum_last_alert:
+                            time_since_alert = (now - engine.nifty_momentum_last_alert).total_seconds()
+                            # For reversals, send immediately. For same state, wait 15 minutes
+                            if is_reversal:
+                                should_send_alert = True
+                            elif time_since_alert >= 900:  # 15 minutes
+                                should_send_alert = True
+                        else:
+                            # First alert
+                            should_send_alert = True
+
+                        # Send alert if conditions met
+                        if should_send_alert:
+                            alert_message = create_nifty_momentum_alert(
+                                momentum_score,
+                                is_reversal=is_reversal,
+                                previous_class=previous_momentum_class
+                            )
+
+                            try:
+                                # send_telegram_message(alert_message, parse_mode='HTML')
+                                print(f"📢 NIFTY MOMENTUM: {current_momentum_class} (Score: {momentum_score['total_score']:+d}/100)")
+                                if is_reversal:
+                                    print(f"   🔄 REVERSAL: {previous_momentum_class} → {current_momentum_class}")
+
+                                # Update state
+                                engine.nifty_momentum_state = current_momentum_class
+                                engine.nifty_momentum_last_alert = now
+                            except Exception as e:
+                                print(f"❌ Failed to send NIFTY momentum alert: {e}")
+                        else:
+                            # Just update state, no alert
+                            engine.nifty_momentum_state = current_momentum_class
+                            print(f"📊 NIFTY Momentum: {current_momentum_class} (Score: {momentum_score['total_score']:+d}/100) [Cooldown: {int(900 - time_since_alert)}s]")
+
+                        # Store in session state for UI
+                        st.session_state.nifty_momentum_score = momentum_score
+
+                    except Exception as e:
+                        print(f"❌ Error in NIFTY momentum calculation: {e}")
+                        import traceback
+                        traceback.print_exc()
+
+                    total_indices_ce = sum(d["ce_flow"] for d in indices_data.values())
+                    total_indices_pe = sum(d["pe_flow"] for d in indices_data.values())
+                    total_stocks_ce = sum(d["ce_flow"] for d in stocks_data.values())
+                    total_stocks_pe = sum(d["pe_flow"] for d in stocks_data.values())
+                    total_ce = total_indices_ce + total_stocks_ce
+                    total_pe = total_indices_pe + total_stocks_pe
+                    net_flow = total_ce - total_pe
+                
+                    if abs(net_flow) < 10000:
+                        composite_score = 50.0
+                        signal_band = "Sideways"
+                        stance = "Wait"
+                    elif net_flow > 0:
+                        composite_score = min(100, 50 + (net_flow / 1000))
+                        signal_band = "Bullish" if composite_score > 65 else "Mild Bullish"
+                        stance = "Long" if composite_score > 65 else "Wait"
                     else:
-                        print("⏳ VWAP & SuperTrend: Waiting for sufficient candles (need 8+)")
+                        composite_score = max(0, 50 - (abs(net_flow) / 1000))
+                        signal_band = "Bearish" if composite_score < 35 else "Mild Bearish"
+                        stance = "Short" if composite_score < 35 else "Wait"
+                
+                    # ====================
+                    # PROCESS STOCKS DATA
+                    # ====================
+                    for stock_name in engine.stocks_with_fo:
+                        try:
+                            stock_meta = engine.token_meta[
+                                (engine.token_meta.get("name") == stock_name) &
+                                (engine.token_meta.get("category") == "STOCK")
+                            ].copy()
+                        
+                            if stock_meta.empty:
+                                continue
+                        
+                            stock_ce_flow = 0.0
+                            stock_pe_flow = 0.0
+                            stock_price = None
+                            stock_change_pct = None
+                        
+                            # Get stock futures price
+                            fut_rows = stock_meta[stock_meta.get("type") == "FUT"]
+                            if not fut_rows.empty:
+                                fut_token = int(fut_rows.iloc[0]["instrument_token"])
+                                fut_token_str = str(fut_token)
+                            
+                                if fut_token_str in all_quotes:
+                                    fut_quote = all_quotes[fut_token_str]
+                                    stock_price = fut_quote.get("last_price", None)
 
-                except Exception as e:
-                    print(f"❌ Error calculating VWAP & SuperTrend strategy: {e}")
-                    import traceback
-                    traceback.print_exc()
+                                    # Calculate change % - Try multiple methods
+                                    stock_change_pct = None
 
-                # ============================================
-                # NIFTY COMPREHENSIVE ALERT (9 Criteria Scoring)
-                # ============================================
-                try:
-                    # Calculate comprehensive score using all 9 criteria
-                    score_result = calculate_nifty_momentum_score(
-                        indices_data=indices_data,
-                        stocks_data=stocks_data,
-                        volume_state=volume_state,
-                        vwap_st_strategy=vwap_st_strategy
-                    )
+                                    # Method 1: Direct change percentage from Kite (most reliable)
+                                    # BUT: Skip if it's exactly 0 (likely market closed or no data)
+                                    change_value = fut_quote.get("change")
+                                    if change_value is not None and change_value != 0:
+                                        stock_change_pct = change_value
 
-                    # Send enhanced alert with 3-minute confirmation and divergence detection
-                    send_nifty_enhanced_alert(score_result)
+                                    # Method 2: Calculate from net_change
+                                    if stock_change_pct is None and stock_price:
+                                        net_change = fut_quote.get("net_change")
+                                        if net_change is not None and net_change != 0:
+                                            prev_close = stock_price - net_change
+                                            if prev_close > 0:
+                                                stock_change_pct = (net_change / prev_close) * 100
 
-                except Exception as e:
-                    print(f"❌ Error calculating NIFTY comprehensive alert: {e}")
-                    import traceback
-                    traceback.print_exc()
+                                    # Method 3: Use OHLC data (works even when market closed)
+                                    if stock_change_pct is None and stock_price:
+                                        ohlc = fut_quote.get("ohlc", {})
+                                        if isinstance(ohlc, dict):
+                                            # Try different previous close fields
+                                            prev_close = (ohlc.get("previous_close") or
+                                                         ohlc.get("prev_close") or
+                                                         ohlc.get("close"))
 
-                # ============================================
-                # TOP 10 STOCKS TRACKING & NEW ENTRY ALERTS
-                # ============================================
-                if stocks_data:
-                    # Sort by absolute net flow to get top stocks
-                    sorted_stocks = sorted(stocks_data.items(), key=lambda x: abs(x[1].get("net_flow", 0)), reverse=True)
+                                            # If prev_close is same as current price, it's likely today's close
+                                            # So check if there's an open price different from close
+                                            if prev_close and prev_close > 0:
+                                                # If close == last_price, use open as reference (intraday change)
+                                                open_price = ohlc.get("open")
+                                                if abs(prev_close - stock_price) < 0.01 and open_price:
+                                                    # Market might be closed, calculate from open
+                                                    if abs(open_price - stock_price) > 0.01:
+                                                        stock_change_pct = ((stock_price - open_price) / open_price) * 100
+                                                else:
+                                                    # Normal case: calculate from previous close
+                                                    stock_change_pct = ((stock_price - prev_close) / prev_close) * 100
+                        
+                            # Calculate CE/PE flows
+                            for _, row in stock_meta.iterrows():
+                                token = int(row["instrument_token"])
+                                token_str = str(token)
+                                if token_str in all_quotes:
+                                    quote_data = all_quotes[token_str]
+                                    volume = quote_data.get("volume", 0)
+                                    if "type" in row and row["type"] == "CE":
+                                        stock_ce_flow += volume
+                                    elif "type" in row and row["type"] == "PE":
+                                        stock_pe_flow += volume
+                        
+                            # Store stock data
+                            stocks_data[stock_name] = {
+                                "price": stock_price,
+                                "change_pct": stock_change_pct,
+                                "ce_flow": stock_ce_flow,
+                                "pe_flow": stock_pe_flow,
+                                "net_flow": stock_ce_flow - stock_pe_flow
+                            }
+                        except Exception as e:
+                            pass
 
-                    # Get current Top 10 stocks
-                    current_top_10 = set([stock[0] for stock in sorted_stocks[:10]])
+                    # Log top stocks by net flow
+                    if stocks_data and len(stocks_data) > 0:
+                        top_5 = sorted(stocks_data.items(), key=lambda x: abs(x[1].get("net_flow", 0)), reverse=True)[:5]
+                        print(f"📊 Top 5 stocks by net flow: {', '.join([s[0] for s in top_5])}")
+                
+                
+                    flow_snapshot = {
+                        "timestamp": datetime.now().isoformat(),
+                        "indices_ce": total_indices_ce,
+                        "indices_pe": total_indices_pe,
+                        "stocks_ce": total_stocks_ce,
+                        "stocks_pe": total_stocks_pe,
+                        "indices_net": total_indices_ce - total_indices_pe,
+                        "stocks_net": total_stocks_ce - total_stocks_pe,
+                        "indices_data": indices_data,
+                        "stocks_data": stocks_data
+                    }
+                
+                    deltas = calculate_deltas(flow_snapshot)
+                    flow_history.append(flow_snapshot)
+                    save_flow_history(flow_snapshot)
+                
 
-                    # Find NEW entries (stocks that just entered Top 10)
-                    new_entries = current_top_10 - engine.top_10_stocks
+                    # ====================
+                    # NIFTY FUTURES DATA COLLECTION
+                    # ====================
+                    nifty_futures_data = None
+                    if engine.nifty_fut_token:
+                        fut_token_str = str(engine.nifty_fut_token)
+                        if fut_token_str in all_quotes:
+                            fut_quote = all_quotes[fut_token_str]
+                        
+                            fut_price = fut_quote.get('last_price', 0)
+                            fut_net_change = fut_quote.get('net_change', 0)
+                            fut_prev_close = fut_price - fut_net_change if fut_net_change else 0
+                            fut_change_pct = (fut_net_change / fut_prev_close * 100) if fut_prev_close > 0 else 0
+                        
+                            fut_oi = fut_quote.get('oi', 0)
+                            fut_oi_day_low = fut_quote.get('oi_day_low', 0)
+                        
+                            fut_volume = fut_quote.get('volume', 0)
+                            fut_buy_qty = fut_quote.get('buy_quantity', 0)
+                            fut_sell_qty = fut_quote.get('sell_quantity', 0)
+                        
+                            # Calculate buyers vs sellers
+                            if fut_change_pct > 0:
+                                buyers = fut_buy_qty if fut_buy_qty > 0 else fut_volume * 0.6
+                                sellers = fut_sell_qty if fut_sell_qty > 0 else fut_volume * 0.4
+                            else:
+                                buyers = fut_buy_qty if fut_buy_qty > 0 else fut_volume * 0.4
+                                sellers = fut_sell_qty if fut_sell_qty > 0 else fut_volume * 0.6
+                        
+                            nifty_futures_data = {
+                                'price': fut_price,
+                                'change_pct': fut_change_pct,
+                                'buyers': int(buyers),
+                                'sellers': int(sellers),
+                                'oi': int(fut_oi),
+                                'oi_change': int(fut_oi - fut_oi_day_low) if fut_oi_day_low else 0,
+                                'symbol': engine.nifty_fut_symbol,
+                                'expiry': engine.nifty_fut_expiry
+                            }
+                            # Store in session state to persist across refreshes
+                            st.session_state.nifty_futures_data = nifty_futures_data
+                            print(f"✓ Futures: {engine.nifty_fut_symbol} Price={fut_price:.2f} Change={fut_change_pct:+.2f}% OI={fut_oi}")
 
-                    # Alert ONLY for NEW stocks entering Top 10
-                    if new_entries:
-                        for stock_name in new_entries:
-                            # Find this stock's data
+                    # ============================================
+                    # VWAP & SUPERTREND STRATEGY CALCULATION
+                    # ============================================
+                    vwap_st_strategy = None
+                    try:
+                        # Fetch 15-min candles for strategy
+                        candles_15min = fetch_nifty_futures_15min_candles()
+
+                        if candles_15min and len(candles_15min) >= 8:
+                            # Calculate VWAP
+                            vwap = calculate_vwap(candles_15min)
+
+                            # Calculate SuperTrend (ATR=7, Multiplier=3.0)
+                            supertrend_value, supertrend_trend = calculate_supertrend(candles_15min, atr_period=7, multiplier=3.0)
+
+                            # Detect signal
+                            signal = detect_vwap_supertrend_signal(candles_15min, vwap, supertrend_value, supertrend_trend)
+
+                            # Get last candle and current price
+                            last_candle = candles_15min[-1]
+                            ltp = nifty_futures_data['price'] if nifty_futures_data else last_candle['close']
+
+                            vwap_st_strategy = {
+                                'vwap': vwap,
+                                'supertrend_value': supertrend_value,
+                                'supertrend_trend': supertrend_trend,
+                                'signal': signal,
+                                'last_candle': last_candle,
+                                'ltp': ltp,
+                                'candles_count': len(candles_15min)
+                            }
+
+                            # Store in session state
+                            st.session_state.vwap_st_strategy = vwap_st_strategy
+
+                            print(f"✓ VWAP & SuperTrend: Signal={signal}, VWAP=₹{vwap:.2f}, ST=₹{supertrend_value:.2f} ({supertrend_trend})")
+
+                            # Check for signal change and send Telegram alert
+                            previous_signal = st.session_state.get('vwap_st_previous_signal', 'NEUTRAL')
+
+                            if signal != previous_signal and signal != 'NEUTRAL':
+                                # Signal changed to BULLISH or BEARISH
+                                st.session_state.vwap_st_previous_signal = signal
+
+                                # Send Telegram alert
+                                if signal == 'BULLISH':
+                                    telegram_msg = (
+                                        "🚨 <b>NIFTY FUTURES - BULLISH SIGNAL 🟢</b>\n\n"
+                                        f"📈 <b>Strategy:</b> VWAP + SuperTrend (15-min)\n"
+                                        f"⏰ <b>Time:</b> {datetime.now().strftime('%H:%M:%S')}\n\n"
+                                        "<b>✅ Entry Conditions Met:</b>\n"
+                                        f"• SuperTrend: 🟢 GREEN (₹{supertrend_value:.2f})\n"
+                                        f"• VWAP: ₹{vwap:.2f} (Above ST)\n"
+                                        f"• Candle: 🟢 GREEN (₹{last_candle['close']:.2f})\n"
+                                        f"• Position: Above VWAP ✓\n\n"
+                                        f"💡 <b>Recommendation:</b> GO LONG\n"
+                                        f"📊 <b>LTP:</b> ₹{ltp:.2f}\n"
+                                        f"🎯 <b>Watch for:</b> Price sustaining above VWAP\n\n"
+                                        "#NiftyFutures #Bullish #VWAP #SuperTrend"
+                                    )
+                                else:  # BEARISH
+                                    telegram_msg = (
+                                        "🚨 <b>NIFTY FUTURES - BEARISH SIGNAL 🔴</b>\n\n"
+                                        f"📉 <b>Strategy:</b> VWAP + SuperTrend (15-min)\n"
+                                        f"⏰ <b>Time:</b> {datetime.now().strftime('%H:%M:%S')}\n\n"
+                                        "<b>✅ Entry Conditions Met:</b>\n"
+                                        f"• SuperTrend: 🔴 RED (₹{supertrend_value:.2f})\n"
+                                        f"• VWAP: ₹{vwap:.2f} (Below ST)\n"
+                                        f"• Candle: 🔴 RED (₹{last_candle['close']:.2f})\n"
+                                        f"• Position: Below VWAP ✓\n\n"
+                                        f"💡 <b>Recommendation:</b> GO SHORT\n"
+                                        f"📊 <b>LTP:</b> ₹{ltp:.2f}\n"
+                                        f"🎯 <b>Watch for:</b> Price sustaining below VWAP\n\n"
+                                        "#NiftyFutures #Bearish #VWAP #SuperTrend"
+                                    )
+
+                                # send_telegram_alert(telegram_msg)
+                                print(f"📱 Telegram Alert Sent: {signal} Signal")
+
+                        else:
+                            print("⏳ VWAP & SuperTrend: Waiting for sufficient candles (need 8+)")
+
+                    except Exception as e:
+                        print(f"❌ Error calculating VWAP & SuperTrend strategy: {e}")
+                        import traceback
+                        traceback.print_exc()
+
+                    # ============================================
+                    # NIFTY COMPREHENSIVE ALERT (9 Criteria Scoring)
+                    # ============================================
+                    try:
+                        # Calculate comprehensive score using all 9 criteria
+                        score_result = calculate_nifty_momentum_score(
+                            indices_data=indices_data,
+                            stocks_data=stocks_data,
+                            volume_state=volume_state,
+                            vwap_st_strategy=vwap_st_strategy
+                        )
+
+                        # Send enhanced alert with 3-minute confirmation and divergence detection
+                        send_nifty_enhanced_alert(score_result)
+
+                    except Exception as e:
+                        print(f"❌ Error calculating NIFTY comprehensive alert: {e}")
+                        import traceback
+                        traceback.print_exc()
+
+                    # ============================================
+                    # TOP 10 STOCKS TRACKING & NEW ENTRY ALERTS
+                    # ============================================
+                    if stocks_data:
+                        # Sort by absolute net flow to get top stocks
+                        sorted_stocks = sorted(stocks_data.items(), key=lambda x: abs(x[1].get("net_flow", 0)), reverse=True)
+
+                        # Get current Top 10 stocks
+                        current_top_10 = set([stock[0] for stock in sorted_stocks[:10]])
+
+                        # Find NEW entries (stocks that just entered Top 10)
+                        new_entries = current_top_10 - engine.top_10_stocks
+
+                        # Alert ONLY for NEW stocks entering Top 10
+                        if new_entries:
+                            for stock_name in new_entries:
+                                # Find this stock's data
+                                stock_data = stocks_data.get(stock_name)
+                                if not stock_data:
+                                    continue
+
+                                stock_price = stock_data.get("price")
+                                change_pct = stock_data.get("change_pct")
+                                net_flow = stock_data.get("net_flow", 0)
+
+                                # Skip if missing critical data
+                                if stock_price is None or abs(net_flow) < 50000:
+                                    continue
+
+                                # Find rank in Top 10
+                                rank = next((i+1 for i, (name, _) in enumerate(sorted_stocks[:10]) if name == stock_name), None)
+
+                                # Send "NEW TOP 10 ENTRY" alert
+                                emoji = "🔥" if rank <= 3 else "⭐"
+                                signal = f"NEW TOP {rank} ENTRY"
+
+                                flow_direction = "BULLISH" if net_flow > 0 else "BEARISH"
+                                flow_emoji = "🟢" if net_flow > 0 else "🔴"
+
+                                price_str = f"₹{stock_price:,.2f}"
+                                change_emoji = "🟢" if change_pct and change_pct > 0 else "🔴"
+                                change_str = f"{change_emoji}{change_pct:+.2f}%" if change_pct else ""
+                                flow_str = f"{flow_emoji}{format_number(net_flow)}"
+
+                                telegram_message = f"{emoji} {signal} - {stock_name}\n"
+                                telegram_message += f"{price_str} {change_str} | Flow {flow_str}\n"
+                                telegram_message += f"📊 Rank #{rank} | {flow_direction} momentum"
+
+                                try:
+                                    # DISABLED: Stock alerts temporarily disabled
+                                    # # send_telegram_alert(telegram_message)
+                                    print(f"🔕 ALERT DISABLED - NEW Top 10 Entry: #{rank} {stock_name} (Net Flow: {format_number(net_flow)})")
+                                except Exception as e:
+                                    print(f"Error sending Top 10 alert: {e}")
+
+                        # Update Top 10 tracking
+                        engine.top_10_stocks = current_top_10
+
+                        # ============================================
+                        # BULLISH/BEARISH ALERTS FOR TOP 10 STOCKS
+                        # ============================================
+                        # Check each Top 10 stock for BULLISH or BEARISH conditions
+                        for stock_name, _ in sorted_stocks[:10]:
                             stock_data = stocks_data.get(stock_name)
                             if not stock_data:
                                 continue
@@ -6912,437 +6959,399 @@ def polling_loop():
                             net_flow = stock_data.get("net_flow", 0)
 
                             # Skip if missing critical data
-                            if stock_price is None or abs(net_flow) < 50000:
+                            if stock_price is None or change_pct is None:
                                 continue
 
-                            # Find rank in Top 10
-                            rank = next((i+1 for i, (name, _) in enumerate(sorted_stocks[:10]) if name == stock_name), None)
+                            # BULLISH Alert: Price > +1% AND Net Flow > +100M
+                            if change_pct > 1.0 and net_flow > 100:
+                                send_stock_alert(stock_name, "BULLISH", stock_price, change_pct, net_flow)
 
-                            # Send "NEW TOP 10 ENTRY" alert
-                            emoji = "🔥" if rank <= 3 else "⭐"
-                            signal = f"NEW TOP {rank} ENTRY"
+                            # BEARISH Alert: Price < -1% AND Net Flow < -100M
+                            elif change_pct < -1.0 and net_flow < -100:
+                                send_stock_alert(stock_name, "BEARISH", stock_price, change_pct, net_flow)
 
-                            flow_direction = "BULLISH" if net_flow > 0 else "BEARISH"
-                            flow_emoji = "🟢" if net_flow > 0 else "🔴"
 
-                            price_str = f"₹{stock_price:,.2f}"
-                            change_emoji = "🟢" if change_pct and change_pct > 0 else "🔴"
-                            change_str = f"{change_emoji}{change_pct:+.2f}%" if change_pct else ""
-                            flow_str = f"{flow_emoji}{format_number(net_flow)}"
-
-                            telegram_message = f"{emoji} {signal} - {stock_name}\n"
-                            telegram_message += f"{price_str} {change_str} | Flow {flow_str}\n"
-                            telegram_message += f"📊 Rank #{rank} | {flow_direction} momentum"
-
-                            try:
-                                # DISABLED: Stock alerts temporarily disabled
-                                # # send_telegram_alert(telegram_message)
-                                print(f"🔕 ALERT DISABLED - NEW Top 10 Entry: #{rank} {stock_name} (Net Flow: {format_number(net_flow)})")
-                            except Exception as e:
-                                print(f"Error sending Top 10 alert: {e}")
-
-                    # Update Top 10 tracking
-                    engine.top_10_stocks = current_top_10
+                    cache_data = {
+                        "composite_score": composite_score,
+                        "signal_band": signal_band,
+                        "stance": stance,
+                        "total_ce_cod": total_ce,
+                        "total_pe_cod": total_pe,
+                        "indices_ce_cod": total_indices_ce,
+                        "indices_pe_cod": total_indices_pe,
+                        "stocks_ce_cod": total_stocks_ce,
+                        "stocks_pe_cod": total_stocks_pe,
+                        "indices_data": indices_data,
+                        # Include all 209 F&O stocks for heat bar analysis
+                        "stocks_data": stocks_data if stocks_data else {},
+                        "deltas": deltas,
+                        "nifty_futures_data": nifty_futures_data,
+                        "vwap_st_strategy": vwap_st_strategy,
+                        "last_update": datetime.now().isoformat()
+                    }
+                    save_dashboard_cache(cache_data)
 
                     # ============================================
-                    # BULLISH/BEARISH ALERTS FOR TOP 10 STOCKS
+                    # ALERT FOLLOW-UP TRACKER - 9:20 AM CHECK
                     # ============================================
-                    # Check each Top 10 stock for BULLISH or BEARISH conditions
-                    for stock_name, _ in sorted_stocks[:10]:
-                        stock_data = stocks_data.get(stock_name)
-                        if not stock_data:
-                            continue
+                    # Check yesterday's alerts for opening momentum at 9:20 AM
+                    current_time = datetime.now()
 
-                        stock_price = stock_data.get("price")
-                        change_pct = stock_data.get("change_pct")
-                        net_flow = stock_data.get("net_flow", 0)
+                    # Initialize follow-up flag if not exists
+                    if not hasattr(engine, 'followup_checked_today'):
+                        engine.followup_checked_today = False
 
-                        # Skip if missing critical data
-                        if stock_price is None or change_pct is None:
-                            continue
+                    # Reset flag at midnight
+                    if current_time.hour == 0 and current_time.minute == 0:
+                        engine.followup_checked_today = False
 
-                        # BULLISH Alert: Price > +1% AND Net Flow > +100M
-                        if change_pct > 1.0 and net_flow > 100:
-                            send_stock_alert(stock_name, "BULLISH", stock_price, change_pct, net_flow)
+                    # Execute at 9:20 AM (±2 minute window) once per day
+                    if (current_time.hour == 9 and 20 <= current_time.minute <= 22 and
+                        not engine.followup_checked_today):
+                        try:
+                            print("🔍 ALERT FOLLOW-UP TRACKER - Checking yesterday's alerts...")
 
-                        # BEARISH Alert: Price < -1% AND Net Flow < -100M
-                        elif change_pct < -1.0 and net_flow < -100:
-                            send_stock_alert(stock_name, "BEARISH", stock_price, change_pct, net_flow)
+                            # Get yesterday's alerts that haven't been followed up
+                            yesterday_alerts = get_yesterday_alerts()
 
+                            if not yesterday_alerts.empty:
+                                print(f"📋 Found {len(yesterday_alerts)} alerts from yesterday")
 
-                cache_data = {
-                    "composite_score": composite_score,
-                    "signal_band": signal_band,
-                    "stance": stance,
-                    "total_ce_cod": total_ce,
-                    "total_pe_cod": total_pe,
-                    "indices_ce_cod": total_indices_ce,
-                    "indices_pe_cod": total_indices_pe,
-                    "stocks_ce_cod": total_stocks_ce,
-                    "stocks_pe_cod": total_stocks_pe,
-                    "indices_data": indices_data,
-                    # Include all 209 F&O stocks for heat bar analysis
-                    "stocks_data": stocks_data if stocks_data else {},
-                    "deltas": deltas,
-                    "nifty_futures_data": nifty_futures_data,
-                    "vwap_st_strategy": vwap_st_strategy,
-                    "last_update": datetime.now().isoformat()
-                }
-                save_dashboard_cache(cache_data)
+                                # Get list of stock symbols to check
+                                stocks_to_check = yesterday_alerts['stock'].unique().tolist()
+                                print(f"📊 Checking momentum for: {', '.join(stocks_to_check)}")
 
-                # ============================================
-                # ALERT FOLLOW-UP TRACKER - 9:20 AM CHECK
-                # ============================================
-                # Check yesterday's alerts for opening momentum at 9:20 AM
-                current_time = datetime.now()
+                                # Check opening momentum for these stocks
+                                momentum_stocks = check_opening_momentum(kite, stocks_to_check)
 
-                # Initialize follow-up flag if not exists
-                if not hasattr(engine, 'followup_checked_today'):
-                    engine.followup_checked_today = False
+                                if momentum_stocks:
+                                    print(f"🎯 Found {len(momentum_stocks)} stocks with significant opening momentum!")
 
-                # Reset flag at midnight
-                if current_time.hour == 0 and current_time.minute == 0:
-                    engine.followup_checked_today = False
+                                    # Send priority alerts for each stock
+                                    alerted_stocks = []
+                                    for stock_data in momentum_stocks:
+                                        send_followup_alert(
+                                            stock=stock_data['stock'],
+                                            opening_pct=stock_data['opening_pct'],
+                                            current_pct=stock_data['current_pct'],
+                                            current_price=stock_data['current_price'],
+                                            signal=stock_data['signal']
+                                        )
+                                        alerted_stocks.append(stock_data['stock'])
 
-                # Execute at 9:20 AM (±2 minute window) once per day
-                if (current_time.hour == 9 and 20 <= current_time.minute <= 22 and
-                    not engine.followup_checked_today):
-                    try:
-                        print("🔍 ALERT FOLLOW-UP TRACKER - Checking yesterday's alerts...")
-
-                        # Get yesterday's alerts that haven't been followed up
-                        yesterday_alerts = get_yesterday_alerts()
-
-                        if not yesterday_alerts.empty:
-                            print(f"📋 Found {len(yesterday_alerts)} alerts from yesterday")
-
-                            # Get list of stock symbols to check
-                            stocks_to_check = yesterday_alerts['stock'].unique().tolist()
-                            print(f"📊 Checking momentum for: {', '.join(stocks_to_check)}")
-
-                            # Check opening momentum for these stocks
-                            momentum_stocks = check_opening_momentum(kite, stocks_to_check)
-
-                            if momentum_stocks:
-                                print(f"🎯 Found {len(momentum_stocks)} stocks with significant opening momentum!")
-
-                                # Send priority alerts for each stock
-                                alerted_stocks = []
-                                for stock_data in momentum_stocks:
-                                    send_followup_alert(
-                                        stock=stock_data['stock'],
-                                        opening_pct=stock_data['opening_pct'],
-                                        current_pct=stock_data['current_pct'],
-                                        current_price=stock_data['current_price'],
-                                        signal=stock_data['signal']
-                                    )
-                                    alerted_stocks.append(stock_data['stock'])
-
-                                # Mark these alerts as followed up
-                                mark_alerts_followed_up(alerted_stocks)
-                                print(f"✅ Follow-up alerts sent for {len(alerted_stocks)} stocks")
+                                    # Mark these alerts as followed up
+                                    mark_alerts_followed_up(alerted_stocks)
+                                    print(f"✅ Follow-up alerts sent for {len(alerted_stocks)} stocks")
+                                else:
+                                    print("ℹ️ No stocks showing significant opening momentum (>±1%)")
                             else:
-                                print("ℹ️ No stocks showing significant opening momentum (>±1%)")
-                        else:
-                            print("ℹ️ No alerts from yesterday to follow up")
+                                print("ℹ️ No alerts from yesterday to follow up")
 
-                        # Mark as checked for today
-                        engine.followup_checked_today = True
-                        print("✅ Alert follow-up check complete for today")
-
-                    except Exception as e:
-                        print(f"❌ Error in alert follow-up tracker: {e}")
-                        import traceback
-                        traceback.print_exc()
-
-                # PHASE 1: Update chart data every 5 minutes (30 polls = 5 min at 10 sec intervals)
-                engine.chart_update_counter += 1
-                log_chart_debug(f"chart_update_counter = {engine.chart_update_counter}/30")
-
-                if engine.chart_update_counter >= 10:  # 5 minutes
-                    log_chart_debug(f"🎯 CHART UPDATE TRIGGERED! Counter reached {engine.chart_update_counter}")
-                    engine.chart_update_counter = 0
-
-                    # WEEKLY EXPIRY TRACKING: Collect data every 5 minutes
-                    if not engine.ins_df.empty:
-                        try:
-                            print("📅 Collecting weekly expiry data...")
-
-                            # Get next 4 expiries
-                            next_expiries = get_next_nifty_expiries(engine.ins_df, num_expiries=4)
-
-                            if next_expiries and "NIFTY" in indices_data:
-                                nifty_price = indices_data["NIFTY"].get("price")
-
-                                if nifty_price:
-                                    atm_strike = get_atm_strike(nifty_price)
-
-                                    # Collect data for each expiry
-                                    for expiry_date in next_expiries:
-                                        try:
-                                            # Get strikes for this expiry
-                                            strike_map = get_strikes_for_expiry(engine.ins_df, expiry_date, atm_strike, range_strikes=20)
-
-                                            if strike_map:
-                                                # Collect options data
-                                                print(f"   🔍 About to call collect_weekly_expiry_data() for {expiry_date.strftime('%d-%b')}")
-                                                daily_df = collect_weekly_expiry_data(kite, engine.ins_df, expiry_date, strike_map)
-                                                print(f"   🔍 collect_weekly_expiry_data() returned, df empty: {daily_df.empty if daily_df is not None else 'None'}")
-
-                                                if not daily_df.empty:
-                                                    # Save cumulative data
-                                                    print(f"   🔍 Calling save_cumulative_expiry_data()...")
-                                                    save_cumulative_expiry_data(expiry_date, daily_df)
-                                                else:
-                                                    print(f"   ⚠️ daily_df is EMPTY - not saving")
-
-                                        except Exception as e:
-                                            print(f"❌ Error collecting data for {expiry_date}: {e}")
-
-                                    print("✅ Weekly expiry data collection complete")
+                            # Mark as checked for today
+                            engine.followup_checked_today = True
+                            print("✅ Alert follow-up check complete for today")
 
                         except Exception as e:
-                            print(f"❌ Error in weekly expiry tracking: {e}")
+                            print(f"❌ Error in alert follow-up tracker: {e}")
                             import traceback
                             traceback.print_exc()
 
-                    # STOCK MONTHLY EXPIRY TRACKING: Collect data every 5 minutes
-                    if not engine.ins_df.empty and engine.stocks_with_fo:
-                        try:
-                            print("📈 Collecting stock monthly expiry data...")
-                            stocks_collected = 0
+                    # PHASE 1: Update chart data every 5 minutes (30 polls = 5 min at 10 sec intervals)
+                    engine.chart_update_counter += 1
+                    log_chart_debug(f"chart_update_counter = {engine.chart_update_counter}/30")
 
-                            # Iterate through all F&O stocks (191 stocks)
-                            for symbol in engine.stocks_with_fo:
-                                try:
-                                    # Get stock price from stocks_data
-                                    if symbol not in stocks_data:
-                                        continue
+                    if engine.chart_update_counter >= 10:  # 5 minutes
+                        log_chart_debug(f"🎯 CHART UPDATE TRIGGERED! Counter reached {engine.chart_update_counter}")
+                        engine.chart_update_counter = 0
 
-                                    stock_price = stocks_data[symbol].get("price")
-                                    if not stock_price or stock_price <= 0:
-                                        continue
-
-                                    # Get current month expiry for this stock
-                                    expiry_date = get_stock_expiry(engine.ins_df, symbol)
-                                    if not expiry_date:
-                                        continue
-
-                                    # Calculate ATM strike
-                                    atm_strike = get_stock_atm_strike(stock_price, symbol)
-
-                                    # Get ATM ± 10 strikes
-                                    strike_map = get_stock_strikes_for_expiry(
-                                        engine.ins_df, symbol, expiry_date, atm_strike, range_strikes=10
-                                    )
-
-                                    if strike_map:
-                                        # Collect options data
-                                        daily_df = collect_stock_expiry_data(kite, engine.ins_df, symbol, expiry_date, strike_map)
-
-                                        if not daily_df.empty:
-                                            # Save cumulative data
-                                            save_cumulative_stock_expiry_data(symbol, expiry_date, daily_df)
-                                            stocks_collected += 1
-
-                                except Exception as e:
-                                    print(f"❌ Error collecting data for {symbol}: {e}")
-                                    continue
-
-                            print(f"✅ Stock expiry data collection complete ({stocks_collected}/{len(engine.stocks_with_fo)} stocks)")
-
-                        except Exception as e:
-                            print(f"❌ Error in stock expiry tracking: {e}")
-                            import traceback
-                            traceback.print_exc()
-
-                    log_chart_debug(f"📊 Checking for NIFTY in indices_data...")
-                    log_chart_debug(f"📊 indices_data keys: {list(indices_data.keys())}")
-                    
-                    if "NIFTY" in indices_data:
-                        nifty_data = indices_data["NIFTY"]
-                        log_chart_debug(f"📊 NIFTY data found: {nifty_data}")
-                        
-                        if nifty_data.get("price"):
-                            chart_point = {
-                                "timestamp": datetime.now(),
-                                "spot_price": nifty_data["price"],
-                                "ce_flow": nifty_data["ce_flow"],
-                                "pe_flow": nifty_data["pe_flow"]
-                            }
-                            nifty_chart_data.append(chart_point)
-                            log_chart_debug(f"✅ Chart point added: Nifty {nifty_data['price']:.2f}, CE {format_number(nifty_data['ce_flow'])}, PE {format_number(nifty_data['pe_flow'])}")
-                            log_chart_debug(f"✅ nifty_chart_data now has {len(nifty_chart_data)} points")
-                            
-                            # 💾 Save chart data to cache (survives app restarts)
+                        # WEEKLY EXPIRY TRACKING: Collect data every 5 minutes
+                        if not engine.ins_df.empty:
                             try:
-                                chart_cache_file = Path('.cache/nifty_chart_data.pkl')
-                                chart_cache_file.parent.mkdir(parents=True, exist_ok=True)
-                                with open(chart_cache_file, 'wb') as f:
-                                    pickle.dump(st.session_state.nifty_chart_data, f)
-                                log_chart_debug(f"💾 Chart data saved to cache")
+                                print("📅 Collecting weekly expiry data...")
+
+                                # Get next 4 expiries
+                                next_expiries = get_next_nifty_expiries(engine.ins_df, num_expiries=4)
+
+                                if next_expiries and "NIFTY" in indices_data:
+                                    nifty_price = indices_data["NIFTY"].get("price")
+
+                                    if nifty_price:
+                                        atm_strike = get_atm_strike(nifty_price)
+
+                                        # Collect data for each expiry
+                                        for expiry_date in next_expiries:
+                                            try:
+                                                # Get strikes for this expiry
+                                                strike_map = get_strikes_for_expiry(engine.ins_df, expiry_date, atm_strike, range_strikes=20)
+
+                                                if strike_map:
+                                                    # Collect options data
+                                                    print(f"   🔍 About to call collect_weekly_expiry_data() for {expiry_date.strftime('%d-%b')}")
+                                                    daily_df = collect_weekly_expiry_data(kite, engine.ins_df, expiry_date, strike_map)
+                                                    print(f"   🔍 collect_weekly_expiry_data() returned, df empty: {daily_df.empty if daily_df is not None else 'None'}")
+
+                                                    if not daily_df.empty:
+                                                        # Save cumulative data
+                                                        print(f"   🔍 Calling save_cumulative_expiry_data()...")
+                                                        save_cumulative_expiry_data(expiry_date, daily_df)
+                                                    else:
+                                                        print(f"   ⚠️ daily_df is EMPTY - not saving")
+
+                                            except Exception as e:
+                                                print(f"❌ Error collecting data for {expiry_date}: {e}")
+
+                                        print("✅ Weekly expiry data collection complete")
+
                             except Exception as e:
-                                log_chart_debug(f"⚠️ Error saving chart cache: {e}")
+                                print(f"❌ Error in weekly expiry tracking: {e}")
+                                import traceback
+                                traceback.print_exc()
+
+                        # STOCK MONTHLY EXPIRY TRACKING: Collect data every 5 minutes
+                        if not engine.ins_df.empty and engine.stocks_with_fo:
+                            try:
+                                print("📈 Collecting stock monthly expiry data...")
+                                stocks_collected = 0
+
+                                # Iterate through all F&O stocks (191 stocks)
+                                for symbol in engine.stocks_with_fo:
+                                    try:
+                                        # Get stock price from stocks_data
+                                        if symbol not in stocks_data:
+                                            continue
+
+                                        stock_price = stocks_data[symbol].get("price")
+                                        if not stock_price or stock_price <= 0:
+                                            continue
+
+                                        # Get current month expiry for this stock
+                                        expiry_date = get_stock_expiry(engine.ins_df, symbol)
+                                        if not expiry_date:
+                                            continue
+
+                                        # Calculate ATM strike
+                                        atm_strike = get_stock_atm_strike(stock_price, symbol)
+
+                                        # Get ATM ± 10 strikes
+                                        strike_map = get_stock_strikes_for_expiry(
+                                            engine.ins_df, symbol, expiry_date, atm_strike, range_strikes=10
+                                        )
+
+                                        if strike_map:
+                                            # Collect options data
+                                            daily_df = collect_stock_expiry_data(kite, engine.ins_df, symbol, expiry_date, strike_map)
+
+                                            if not daily_df.empty:
+                                                # Save cumulative data
+                                                save_cumulative_stock_expiry_data(symbol, expiry_date, daily_df)
+                                                stocks_collected += 1
+
+                                    except Exception as e:
+                                        print(f"❌ Error collecting data for {symbol}: {e}")
+                                        continue
+
+                                print(f"✅ Stock expiry data collection complete ({stocks_collected}/{len(engine.stocks_with_fo)} stocks)")
+
+                            except Exception as e:
+                                print(f"❌ Error in stock expiry tracking: {e}")
+                                import traceback
+                                traceback.print_exc()
+
+                        log_chart_debug(f"📊 Checking for NIFTY in indices_data...")
+                        log_chart_debug(f"📊 indices_data keys: {list(indices_data.keys())}")
+                    
+                        if "NIFTY" in indices_data:
+                            nifty_data = indices_data["NIFTY"]
+                            log_chart_debug(f"📊 NIFTY data found: {nifty_data}")
+                        
+                            if nifty_data.get("price"):
+                                chart_point = {
+                                    "timestamp": datetime.now(),
+                                    "spot_price": nifty_data["price"],
+                                    "ce_flow": nifty_data["ce_flow"],
+                                    "pe_flow": nifty_data["pe_flow"]
+                                }
+                                nifty_chart_data.append(chart_point)
+                                log_chart_debug(f"✅ Chart point added: Nifty {nifty_data['price']:.2f}, CE {format_number(nifty_data['ce_flow'])}, PE {format_number(nifty_data['pe_flow'])}")
+                                log_chart_debug(f"✅ nifty_chart_data now has {len(nifty_chart_data)} points")
+                            
+                                # 💾 Save chart data to cache (survives app restarts)
+                                try:
+                                    chart_cache_file = Path('.cache/nifty_chart_data.pkl')
+                                    chart_cache_file.parent.mkdir(parents=True, exist_ok=True)
+                                    with open(chart_cache_file, 'wb') as f:
+                                        pickle.dump(st.session_state.nifty_chart_data, f)
+                                    log_chart_debug(f"💾 Chart data saved to cache")
+                                except Exception as e:
+                                    log_chart_debug(f"⚠️ Error saving chart cache: {e}")
+                            else:
+                                log_chart_debug(f"⚠️ NIFTY price missing - nifty_data={nifty_data}")
                         else:
-                            log_chart_debug(f"⚠️ NIFTY price missing - nifty_data={nifty_data}")
-                    else:
-                        log_chart_debug(f"❌ NIFTY not in indices_data! Available: {list(indices_data.keys())}")
+                            log_chart_debug(f"❌ NIFTY not in indices_data! Available: {list(indices_data.keys())}")
                 
-                # 💾 Save volume state periodically (every 10 polls = ~100 seconds)
-                if engine.chart_update_counter % 10 == 0:
-                    try:
-                        volume_cache_file = Path('.cache/volume_state.pkl')
-                        volume_cache_file.parent.mkdir(parents=True, exist_ok=True)
-                        with open(volume_cache_file, 'wb') as f:
-                            pickle.dump(st.session_state.volume_state, f)
-                        log_chart_debug(f"💾 Volume state saved to cache")
-                    except Exception as e:
-                        log_chart_debug(f"⚠️ Error saving volume cache: {e}")
+                    # 💾 Save volume state periodically (every 10 polls = ~100 seconds)
+                    if engine.chart_update_counter % 10 == 0:
+                        try:
+                            volume_cache_file = Path('.cache/volume_state.pkl')
+                            volume_cache_file.parent.mkdir(parents=True, exist_ok=True)
+                            with open(volume_cache_file, 'wb') as f:
+                                pickle.dump(st.session_state.volume_state, f)
+                            log_chart_debug(f"💾 Volume state saved to cache")
+                        except Exception as e:
+                            log_chart_debug(f"⚠️ Error saving volume cache: {e}")
                 
-                engine.last_poll_time = datetime.now()
+                    engine.last_poll_time = datetime.now()
                 
-                # Alert detection logic remains here (will continue in next section)
-                if deltas and len(flow_history) >= 5:
-                    for idx_name in engine.indices_with_fo:
-                        if idx_name in indices_data:
-                            idx_data = indices_data[idx_name]
+                    # Alert detection logic remains here (will continue in next section)
+                    if deltas and len(flow_history) >= 5:
+                        for idx_name in engine.indices_with_fo:
+                            if idx_name in indices_data:
+                                idx_data = indices_data[idx_name]
                             
-                            hist_ce = [flow_history[i].get('indices_data', {}).get(idx_name, {}).get('ce_flow', 0) 
-                                      for i in range(max(0, len(flow_history)-5), len(flow_history)) 
-                                      if i < len(flow_history)]
-                            hist_pe = [flow_history[i].get('indices_data', {}).get(idx_name, {}).get('pe_flow', 0) 
-                                      for i in range(max(0, len(flow_history)-5), len(flow_history)) 
-                                      if i < len(flow_history)]
+                                hist_ce = [flow_history[i].get('indices_data', {}).get(idx_name, {}).get('ce_flow', 0) 
+                                          for i in range(max(0, len(flow_history)-5), len(flow_history)) 
+                                          if i < len(flow_history)]
+                                hist_pe = [flow_history[i].get('indices_data', {}).get(idx_name, {}).get('pe_flow', 0) 
+                                          for i in range(max(0, len(flow_history)-5), len(flow_history)) 
+                                          if i < len(flow_history)]
                             
-                            if len(hist_ce) >= 2:
-                                ce_delta = idx_data['ce_flow'] - hist_ce[-1]
-                                pe_delta = idx_data['pe_flow'] - hist_pe[-1]
+                                if len(hist_ce) >= 2:
+                                    ce_delta = idx_data['ce_flow'] - hist_ce[-1]
+                                    pe_delta = idx_data['pe_flow'] - hist_pe[-1]
                                 
+                                    avg_ce = np.mean(hist_ce) if len(hist_ce) > 1 else hist_ce[0]
+                                    avg_pe = np.mean(hist_pe) if len(hist_pe) > 1 else hist_pe[0]
+                                
+                                    if detect_spike(ce_delta, avg_ce / 5, threshold=2.0):
+                                        if idx_data.get('price') and idx_data.get('change_pct') is not None:
+                                            alert_msg = create_actionable_alert_index(
+                                                idx_name, 
+                                                "CE", 
+                                                ce_delta, 
+                                                idx_data['price'], 
+                                                idx_data['change_pct']
+                                            )
+                                            if alert_msg:
+                                                pass  # DISABLED: Stock alerts temporarily disabled
+                                                # add_alert(alert_msg, "warning")
+
+                                    if detect_spike(pe_delta, avg_pe / 5, threshold=2.0):
+                                        if idx_data.get('price') and idx_data.get('change_pct') is not None:
+                                            alert_msg = create_actionable_alert_index(
+                                                idx_name, 
+                                                "PE", 
+                                                pe_delta, 
+                                                idx_data['price'], 
+                                                idx_data['change_pct']
+                                            )
+                                            if alert_msg:
+                                                pass  # DISABLED: Stock alerts temporarily disabled
+                                                # add_alert(alert_msg, "warning")
+
+                        stock_items = sorted(stocks_data.items(), key=lambda x: abs(x[1]["net_flow"]), reverse=True)[:20]
+                        sector_mapping = load_sector_mapping()
+                    
+                        for stock_name, stock_data in stock_items:
+                            hist_ce = [flow_history[i].get('stocks_data', {}).get(stock_name, {}).get('ce_flow', 0) 
+                                      for i in range(max(0, len(flow_history)-5), len(flow_history)) 
+                                      if i < len(flow_history)]
+                            hist_pe = [flow_history[i].get('stocks_data', {}).get(stock_name, {}).get('pe_flow', 0) 
+                                      for i in range(max(0, len(flow_history)-5), len(flow_history)) 
+                                      if i < len(flow_history)]
+                        
+                            if len(hist_ce) >= 2:
+                                ce_delta = stock_data['ce_flow'] - hist_ce[-1]
+                                pe_delta = stock_data['pe_flow'] - hist_pe[-1]
+                            
                                 avg_ce = np.mean(hist_ce) if len(hist_ce) > 1 else hist_ce[0]
                                 avg_pe = np.mean(hist_pe) if len(hist_pe) > 1 else hist_pe[0]
-                                
-                                if detect_spike(ce_delta, avg_ce / 5, threshold=2.0):
-                                    if idx_data.get('price') and idx_data.get('change_pct') is not None:
-                                        alert_msg = create_actionable_alert_index(
-                                            idx_name, 
-                                            "CE", 
-                                            ce_delta, 
-                                            idx_data['price'], 
-                                            idx_data['change_pct']
-                                        )
-                                        if alert_msg:
-                                            pass  # DISABLED: Stock alerts temporarily disabled
-                                            # add_alert(alert_msg, "warning")
+                            
+                                sector = sector_mapping.get(stock_name.upper(), "N/A")
+                            
+                                if detect_spike(ce_delta, avg_ce / 5, threshold=2.5):
+                                    alert_msg = create_actionable_alert_stock(
+                                        stock_name, 
+                                        "CE", 
+                                        ce_delta, 
+                                        sector
+                                    )
+                                    if alert_msg:
+                                        pass  # DISABLED: Stock alerts temporarily disabled
+                                        # add_alert(alert_msg, "warning")
 
-                                if detect_spike(pe_delta, avg_pe / 5, threshold=2.0):
-                                    if idx_data.get('price') and idx_data.get('change_pct') is not None:
-                                        alert_msg = create_actionable_alert_index(
-                                            idx_name, 
-                                            "PE", 
-                                            pe_delta, 
-                                            idx_data['price'], 
-                                            idx_data['change_pct']
-                                        )
-                                        if alert_msg:
-                                            pass  # DISABLED: Stock alerts temporarily disabled
-                                            # add_alert(alert_msg, "warning")
+                                if detect_spike(pe_delta, avg_pe / 5, threshold=2.5):
+                                    alert_msg = create_actionable_alert_stock(
+                                        stock_name, 
+                                        "PE", 
+                                        pe_delta,
+                                        sector
+                                    )
+                                    if alert_msg:
+                                        pass  # DISABLED: Stock alerts temporarily disabled
+                                        # add_alert(alert_msg, "warning")
 
-                    stock_items = sorted(stocks_data.items(), key=lambda x: abs(x[1]["net_flow"]), reverse=True)[:20]
-                    sector_mapping = load_sector_mapping()
-                    
-                    for stock_name, stock_data in stock_items:
-                        hist_ce = [flow_history[i].get('stocks_data', {}).get(stock_name, {}).get('ce_flow', 0) 
-                                  for i in range(max(0, len(flow_history)-5), len(flow_history)) 
-                                  if i < len(flow_history)]
-                        hist_pe = [flow_history[i].get('stocks_data', {}).get(stock_name, {}).get('pe_flow', 0) 
-                                  for i in range(max(0, len(flow_history)-5), len(flow_history)) 
-                                  if i < len(flow_history)]
+                    # ============================================
+                    # HYBRID PATTERN MATCHING (REQUIREMENT 3)
+                    # Pattern Detection + OI Filtering
+                    # ============================================
+                    if PATTERNS_AVAILABLE and engine.pattern_enabled and deltas and len(flow_history) >= 6:
+                        try:
+                            patterns_found = run_pattern_detection(
+                                flow_history,
+                                indices_data,
+                                deltas,
+                                engine.indices_with_fo,
+                                engine.last_pattern_alert,
+                                add_alert,
+                                kite=engine.kite,  # For OI data
+                                ins_df=engine.ins_df  # For OI data
+                            )
                         
-                        if len(hist_ce) >= 2:
-                            ce_delta = stock_data['ce_flow'] - hist_ce[-1]
-                            pe_delta = stock_data['pe_flow'] - hist_pe[-1]
-                            
-                            avg_ce = np.mean(hist_ce) if len(hist_ce) > 1 else hist_ce[0]
-                            avg_pe = np.mean(hist_pe) if len(hist_pe) > 1 else hist_pe[0]
-                            
-                            sector = sector_mapping.get(stock_name.upper(), "N/A")
-                            
-                            if detect_spike(ce_delta, avg_ce / 5, threshold=2.5):
-                                alert_msg = create_actionable_alert_stock(
-                                    stock_name, 
-                                    "CE", 
-                                    ce_delta, 
-                                    sector
-                                )
-                                if alert_msg:
-                                    pass  # DISABLED: Stock alerts temporarily disabled
-                                    # add_alert(alert_msg, "warning")
-
-                            if detect_spike(pe_delta, avg_pe / 5, threshold=2.5):
-                                alert_msg = create_actionable_alert_stock(
-                                    stock_name, 
-                                    "PE", 
-                                    pe_delta,
-                                    sector
-                                )
-                                if alert_msg:
-                                    pass  # DISABLED: Stock alerts temporarily disabled
-                                    # add_alert(alert_msg, "warning")
-
-                # ============================================
-                # HYBRID PATTERN MATCHING (REQUIREMENT 3)
-                # Pattern Detection + OI Filtering
-                # ============================================
-                if PATTERNS_AVAILABLE and engine.pattern_enabled and deltas and len(flow_history) >= 6:
-                    try:
-                        patterns_found = run_pattern_detection(
-                            flow_history,
-                            indices_data,
-                            deltas,
-                            engine.indices_with_fo,
-                            engine.last_pattern_alert,
-                            add_alert,
-                            kite=engine.kite,  # For OI data
-                            ins_df=engine.ins_df  # For OI data
-                        )
-                        
-                        if patterns_found > 0:
-                            print(f"🎯 {patterns_found} high-confidence pattern(s) matched (Hybrid)")
-                    except Exception as e:
-                        print(f"⚠️ Pattern matching error: {e}")
+                            if patterns_found > 0:
+                                print(f"🎯 {patterns_found} high-confidence pattern(s) matched (Hybrid)")
+                        except Exception as e:
+                            print(f"⚠️ Pattern matching error: {e}")
                 
 
-                poll_msg = f"âœ“ Poll #{len(flow_history)} | Indices CE: {int(total_indices_ce):,} PE: {int(total_indices_pe):,}"
+                    poll_msg = f"âœ“ Poll #{len(flow_history)} | Indices CE: {int(total_indices_ce):,} PE: {int(total_indices_pe):,}"
                 
-                if deltas and len(flow_history) >= 2:
-                    indices_ce_1min = deltas.get('indices_ce_1min', 0)
-                    indices_pe_1min = deltas.get('indices_pe_1min', 0)
+                    if deltas and len(flow_history) >= 2:
+                        indices_ce_1min = deltas.get('indices_ce_1min', 0)
+                        indices_pe_1min = deltas.get('indices_pe_1min', 0)
                     
-                    if abs(indices_ce_1min) > 0 or abs(indices_pe_1min) > 0:
-                        poll_msg += f" | Î”1m: CE{indices_ce_1min:+,.0f} PE{indices_pe_1min:+,.0f} ðŸ”¥"
+                        if abs(indices_ce_1min) > 0 or abs(indices_pe_1min) > 0:
+                            poll_msg += f" | Î”1m: CE{indices_ce_1min:+,.0f} PE{indices_pe_1min:+,.0f} ðŸ”¥"
+                        else:
+                            poll_msg += f" | Î”1m: CEÂ±0 PEÂ±0"
                     else:
-                        poll_msg += f" | Î”1m: CEÂ±0 PEÂ±0"
-                else:
-                    poll_msg += f" | Î”1m: Collecting baseline..."
+                        poll_msg += f" | Î”1m: Collecting baseline..."
                 
-                print(poll_msg)
+                    print(poll_msg)
 
-            # AUTO-BACKUP: Check if we need to backup after market close
-            try:
-                auto_backup_after_market_close()
+                # AUTO-BACKUP: Check if we need to backup after market close
+                try:
+                    auto_backup_after_market_close()
+                except Exception as e:
+                    print(f"Auto-backup check failed: {e}")
+
+                time.sleep(10)
+
+                # MEMORY FIX: Periodic garbage collection
+                import gc
+                gc.collect()
             except Exception as e:
-                print(f"Auto-backup check failed: {e}")
-
-            time.sleep(10)
-
-            # MEMORY FIX: Periodic garbage collection
-            import gc
-            gc.collect()
-        except Exception as e:
-            print(f"Polling error: {e}")
-            import traceback
-            traceback.print_exc()
-            time.sleep(5)
+                print(f"❌ Polling error (inner loop): {e}")
+                import traceback
+                traceback.print_exc()
+                time.sleep(5)
+    except Exception as e:
+        print(f"\n" + "="*60)
+        print(f"❌ FATAL ERROR IN POLLING LOOP")
+        print(f"="*60)
+        print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
+        print("="*60)
     print("\nPolling stopped")
 
 def start_polling():
@@ -8282,6 +8291,12 @@ if not engine.subscribe_tokens and not engine.ins_df.empty:
         engine.subscribe_tokens = build_subscriptions(kite, engine.ins_df)
         print(f"✅ Built {len(engine.subscribe_tokens)} subscription tokens")
         print("="*60)
+
+        # Force rerun to update sidebar with new token count
+        if 'instruments_built' not in st.session_state:
+            st.session_state.instruments_built = True
+            print("🔄 Rerunning to update sidebar...")
+            st.rerun()
     except Exception as e:
         print(f"❌ Failed to build subscription tokens: {e}")
         import traceback
