@@ -8119,21 +8119,6 @@ if not kite:
 
 engine.kite = kite
 
-# ============================================
-# AUTO-START POLLING
-# ============================================
-# Automatically start polling when dashboard loads
-if not st.session_state.get("polling_running", False):
-    if engine.subscribe_tokens:
-        st.session_state.polling_running = True
-        print("🚀 AUTO-START: Polling enabled automatically")
-        start_polling()
-
-if st.session_state.get("polling_running", False):
-    if not (engine.polling_thread and engine.polling_thread.is_alive()):
-        if engine.subscribe_tokens:
-            start_polling()
-
 if engine.ins_df.empty:
     with st.spinner("Loading instruments..."):
         engine.ins_df = ensure_instruments(kite)
@@ -8153,8 +8138,33 @@ if not engine.nifty_fut_token and not engine.ins_df.empty:
 if not engine.stocks_with_fo:
     engine.stocks_with_fo = discover_stocks_with_fo(engine.ins_df)
 
+# Build subscription tokens (if not already built)
+if not engine.subscribe_tokens and not engine.ins_df.empty:
+    print("🔧 Building subscription tokens...")
+    engine.subscribe_tokens = build_subscriptions(kite, engine.ins_df)
+    print(f"✅ Built {len(engine.subscribe_tokens)} subscription tokens")
+
 sector_mapping = load_sector_mapping()
 load_flow_history()
+
+# ============================================
+# AUTO-START POLLING
+# ============================================
+# Automatically start polling when dashboard loads (after tokens are built)
+if not st.session_state.get("polling_running", False):
+    if engine.subscribe_tokens:
+        st.session_state.polling_running = True
+        print("🚀 AUTO-START: Polling enabled automatically")
+        start_polling()
+    else:
+        print("⚠️ Cannot auto-start: No subscription tokens available")
+
+# Restart polling if it was running but thread died
+if st.session_state.get("polling_running", False):
+    if not (engine.polling_thread and engine.polling_thread.is_alive()):
+        if engine.subscribe_tokens:
+            print("🔄 Restarting dead polling thread...")
+            start_polling()
 
 if DASHBOARD_CACHE_FILE.exists():
     try:
