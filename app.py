@@ -7890,6 +7890,24 @@ with st.sidebar:
         st.info("⏸️ Stopped")
     if engine.subscribe_tokens:
         st.metric("Instruments", len(engine.subscribe_tokens))
+
+    # Polling Control Buttons
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("▶️ Start", use_container_width=True, key="start_polling_btn", disabled=is_running and thread_alive):
+            if engine.subscribe_tokens:
+                st.session_state.polling_running = True
+                start_polling()
+                st.rerun()
+            else:
+                st.error("No instruments to poll")
+    with col2:
+        if st.button("⏸️ Stop", use_container_width=True, key="stop_polling_btn", disabled=not is_running):
+            st.session_state.polling_running = False
+            engine.stop_flag = True
+            if engine.polling_thread:
+                engine.polling_thread = None
+            st.rerun()
     st.markdown("---")
     st.markdown("### 📊 Flow History")
     st.metric("Data Points", len(flow_history))    
@@ -8100,6 +8118,16 @@ if not kite:
     st.stop()
 
 engine.kite = kite
+
+# ============================================
+# AUTO-START POLLING
+# ============================================
+# Automatically start polling when dashboard loads
+if not st.session_state.get("polling_running", False):
+    if engine.subscribe_tokens:
+        st.session_state.polling_running = True
+        print("🚀 AUTO-START: Polling enabled automatically")
+        start_polling()
 
 if st.session_state.get("polling_running", False):
     if not (engine.polling_thread and engine.polling_thread.is_alive()):
