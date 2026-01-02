@@ -4237,15 +4237,30 @@ def load_dashboard_cache():
     return None
 
 def ensure_instruments(kite: KiteConnect) -> pd.DataFrame:
+    """
+    Load instruments from cache file or Zerodha API
+    Cache location: .cache/instruments.parquet
+    """
     if INSTRUMENTS_FILE.exists():
         try:
+            print(f"📂 Loading instruments from cache: {INSTRUMENTS_FILE}")
             df = pd.read_parquet(INSTRUMENTS_FILE)
             need = {"segment","name","tradingsymbol","instrument_token","expiry","strike","instrument_type"}
             if need.issubset(df.columns):
+                print(f"✅ Loaded {len(df)} instruments from cache")
                 return df
-        except:
+        except Exception as e:
+            print(f"⚠️ Cache file corrupted, will fetch from API: {e}")
             pass
-    ins = kite.instruments()
+
+    print("🌐 Fetching instruments from Zerodha API (this may take 10-15 seconds)...")
+    try:
+        ins = kite.instruments()
+        print(f"✅ Fetched {len(ins)} instruments from API")
+    except Exception as e:
+        print(f"❌ API call failed: {e}")
+        raise Exception(f"Failed to fetch instruments from Zerodha: {e}")
+
     raw = pd.DataFrame(ins)
     cols = ["segment","name","tradingsymbol","instrument_token","expiry","strike","instrument_type","exchange"]
     for c in cols:
@@ -4260,7 +4275,15 @@ def ensure_instruments(kite: KiteConnect) -> pd.DataFrame:
     df = df.dropna(subset=["instrument_token"]).copy()
     df["instrument_token"] = df["instrument_token"].astype(np.int64, copy=False)
     df = df.drop_duplicates(subset=["instrument_token"]).reset_index(drop=True)
-    df.to_parquet(INSTRUMENTS_FILE, index=False)
+
+    # Save to cache
+    try:
+        INSTRUMENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        df.to_parquet(INSTRUMENTS_FILE, index=False)
+        print(f"💾 Saved instruments to cache: {INSTRUMENTS_FILE}")
+    except Exception as e:
+        print(f"⚠️ Could not save to cache: {e}")
+
     return df
 
 # =========================
