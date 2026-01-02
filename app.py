@@ -7904,17 +7904,36 @@ with st.sidebar:
     # Build Instruments Button (if tokens not available)
     if not engine.subscribe_tokens:
         if st.button("🔧 Build Instruments", use_container_width=True, key="build_instruments_btn"):
-            with st.spinner("Building subscription tokens..."):
-                if engine.ins_df.empty:
-                    engine.ins_df = ensure_instruments(kite)
-                if not engine.indices_with_fo:
-                    engine.indices_with_fo = discover_indices_with_fo(engine.ins_df)
-                if not engine.stocks_with_fo:
-                    engine.stocks_with_fo = discover_stocks_with_fo(engine.ins_df)
-                if not engine.subscribe_tokens:
-                    engine.subscribe_tokens = build_subscriptions(kite, engine.ins_df)
-            st.success(f"✅ Built {len(engine.subscribe_tokens)} instruments!")
-            st.rerun()
+            if not kite:
+                st.error("❌ Not authenticated! Please login first.")
+            else:
+                try:
+                    with st.spinner("Loading instruments from Zerodha..."):
+                        if engine.ins_df.empty:
+                            engine.ins_df = ensure_instruments(kite)
+                            st.success(f"✅ Loaded {len(engine.ins_df)} instruments")
+
+                    with st.spinner("Discovering indices..."):
+                        if not engine.indices_with_fo:
+                            engine.indices_with_fo = discover_indices_with_fo(engine.ins_df)
+                            st.success(f"✅ Found {len(engine.indices_with_fo)} indices")
+
+                    with st.spinner("Discovering stocks..."):
+                        if not engine.stocks_with_fo:
+                            engine.stocks_with_fo = discover_stocks_with_fo(engine.ins_df)
+                            st.success(f"✅ Found {len(engine.stocks_with_fo)} stocks")
+
+                    with st.spinner("Building subscription tokens..."):
+                        if not engine.subscribe_tokens:
+                            engine.subscribe_tokens = build_subscriptions(kite, engine.ins_df)
+                            st.success(f"✅ Built {len(engine.subscribe_tokens)} subscription tokens!")
+
+                    st.balloons()
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Build failed: {str(e)}")
+                    import traceback
+                    st.code(traceback.format_exc())
 
     # Polling Control Buttons
     col1, col2 = st.columns(2)
