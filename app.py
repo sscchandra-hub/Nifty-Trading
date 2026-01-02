@@ -8675,9 +8675,90 @@ if st.session_state.weekly_expiries_list and len(st.session_state.weekly_expirie
                     st.caption(f"📁 **File location**: data/weekly_expiry/{filename}")
 
                 else:
-                    st.info(f"⏳ Waiting for data for Week {week_num}...")
+                    # Show empty table structure when no data yet
+                    st.info(f"⏳ Waiting for data for Week {week_num}... (Will populate within 10-20 seconds of polling start)")
+
+                    # Show sample table structure
+                    st.markdown("#### 📊 Summary Metrics")
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric("Total CE Flow", "—")
+                    with col2:
+                        st.metric("Total PE Flow", "—")
+                    with col3:
+                        st.metric("Net Bias (CE - PE)", "—")
+                    with col4:
+                        st.metric("Total Volume", "—")
+
+                    st.markdown("**CE vs PE Flow Distribution:**")
+                    st.caption("📊 CE: — | PE: —")
+
+                    st.markdown("---")
+                    st.markdown("#### 📈 Call Options (CE)")
+
+                    # Sample empty CE table
+                    sample_df = pd.DataFrame({
+                        'Strike': ['—', '—', '—'],
+                        'Cum Flow': ['—', '—', '—'],
+                        'Cum Vol': ['—', '—', '—'],
+                        'Daily Flow': ['—', '—', '—'],
+                        'Daily Vol': ['—', '—', '—'],
+                        'OI': ['—', '—', '—'],
+                        'OI Δ': ['—', '—', '—'],
+                        'Premium': ['—', '—', '—'],
+                        'IV': ['—', '—', '—'],
+                        'Delta': ['—', '—', '—'],
+                        'Theta': ['—', '—', '—'],
+                        'LTP': ['—', '—', '—']
+                    })
+                    st.dataframe(sample_df, use_container_width=True, hide_index=True, height=150)
+
+                    st.markdown("---")
+                    st.markdown("#### 📉 Put Options (PE)")
+                    st.dataframe(sample_df, use_container_width=True, hide_index=True, height=150)
+
             else:
-                st.info(f"⏳ Waiting for data for Week {week_num}...")
+                # Show empty table structure when no data yet
+                st.info(f"⏳ Waiting for data for Week {week_num}... (Will populate within 10-20 seconds of polling start)")
+
+                # Show sample table structure
+                st.markdown("#### 📊 Summary Metrics")
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("Total CE Flow", "—")
+                with col2:
+                    st.metric("Total PE Flow", "—")
+                with col3:
+                    st.metric("Net Bias (CE - PE)", "—")
+                with col4:
+                    st.metric("Total Volume", "—")
+
+                st.markdown("**CE vs PE Flow Distribution:**")
+                st.caption("📊 CE: — | PE: —")
+
+                st.markdown("---")
+                st.markdown("#### 📈 Call Options (CE)")
+
+                # Sample empty CE table
+                sample_df = pd.DataFrame({
+                    'Strike': ['—', '—', '—'],
+                    'Cum Flow': ['—', '—', '—'],
+                    'Cum Vol': ['—', '—', '—'],
+                    'Daily Flow': ['—', '—', '—'],
+                    'Daily Vol': ['—', '—', '—'],
+                    'OI': ['—', '—', '—'],
+                    'OI Δ': ['—', '—', '—'],
+                    'Premium': ['—', '—', '—'],
+                    'IV': ['—', '—', '—'],
+                    'Delta': ['—', '—', '—'],
+                    'Theta': ['—', '—', '—'],
+                    'LTP': ['—', '—', '—']
+                })
+                st.dataframe(sample_df, use_container_width=True, hide_index=True, height=150)
+
+                st.markdown("---")
+                st.markdown("#### 📉 Put Options (PE)")
+                st.dataframe(sample_df, use_container_width=True, hide_index=True, height=150)
 
     st.markdown("---")
     st.caption("💡 **Note**: Data is cumulative from the start of each week. Updates every 5 minutes. ATM strike highlighted in yellow.")
@@ -8804,7 +8885,49 @@ if st.session_state.weekly_expiries_list and len(st.session_state.weekly_expirie
 
         st.caption("📁 Summary includes all 4 weeks of data with CE/PE flow, volumes, and net bias")
     else:
-        st.info("⏳ No summary data available yet. Start polling to collect data.")
+        st.info("⏳ No summary data available yet. Will populate within 10-20 seconds of polling start.")
+
+        # Show empty table structure
+        empty_summary = pd.DataFrame({
+            'Week': ['Week 1', 'Week 2', 'Week 3', 'Week 4'],
+            'Expiry': ['—', '—', '—', '—'],
+            'CE Flow': ['—', '—', '—', '—'],
+            'PE Flow': ['—', '—', '—', '—'],
+            'Net Bias (CE-PE)': ['—', '—', '—', '—'],
+            'CE Volume': ['—', '—', '—', '—'],
+            'PE Volume': ['—', '—', '—', '—'],
+            'Total Volume': ['—', '—', '—', '—'],
+            'Sentiment': ['⚪ NEUTRAL', '⚪ NEUTRAL', '⚪ NEUTRAL', '⚪ NEUTRAL']
+        })
+
+        st.dataframe(
+            empty_summary,
+            use_container_width=True,
+            hide_index=True,
+            height=200
+        )
+
+        # Overall Summary Metrics (empty)
+        st.markdown("---")
+        st.markdown("### 📈 Overall Summary (All Weeks Combined)")
+
+        col1, col2, col3, col4 = st.columns(4)
+
+        with col1:
+            st.metric("Total CE Flow (All Weeks)", "—")
+
+        with col2:
+            st.metric("Total PE Flow (All Weeks)", "—")
+
+        with col3:
+            st.metric("Net Bias (All Weeks)", "—")
+            st.caption("⚪ NEUTRAL")
+
+        with col4:
+            st.metric("Total Volume (All Weeks)", "—")
+
+        st.markdown("**Overall CE vs PE Flow Distribution:**")
+        st.caption("📊 CE: — | PE: —")
 
 else:
     # Show empty state
