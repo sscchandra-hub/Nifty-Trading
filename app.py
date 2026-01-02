@@ -7878,7 +7878,7 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### ⚙️ Engine Status")
     is_running = st.session_state.get("polling_running", False)
-    thread_alive = engine.polling_thread and engine.polling_thread.is_alive()
+    thread_alive = bool(engine.polling_thread and engine.polling_thread.is_alive())
     if is_running and thread_alive:
         st.success("🟢 Polling Active")
         if engine.last_poll_time:
@@ -7890,6 +7890,31 @@ with st.sidebar:
         st.info("⏸️ Stopped")
     if engine.subscribe_tokens:
         st.metric("Instruments", len(engine.subscribe_tokens))
+    else:
+        st.error("No instruments to poll")
+        if engine.ins_df.empty:
+            st.caption("⚠️ Instruments not loaded")
+        elif not engine.indices_with_fo:
+            st.caption("⚠️ Indices not discovered")
+        elif not engine.stocks_with_fo:
+            st.caption("⚠️ Stocks not discovered")
+        else:
+            st.caption("⚠️ Tokens not built")
+
+    # Build Instruments Button (if tokens not available)
+    if not engine.subscribe_tokens:
+        if st.button("🔧 Build Instruments", use_container_width=True, key="build_instruments_btn"):
+            with st.spinner("Building subscription tokens..."):
+                if engine.ins_df.empty:
+                    engine.ins_df = ensure_instruments(kite)
+                if not engine.indices_with_fo:
+                    engine.indices_with_fo = discover_indices_with_fo(engine.ins_df)
+                if not engine.stocks_with_fo:
+                    engine.stocks_with_fo = discover_stocks_with_fo(engine.ins_df)
+                if not engine.subscribe_tokens:
+                    engine.subscribe_tokens = build_subscriptions(kite, engine.ins_df)
+            st.success(f"✅ Built {len(engine.subscribe_tokens)} instruments!")
+            st.rerun()
 
     # Polling Control Buttons
     col1, col2 = st.columns(2)
