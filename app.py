@@ -8231,12 +8231,33 @@ if not kite:
 
 engine.kite = kite
 
+# ============================================
+# AUTO-LOAD INSTRUMENTS AND BUILD TOKENS
+# ============================================
+print("="*60)
+print("STARTING INSTRUMENT LOADING PROCESS")
+print("="*60)
+
 if engine.ins_df.empty:
+    print("📋 Instruments dataframe is empty, loading...")
     with st.spinner("Loading instruments..."):
-        engine.ins_df = ensure_instruments(kite)
+        try:
+            engine.ins_df = ensure_instruments(kite)
+            print(f"✅ Loaded instruments: {len(engine.ins_df)} rows")
+        except Exception as e:
+            print(f"❌ Failed to load instruments: {e}")
+            import traceback
+            traceback.print_exc()
+            st.error(f"Failed to load instruments: {e}")
+else:
+    print(f"✅ Instruments already loaded: {len(engine.ins_df)} rows")
 
 if not engine.indices_with_fo:
+    print("🔍 Discovering indices...")
     engine.indices_with_fo = discover_indices_with_fo(engine.ins_df)
+    print(f"✅ Found {len(engine.indices_with_fo)} indices with F&O")
+else:
+    print(f"✅ Indices already discovered: {len(engine.indices_with_fo)}")
 # Get NIFTY current month futures
 if not engine.nifty_fut_token and not engine.ins_df.empty:
     nifty_fut_info = get_current_month_nifty_future(engine.ins_df)
@@ -8248,13 +8269,30 @@ if not engine.nifty_fut_token and not engine.ins_df.empty:
 
 
 if not engine.stocks_with_fo:
+    print("🔍 Discovering stocks...")
     engine.stocks_with_fo = discover_stocks_with_fo(engine.ins_df)
+    print(f"✅ Found {len(engine.stocks_with_fo)} stocks with F&O")
+else:
+    print(f"✅ Stocks already discovered: {len(engine.stocks_with_fo)}")
 
 # Build subscription tokens (if not already built)
 if not engine.subscribe_tokens and not engine.ins_df.empty:
     print("🔧 Building subscription tokens...")
-    engine.subscribe_tokens = build_subscriptions(kite, engine.ins_df)
-    print(f"✅ Built {len(engine.subscribe_tokens)} subscription tokens")
+    try:
+        engine.subscribe_tokens = build_subscriptions(kite, engine.ins_df)
+        print(f"✅ Built {len(engine.subscribe_tokens)} subscription tokens")
+        print("="*60)
+    except Exception as e:
+        print(f"❌ Failed to build subscription tokens: {e}")
+        import traceback
+        traceback.print_exc()
+else:
+    if engine.subscribe_tokens:
+        print(f"✅ Subscription tokens already built: {len(engine.subscribe_tokens)}")
+        print("="*60)
+    else:
+        print("⚠️ Cannot build tokens: instruments dataframe is empty")
+        print("="*60)
 
 sector_mapping = load_sector_mapping()
 load_flow_history()
