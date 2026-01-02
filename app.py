@@ -7067,11 +7067,15 @@ def polling_loop():
                     engine.chart_update_counter += 1
                     log_chart_debug(f"chart_update_counter = {engine.chart_update_counter}/30")
 
-                    if engine.chart_update_counter >= 10:  # 5 minutes
-                        log_chart_debug(f"🎯 CHART UPDATE TRIGGERED! Counter reached {engine.chart_update_counter}")
-                        engine.chart_update_counter = 0
+                    # Trigger on FIRST poll (counter=1) OR every 10 polls (100 seconds)
+                    if engine.chart_update_counter == 1 or engine.chart_update_counter >= 10:
+                        if engine.chart_update_counter >= 10:
+                            log_chart_debug(f"🎯 CHART UPDATE TRIGGERED! Counter reached {engine.chart_update_counter}")
+                            engine.chart_update_counter = 0
+                        else:
+                            log_chart_debug(f"🎯 FIRST POLL - Immediate data collection!")
 
-                        # WEEKLY EXPIRY TRACKING: Collect data every 5 minutes
+                        # WEEKLY EXPIRY TRACKING: Collect data immediately on first poll, then every 100 seconds
                         if not engine.ins_df.empty:
                             try:
                                 print("📅 Collecting weekly expiry data...")
@@ -7098,14 +7102,37 @@ def polling_loop():
                                                     print(f"   🔍 collect_weekly_expiry_data() returned, df empty: {daily_df.empty if daily_df is not None else 'None'}")
 
                                                     if not daily_df.empty:
-                                                        # Save cumulative data
+                                                        # Save cumulative data to CSV
                                                         print(f"   🔍 Calling save_cumulative_expiry_data()...")
                                                         save_cumulative_expiry_data(expiry_date, daily_df)
+
+                                                        # Load saved data into session_state for UI display
+                                                        expiry_str = expiry_date.strftime('%d%b%Y').upper()
+                                                        saved_csv = Path("data/weekly_expiry") / f"nifty_{expiry_str}.csv"
+                                                        if saved_csv.exists():
+                                                            df_display = pd.read_csv(saved_csv)
+                                                            if not df_display.empty:
+                                                                # Rename columns for display
+                                                                df_display = df_display.rename(columns={
+                                                                    'strike': 'Strike',
+                                                                    'type': 'Type',
+                                                                    'cumulative_flow': 'Cumulative_Flow',
+                                                                    'cumulative_volume': 'Cumulative_Volume',
+                                                                    'cumulative_oi_change': 'Cumulative_OI_Change'
+                                                                })
+                                                                st.session_state.weekly_expiry_data[expiry_str] = df_display
+                                                                print(f"   ✅ Loaded {len(df_display)} rows into session_state for {expiry_str}")
                                                     else:
                                                         print(f"   ⚠️ daily_df is EMPTY - not saving")
 
                                             except Exception as e:
                                                 print(f"❌ Error collecting data for {expiry_date}: {e}")
+
+                                        # Update expiries list in session_state
+                                        st.session_state.weekly_expiries_list = [
+                                            (exp.strftime('%d%b%Y').upper(), exp) for exp in next_expiries
+                                        ]
+                                        st.session_state.last_expiry_update = datetime.now()
 
                                         print("✅ Weekly expiry data collection complete")
 
