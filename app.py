@@ -5864,6 +5864,390 @@ def update_weekly_expiry_data(kite, ins_df, token_meta, all_quotes, expiry_str, 
         import traceback
         traceback.print_exc()
 
+# =========================
+# PART 3: INSTITUTIONAL ACCUMULATION TRACKER - HELPER FUNCTIONS
+# =========================
+
+def calculate_10day_metrics(symbol, current_price):
+    """Calculate 10-day high/low and current position in range"""
+    try:
+        # Load historical daily summaries for this stock
+        historical_prices = []
+        today = datetime.now().date()
+
+        # Look back 10 days
+        for i in range(10):
+            date_to_check = today - timedelta(days=i)
+            date_str = date_to_check.strftime('%d%b%Y').upper()
+            csv_path = Path("data/institutional_tracking") / f"daily_summary_{date_str}.csv"
+
+            if csv_path.exists():
+                df = pd.read_csv(csv_path)
+                stock_row = df[df['symbol'] == symbol]
+                if not stock_row.empty:
+                    historical_prices.append(stock_row.iloc[0]['futures_close'])
+
+        # Add current price
+        historical_prices.append(current_price)
+
+        if len(historical_prices) >= 2:
+            day_10_high = max(historical_prices)
+            day_10_low = min(historical_prices)
+
+            # Calculate position in range (0% = at low, 100% = at high)
+            if day_10_high != day_10_low:
+                position_pct = ((current_price - day_10_low) / (day_10_high - day_10_low)) * 100
+            else:
+                position_pct = 50.0  # Middle if no range
+
+            return day_10_high, day_10_low, position_pct
+        else:
+            return current_price, current_price, 50.0
+
+    except Exception as e:
+        print(f"Error calculating 10-day metrics for {symbol}: {e}")
+        return current_price, current_price, 50.0
+
+def calculate_volatility_metrics(symbol):
+    """Calculate 5-day and 10-day average range, return ratio"""
+    try:
+        today = datetime.now().date()
+        daily_ranges_5d = []
+        daily_ranges_10d = []
+
+        # Look back 10 days
+        for i in range(1, 11):  # Skip today
+            date_to_check = today - timedelta(days=i)
+            date_str = date_to_check.strftime('%d%b%Y').upper()
+            csv_path = Path("data/institutional_tracking") / f"daily_summary_{date_str}.csv"
+
+            if csv_path.exists():
+                df = pd.read_csv(csv_path)
+                stock_row = df[df['symbol'] == symbol]
+                if not stock_row.empty:
+                    high = stock_row.iloc[0]['day_10_high']
+                    low = stock_row.iloc[0]['day_10_low']
+                    daily_range = high - low
+
+                    daily_ranges_10d.append(daily_range)
+                    if i <= 5:
+                        daily_ranges_5d.append(daily_range)
+
+        # Calculate averages
+        volatility_5d = sum(daily_ranges_5d) / len(daily_ranges_5d) if daily_ranges_5d else 0
+        volatility_10d = sum(daily_ranges_10d) / len(daily_ranges_10d) if daily_ranges_10d else 0
+
+        # Ratio < 1 means volatility is shrinking
+        volatility_ratio = volatility_5d / volatility_10d if volatility_10d > 0 else 1.0
+
+        return volatility_5d, volatility_10d, volatility_ratio
+
+    except Exception as e:
+        print(f"Error calculating volatility for {symbol}: {e}")
+        return 0, 0, 1.0
+
+def capture_end_of_day_data():
+    """Capture end-of-day summary for all 191 F&O stocks"""
+    print("\n" + "="*60)
+    print("📊 CAPTURING END-OF-DAY INSTITUTIONAL DATA")
+    print("="*60)
+
+    try:
+        today = datetime.now().date()
+        today_str = today.strftime('%d%b%Y').upper()
+
+        # Check if already captured today
+        if st.session_state.last_eod_capture == today_str:
+            print(f"✅ EOD data already captured today ({today_str})")
+            return
+
+        # Create directory if it doesn't exist
+        data_dir = Path("data/institutional_tracking")
+        data_dir.mkdir(parents=True, exist_ok=True)
+
+        csv_path = data_dir / f"daily_summary_{today_str}.csv"
+
+        # Collect data for all stocks
+        eod_rows = []
+        stocks_processed = 0
+
+        for symbol, summary in st.session_state.stock_expiry_summary.items():
+            try:
+                # Get current and next expiry
+                current_expiry = summary['expiry']
+
+                # Get total CE/PE volume from cumulative data
+                ce_volume = summary.get('ce_volume', 0)
+                pe_volume = summary.get('pe_volume', 0)
+                total_volume = summary.get('total_volume', 0)
+                net_flow = summary.get('net_flow', 0)
+
+                # Get futures data (use stock price as proxy for futures close)
+                futures_close = summary.get('price', 0)
+
+                # For now, we'll use zeros for futures OI and OI change
+                # (we'd need to add futures data collection to get real values)
+                futures_oi = 0
+                futures_oi_change = 0
+
+                # Calculate price change % (will be 0 for first day, real from day 2)
+                yesterday = today - timedelta(days=1)
+                yesterday_str = yesterday.strftime('%d%b%Y').upper()
+                yesterday_csv = data_dir / f"daily_summary_{yesterday_str}.csv"
+                price_change_pct = 0
+
+                if yesterday_csv.exists():
+                    df_yesterday = pd.read_csv(yesterday_csv)
+                    stock_yesterday = df_yesterday[df_yesterday['symbol'] == symbol]
+                    if not stock_yesterday.empty:
+                        prev_close = stock_yesterday.iloc[0]['futures_close']
+                        if prev_close > 0:
+                            price_change_pct = ((futures_close - prev_close) / prev_close) * 100
+
+                # Calculate 10-day high/low and position
+                day_10_high, day_10_low, position_in_range_pct = calculate_10day_metrics(symbol, futures_close)
+
+                # Calculate volatility metrics
+                volatility_5d, volatility_10d, volatility_ratio = calculate_volatility_metrics(symbol)
+
+                eod_rows.append({
+                    'date': today_str,
+                    'symbol': symbol,
+                    'current_expiry': current_expiry.strftime('%d%b%Y').upper() if isinstance(current_expiry, datetime) else current_expiry,
+                    'next_expiry': '',  # Will calculate in future enhancement
+                    'ce_volume': ce_volume,
+                    'pe_volume': pe_volume,
+                    'total_volume': total_volume,
+                    'net_flow': net_flow,
+                    'futures_close': futures_close,
+                    'futures_oi': futures_oi,
+                    'futures_oi_change': futures_oi_change,
+                    'price_change_pct': price_change_pct,
+                    'day_10_high': day_10_high,
+                    'day_10_low': day_10_low,
+                    'position_in_range_pct': position_in_range_pct,
+                    'volatility_5d': volatility_5d,
+                    'volatility_10d': volatility_10d,
+                    'volatility_ratio': volatility_ratio
+                })
+
+                stocks_processed += 1
+
+            except Exception as e:
+                print(f"   ⚠️ Error processing {symbol}: {e}")
+
+        # Save to CSV
+        if eod_rows:
+            df_eod = pd.DataFrame(eod_rows)
+            df_eod.to_csv(csv_path, index=False)
+
+            # Store in session state
+            st.session_state.daily_stock_summary[today_str] = df_eod
+            st.session_state.last_eod_capture = today_str
+
+            print(f"✅ Captured EOD data for {stocks_processed} stocks")
+            print(f"   Saved to: {csv_path}")
+
+            # Trigger campaign detection and watchlist generation
+            calculate_accumulation_scores()
+            generate_daily_watchlist()
+        else:
+            print("⚠️ No EOD data to save")
+
+    except Exception as e:
+        print(f"❌ Error capturing EOD data: {e}")
+        import traceback
+        traceback.print_exc()
+
+def calculate_accumulation_scores():
+    """Calculate accumulation score for each stock based on last 3-8 days"""
+    print("\n" + "="*60)
+    print("🎯 CALCULATING ACCUMULATION SCORES")
+    print("="*60)
+
+    try:
+        today = datetime.now().date()
+
+        # Load last 8 days of data
+        historical_data = {}
+        for i in range(8):
+            date_to_check = today - timedelta(days=i)
+            date_str = date_to_check.strftime('%d%b%Y').upper()
+            csv_path = Path("data/institutional_tracking") / f"daily_summary_{date_str}.csv"
+
+            if csv_path.exists():
+                df = pd.read_csv(csv_path)
+                for _, row in df.iterrows():
+                    symbol = row['symbol']
+                    if symbol not in historical_data:
+                        historical_data[symbol] = []
+                    historical_data[symbol].append(row)
+
+        # Calculate score for each stock
+        for symbol, daily_records in historical_data.items():
+            if len(daily_records) < 3:
+                continue  # Need at least 3 days
+
+            # Sort by date (most recent first)
+            daily_records = sorted(daily_records, key=lambda x: x['date'], reverse=True)
+
+            # Take last 3-8 days (whatever we have)
+            recent_days = daily_records[:min(8, len(daily_records))]
+
+            # Calculate score components
+            score = 0
+
+            # 1. CE/PE Flow Dominance (-40 to +40 points)
+            ce_dominant_days = sum(1 for day in recent_days if day['net_flow'] > 0)
+            pe_dominant_days = sum(1 for day in recent_days if day['net_flow'] < 0)
+            flow_score = ((ce_dominant_days - pe_dominant_days) / len(recent_days)) * 40
+            score += flow_score
+
+            # 2. Average Net Flow Magnitude (-30 to +30 points)
+            avg_net_flow = sum(day['net_flow'] for day in recent_days) / len(recent_days)
+            # Normalize to -30 to +30 range (assume max flow is 10,000,000)
+            flow_magnitude_score = max(-30, min(30, (avg_net_flow / 10000000) * 30))
+            score += flow_magnitude_score
+
+            # 3. Volatility Compression (+20 points if shrinking)
+            latest_volatility_ratio = recent_days[0]['volatility_ratio']
+            if latest_volatility_ratio < 0.8:  # 5d vol < 80% of 10d vol
+                score += 20
+            elif latest_volatility_ratio < 1.0:
+                score += 10
+
+            # 4. Position in 10-day Range (+10 or -10 points)
+            latest_position = recent_days[0]['position_in_range_pct']
+            if latest_position > 70:  # Upper range
+                score += 10
+            elif latest_position < 30:  # Lower range
+                score -= 10
+
+            # Store score with date
+            if symbol not in st.session_state.accumulation_scores:
+                st.session_state.accumulation_scores[symbol] = []
+
+            st.session_state.accumulation_scores[symbol].append({
+                'date': today.strftime('%d%b%Y').upper(),
+                'score': score,
+                'days_analyzed': len(recent_days)
+            })
+
+            # Keep only last 30 days of scores
+            if len(st.session_state.accumulation_scores[symbol]) > 30:
+                st.session_state.accumulation_scores[symbol] = st.session_state.accumulation_scores[symbol][-30:]
+
+        print(f"✅ Calculated accumulation scores for {len(historical_data)} stocks")
+
+    except Exception as e:
+        print(f"❌ Error calculating accumulation scores: {e}")
+        import traceback
+        traceback.print_exc()
+
+def generate_daily_watchlist():
+    """Generate bullish and bearish watchlists based on smoothed accumulation scores"""
+    print("\n" + "="*60)
+    print("📋 GENERATING DAILY WATCHLIST")
+    print("="*60)
+
+    try:
+        # Calculate smoothed scores (3-5 day average)
+        smoothed_scores = {}
+
+        for symbol, score_history in st.session_state.accumulation_scores.items():
+            if len(score_history) >= 3:
+                # Take last 3-5 days
+                recent_scores = score_history[-5:] if len(score_history) >= 5 else score_history[-3:]
+                smoothed_score = sum(s['score'] for s in recent_scores) / len(recent_scores)
+
+                # Get latest data
+                today_str = datetime.now().date().strftime('%d%b%Y').upper()
+                if today_str in st.session_state.daily_stock_summary:
+                    df_today = st.session_state.daily_stock_summary[today_str]
+                    stock_data = df_today[df_today['symbol'] == symbol]
+
+                    if not stock_data.empty:
+                        volatility_ratio = stock_data.iloc[0]['volatility_ratio']
+                        position_in_range = stock_data.iloc[0]['position_in_range_pct']
+
+                        smoothed_scores[symbol] = {
+                            'score': smoothed_score,
+                            'volatility_ratio': volatility_ratio,
+                            'position_in_range': position_in_range
+                        }
+
+        # Filter for bullish watchlist
+        bullish_candidates = []
+        for symbol, data in smoothed_scores.items():
+            # Criteria: Strong positive score, compressed volatility, not yet broken out
+            if (data['score'] > 30 and
+                data['volatility_ratio'] < 0.9 and
+                data['position_in_range'] < 80):  # Not yet at top
+                bullish_candidates.append((symbol, data['score']))
+
+        # Sort by score and take top 20
+        bullish_candidates.sort(key=lambda x: x[1], reverse=True)
+        st.session_state.bullish_watchlist = [symbol for symbol, _ in bullish_candidates[:20]]
+
+        # Filter for bearish watchlist
+        bearish_candidates = []
+        for symbol, data in smoothed_scores.items():
+            # Criteria: Strong negative score, compressed volatility, not yet broken down
+            if (data['score'] < -30 and
+                data['volatility_ratio'] < 0.9 and
+                data['position_in_range'] > 20):  # Not yet at bottom
+                bearish_candidates.append((symbol, data['score']))
+
+        # Sort by score (most negative first) and take top 20
+        bearish_candidates.sort(key=lambda x: x[1])
+        st.session_state.bearish_watchlist = [symbol for symbol, _ in bearish_candidates[:20]]
+
+        st.session_state.watchlist_last_updated = datetime.now()
+
+        print(f"✅ Generated watchlists:")
+        print(f"   Bullish: {len(st.session_state.bullish_watchlist)} stocks")
+        print(f"   Bearish: {len(st.session_state.bearish_watchlist)} stocks")
+
+    except Exception as e:
+        print(f"❌ Error generating watchlist: {e}")
+        import traceback
+        traceback.print_exc()
+
+def load_historical_eod_data():
+    """Load historical EOD data from CSV files on startup"""
+    try:
+        data_dir = Path("data/institutional_tracking")
+        if not data_dir.exists():
+            return
+
+        # Find all daily summary CSV files
+        csv_files = sorted(data_dir.glob("daily_summary_*.csv"))
+
+        if not csv_files:
+            return
+
+        print(f"\n📂 Loading historical EOD data from {len(csv_files)} files...")
+
+        for csv_file in csv_files:
+            # Extract date from filename (format: daily_summary_DDMMMYYYY.csv)
+            date_str = csv_file.stem.replace('daily_summary_', '')
+
+            # Load CSV into session state
+            df = pd.read_csv(csv_file)
+            if not df.empty:
+                st.session_state.daily_stock_summary[date_str] = df
+
+        # Recalculate accumulation scores from loaded data
+        if st.session_state.daily_stock_summary:
+            print("   🔄 Recalculating accumulation scores from historical data...")
+            calculate_accumulation_scores()
+            generate_daily_watchlist()
+
+        print(f"   ✅ Loaded {len(st.session_state.daily_stock_summary)} days of EOD data")
+
+    except Exception as e:
+        print(f"⚠️ Error loading historical EOD data: {e}")
+
 # Initialize weekly expiry session state (4 weeks)
 if 'weekly_expiry_data' not in st.session_state:
     st.session_state.weekly_expiry_data = {}  # Dict with expiry_str as key
@@ -5883,6 +6267,20 @@ if 'stock_sort_by' not in st.session_state:
     st.session_state.stock_sort_by = 'Net Flow (Absolute)'  # Default sort option
 if 'show_all_stocks' not in st.session_state:
     st.session_state.show_all_stocks = False  # Toggle for expand button
+
+# Initialize institutional tracking session state (PART 3)
+if 'daily_stock_summary' not in st.session_state:
+    st.session_state.daily_stock_summary = {}  # Dict with date as key -> list of stock summaries
+if 'accumulation_scores' not in st.session_state:
+    st.session_state.accumulation_scores = {}  # Dict with symbol as key -> list of daily scores
+if 'bullish_watchlist' not in st.session_state:
+    st.session_state.bullish_watchlist = []  # List of bullish stock symbols
+if 'bearish_watchlist' not in st.session_state:
+    st.session_state.bearish_watchlist = []  # List of bearish stock symbols
+if 'last_eod_capture' not in st.session_state:
+    st.session_state.last_eod_capture = None  # Last date when EOD data was captured
+if 'watchlist_last_updated' not in st.session_state:
+    st.session_state.watchlist_last_updated = None  # Last time watchlist was generated
 
 def polling_loop():
     print("\n" + "="*50)
@@ -7408,6 +7806,18 @@ def polling_loop():
                 except Exception as e:
                     print(f"Auto-backup check failed: {e}")
 
+                # PART 3: EOD DATA CAPTURE (trigger at 3:30 PM IST)
+                try:
+                    current_time = datetime.now().time()
+                    # Trigger between 3:30 PM and 3:40 PM (market closes at 3:30 PM)
+                    if current_time.hour == 15 and 30 <= current_time.minute < 40:
+                        today_str = datetime.now().date().strftime('%d%b%Y').upper()
+                        if st.session_state.last_eod_capture != today_str:
+                            print("\n⏰ End-of-day time window detected - capturing institutional data...")
+                            capture_end_of_day_data()
+                except Exception as e:
+                    print(f"EOD capture check failed: {e}")
+
                 time.sleep(10)
 
                 # MEMORY FIX: Periodic garbage collection
@@ -8372,6 +8782,13 @@ if not st.session_state.weekly_expiries_list and not engine.ins_df.empty:
                 print(f"   Week {idx+1}: {expiry_dt.strftime('%d %b %Y')} ({expiry_str})")
     except Exception as e:
         print(f"⚠️ Failed to initialize weekly expiries: {e}")
+
+# Load historical EOD data for PART 3 (Institutional Accumulation Tracker)
+if not st.session_state.daily_stock_summary:
+    try:
+        load_historical_eod_data()
+    except Exception as e:
+        print(f"⚠️ Failed to load historical EOD data: {e}")
 
 # Build subscription tokens (if not already built)
 if not engine.subscribe_tokens and not engine.ins_df.empty:
@@ -9409,3 +9826,326 @@ else:
     st.caption("Sample preview - actual data will populate automatically")
 
 st.markdown("---")
+
+# =========================
+# PART 3: INSTITUTIONAL ACCUMULATION TRACKER
+# =========================
+
+st.markdown("## 🎯 PART 3: INSTITUTIONAL ACCUMULATION TRACKER")
+st.caption("Track daily institutional patterns, detect accumulation campaigns, and generate pre-market watchlists")
+
+# Check if we have any EOD data
+has_eod_data = bool(st.session_state.daily_stock_summary)
+today_str = datetime.now().date().strftime('%d%b%Y').upper()
+has_today_data = today_str in st.session_state.daily_stock_summary
+
+if has_eod_data:
+    # =========================
+    # SECTION 1: DAILY WATCHLISTS (MORNING VIEW)
+    # =========================
+    st.markdown("### 📋 Daily Watchlists")
+    st.caption("🌅 **Morning View**: Generated before market open based on 3-5 day accumulation patterns")
+
+    # Watchlist metrics
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("🟢 Bullish Candidates", len(st.session_state.bullish_watchlist))
+    with col2:
+        st.metric("🔴 Bearish Candidates", len(st.session_state.bearish_watchlist))
+    with col3:
+        last_updated = st.session_state.watchlist_last_updated
+        if last_updated:
+            st.metric("Last Updated", last_updated.strftime('%d %b, %I:%M %p'))
+        else:
+            st.metric("Last Updated", "—")
+
+    # Display watchlists side by side
+    tab1, tab2 = st.tabs(["🟢 Bullish Watchlist", "🔴 Bearish Watchlist"])
+
+    with tab1:
+        if st.session_state.bullish_watchlist:
+            st.markdown("#### Bullish Accumulation Detected")
+            st.caption("Stocks showing CE dominance + volatility compression + not yet broken out")
+
+            # Build watchlist data
+            bullish_data = []
+            for rank, symbol in enumerate(st.session_state.bullish_watchlist, 1):
+                # Get latest score
+                if symbol in st.session_state.accumulation_scores:
+                    score_history = st.session_state.accumulation_scores[symbol]
+                    latest_score = score_history[-1]['score'] if score_history else 0
+
+                    # Get latest daily data
+                    if today_str in st.session_state.daily_stock_summary:
+                        df_today = st.session_state.daily_stock_summary[today_str]
+                        stock_data = df_today[df_today['symbol'] == symbol]
+
+                        if not stock_data.empty:
+                            row = stock_data.iloc[0]
+                            bullish_data.append({
+                                'Rank': rank,
+                                'Symbol': symbol,
+                                'Score': f"{latest_score:.1f}",
+                                'Price': f"₹{row['futures_close']:.2f}",
+                                'Net Flow': f"{row['net_flow']:,.0f}",
+                                'Vol Ratio': f"{row['volatility_ratio']:.2f}",
+                                'Range Position': f"{row['position_in_range_pct']:.1f}%",
+                                'Signal': '🟢 BUY READY'
+                            })
+
+            if bullish_data:
+                df_bullish = pd.DataFrame(bullish_data)
+                st.dataframe(df_bullish, use_container_width=True, hide_index=True, height=400)
+                st.caption(f"💡 **{len(bullish_data)} stocks** showing bullish institutional accumulation patterns")
+            else:
+                st.info("No bullish candidates meet the criteria currently")
+        else:
+            st.info("⏳ No bullish watchlist generated yet. Will populate after 3+ days of EOD data collection.")
+
+    with tab2:
+        if st.session_state.bearish_watchlist:
+            st.markdown("#### Bearish Buildup Detected")
+            st.caption("Stocks showing PE dominance + volatility compression + not yet broken down")
+
+            # Build watchlist data
+            bearish_data = []
+            for rank, symbol in enumerate(st.session_state.bearish_watchlist, 1):
+                # Get latest score
+                if symbol in st.session_state.accumulation_scores:
+                    score_history = st.session_state.accumulation_scores[symbol]
+                    latest_score = score_history[-1]['score'] if score_history else 0
+
+                    # Get latest daily data
+                    if today_str in st.session_state.daily_stock_summary:
+                        df_today = st.session_state.daily_stock_summary[today_str]
+                        stock_data = df_today[df_today['symbol'] == symbol]
+
+                        if not stock_data.empty:
+                            row = stock_data.iloc[0]
+                            bearish_data.append({
+                                'Rank': rank,
+                                'Symbol': symbol,
+                                'Score': f"{latest_score:.1f}",
+                                'Price': f"₹{row['futures_close']:.2f}",
+                                'Net Flow': f"{row['net_flow']:,.0f}",
+                                'Vol Ratio': f"{row['volatility_ratio']:.2f}",
+                                'Range Position': f"{row['position_in_range_pct']:.1f}%",
+                                'Signal': '🔴 SELL READY'
+                            })
+
+            if bearish_data:
+                df_bearish = pd.DataFrame(bearish_data)
+                st.dataframe(df_bearish, use_container_width=True, hide_index=True, height=400)
+                st.caption(f"💡 **{len(bearish_data)} stocks** showing bearish institutional buildup patterns")
+            else:
+                st.info("No bearish candidates meet the criteria currently")
+        else:
+            st.info("⏳ No bearish watchlist generated yet. Will populate after 3+ days of EOD data collection.")
+
+    st.markdown("---")
+
+    # =========================
+    # SECTION 2: DAILY STOCK SUMMARY TABLE
+    # =========================
+    st.markdown("### 📊 Daily Stock Summary")
+    st.caption("🌆 **End-of-Day View**: Complete summary captured at market close (3:30 PM)")
+
+    # Date selector
+    available_dates = sorted(st.session_state.daily_stock_summary.keys(), reverse=True)
+    selected_date = st.selectbox("Select Date", available_dates, key="eod_date_selector")
+
+    if selected_date in st.session_state.daily_stock_summary:
+        df_eod = st.session_state.daily_stock_summary[selected_date]
+
+        # Summary metrics for selected date
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Total Stocks", len(df_eod))
+        with col2:
+            ce_dominant = len(df_eod[df_eod['net_flow'] > 0])
+            st.metric("CE Dominant", ce_dominant)
+        with col3:
+            pe_dominant = len(df_eod[df_eod['net_flow'] < 0])
+            st.metric("PE Dominant", pe_dominant)
+        with col4:
+            avg_vol_ratio = df_eod['volatility_ratio'].mean()
+            st.metric("Avg Vol Ratio", f"{avg_vol_ratio:.2f}")
+
+        # Search and filter
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            search_symbol = st.text_input("🔍 Search Symbol", "", key="eod_search")
+        with col2:
+            sort_by = st.selectbox("Sort By", ["Net Flow", "Score", "Volatility", "Price Change"], key="eod_sort")
+
+        # Filter data
+        df_display = df_eod.copy()
+        if search_symbol:
+            df_display = df_display[df_display['symbol'].str.contains(search_symbol.upper())]
+
+        # Add accumulation score to display
+        df_display['accumulation_score'] = df_display['symbol'].apply(
+            lambda s: st.session_state.accumulation_scores[s][-1]['score']
+            if s in st.session_state.accumulation_scores and st.session_state.accumulation_scores[s]
+            else 0
+        )
+
+        # Sort data
+        if sort_by == "Net Flow":
+            df_display = df_display.sort_values('net_flow', ascending=False)
+        elif sort_by == "Score":
+            df_display = df_display.sort_values('accumulation_score', ascending=False)
+        elif sort_by == "Volatility":
+            df_display = df_display.sort_values('volatility_ratio', ascending=True)
+        elif sort_by == "Price Change":
+            df_display = df_display.sort_values('price_change_pct', ascending=False)
+
+        # Format for display
+        df_table = pd.DataFrame({
+            'Symbol': df_display['symbol'],
+            'Expiry': df_display['current_expiry'],
+            'Close': df_display['futures_close'].apply(lambda x: f"₹{x:.2f}"),
+            'Change %': df_display['price_change_pct'].apply(lambda x: f"{x:+.2f}%"),
+            'Net Flow': df_display['net_flow'].apply(lambda x: f"{x:+,.0f}"),
+            'CE Vol': df_display['ce_volume'].apply(lambda x: f"{x:,.0f}"),
+            'PE Vol': df_display['pe_volume'].apply(lambda x: f"{x:,.0f}"),
+            'Score': df_display['accumulation_score'].apply(lambda x: f"{x:.1f}"),
+            'Vol Ratio': df_display['volatility_ratio'].apply(lambda x: f"{x:.2f}"),
+            'Range %': df_display['position_in_range_pct'].apply(lambda x: f"{x:.1f}%"),
+            '10D High': df_display['day_10_high'].apply(lambda x: f"₹{x:.2f}"),
+            '10D Low': df_display['day_10_low'].apply(lambda x: f"₹{x:.2f}")
+        })
+
+        st.dataframe(df_table, use_container_width=True, hide_index=True, height=500)
+        st.caption(f"💡 Showing {len(df_table)} stocks for {selected_date}")
+
+        # Download button
+        csv_data = df_display.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label=f"📥 Download {selected_date} Summary",
+            data=csv_data,
+            file_name=f"daily_summary_{selected_date}.csv",
+            mime='text/csv',
+            use_container_width=True
+        )
+
+    st.markdown("---")
+
+    # =========================
+    # SECTION 3: CAMPAIGN DETECTOR (PER STOCK)
+    # =========================
+    st.markdown("### 🎯 Campaign Detector")
+    st.caption("Analyze 3-8 day patterns to detect institutional accumulation or distribution campaigns")
+
+    # Stock selector
+    if has_today_data:
+        df_today = st.session_state.daily_stock_summary[today_str]
+        stock_symbols = sorted(df_today['symbol'].unique())
+
+        selected_stock = st.selectbox("Select Stock for Campaign Analysis", stock_symbols, key="campaign_stock")
+
+        if selected_stock and selected_stock in st.session_state.accumulation_scores:
+            score_history = st.session_state.accumulation_scores[selected_stock]
+
+            if len(score_history) >= 3:
+                # Display score chart
+                st.markdown(f"#### 📈 {selected_stock} - Accumulation Score Trend")
+
+                # Prepare chart data
+                chart_data = pd.DataFrame([
+                    {'Date': s['date'], 'Score': s['score'], 'Days': s['days_analyzed']}
+                    for s in score_history[-10:]  # Last 10 days
+                ])
+
+                # Display as bar chart
+                st.bar_chart(chart_data.set_index('Date')['Score'])
+
+                # Latest analysis
+                latest = score_history[-1]
+                smoothed_score = sum(s['score'] for s in score_history[-5:]) / min(5, len(score_history))
+
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Latest Score", f"{latest['score']:.1f}")
+                with col2:
+                    st.metric("5-Day Smoothed", f"{smoothed_score:.1f}")
+                with col3:
+                    st.metric("Days Analyzed", latest['days_analyzed'])
+
+                # Campaign classification
+                st.markdown("#### 🏷️ Campaign Classification")
+
+                if smoothed_score > 40:
+                    st.success("🟢 **STRONG BULLISH ACCUMULATION**")
+                    st.write("- Repeated CE dominance")
+                    st.write("- OI likely rising")
+                    st.write("- Volatility compressing")
+                    st.write("- Price in upper range")
+                elif smoothed_score > 20:
+                    st.info("🔵 **MODERATE BULLISH BIAS**")
+                    st.write("- Some CE buying interest")
+                    st.write("- Mixed signals")
+                elif smoothed_score < -40:
+                    st.error("🔴 **STRONG BEARISH BUILDUP**")
+                    st.write("- Repeated PE dominance")
+                    st.write("- OI likely rising")
+                    st.write("- Volatility compressing")
+                    st.write("- Price in lower range")
+                elif smoothed_score < -20:
+                    st.warning("🟠 **MODERATE BEARISH BIAS**")
+                    st.write("- Some PE selling pressure")
+                    st.write("- Mixed signals")
+                else:
+                    st.info("⚪ **NO CLEAR CAMPAIGN**")
+                    st.write("- Balanced CE/PE activity")
+                    st.write("- No clear directional bias")
+
+            else:
+                st.info(f"⏳ Need at least 3 days of data for {selected_stock}. Currently have {len(score_history)} days.")
+        else:
+            st.info(f"No accumulation data available for {selected_stock} yet")
+
+else:
+    # Empty state - no EOD data yet
+    st.info("⏳ **Waiting for end-of-day data capture...**")
+    st.caption("EOD data will be automatically captured at 3:30 PM (market close). The system will:")
+
+    st.markdown("""
+    1. 📊 **Capture daily summary** for all 191 F&O stocks
+    2. 🎯 **Calculate accumulation scores** based on 3-8 day patterns
+    3. 📋 **Generate watchlists** for next trading day
+    """)
+
+    st.markdown("---")
+    st.markdown("### Preview: What's Coming")
+
+    # Sample watchlist preview
+    st.markdown("#### 🟢 Bullish Watchlist (Sample)")
+    sample_bullish = pd.DataFrame({
+        'Rank': [1, 2, 3],
+        'Symbol': ['RELIANCE', 'TCS', 'HDFCBANK'],
+        'Score': ['45.2', '38.7', '35.1'],
+        'Price': ['—', '—', '—'],
+        'Net Flow': ['—', '—', '—'],
+        'Vol Ratio': ['—', '—', '—'],
+        'Range Position': ['—', '—', '—'],
+        'Signal': ['🟢 BUY READY', '🟢 BUY READY', '🟢 BUY READY']
+    })
+    st.dataframe(sample_bullish, use_container_width=True, hide_index=True, height=150)
+
+    st.markdown("#### 📊 Daily Summary Table (Sample)")
+    sample_summary = pd.DataFrame({
+        'Symbol': ['RELIANCE', 'TCS', 'HDFCBANK'],
+        'Expiry': ['30JAN2026', '30JAN2026', '30JAN2026'],
+        'Close': ['—', '—', '—'],
+        'Change %': ['—', '—', '—'],
+        'Net Flow': ['—', '—', '—'],
+        'Score': ['—', '—', '—'],
+        'Vol Ratio': ['—', '—', '—'],
+        'Range %': ['—', '—', '—']
+    })
+    st.dataframe(sample_summary, use_container_width=True, hide_index=True, height=150)
+    st.caption("Sample preview - actual data will populate automatically at 3:30 PM")
+
+st.markdown("---")
+st.caption("🎯 **Institutional Accumulation Tracker** | Auto-captures at market close | Generates morning watchlists")
