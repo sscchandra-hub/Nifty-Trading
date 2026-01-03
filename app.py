@@ -9011,18 +9011,6 @@ cached_data = load_dashboard_cache()
 deltas = cached_data.get("deltas", {}) if cached_data else {}
 
 st.markdown("---")
-st.markdown("")
-
-# PART 2 Header with border
-st.markdown("""
-<div style="border: 4px solid #000000; border-radius: 10px; padding: 1.5rem; margin: 1.5rem 0; background-color: #fafafa;">
-    <h1 style="text-align: center; margin: 0;">📈 PART 2: STOCKS ANALYSIS</h1>
-    <p style="text-align: center; font-style: italic; margin: 0.5rem 0;">Market-wide performance analysis of all 209 F&O stocks</p>
-    <hr style="border: 1px solid #ddd; margin: 1rem 0;">
-</div>
-""", unsafe_allow_html=True)
-
-st.markdown("")
 
 # ===========================================================================
 # PART 2: STOCK MONTHLY EXPIRY TRACKING - TOP 10
