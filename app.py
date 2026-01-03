@@ -5868,6 +5868,43 @@ def update_weekly_expiry_data(kite, ins_df, token_meta, all_quotes, expiry_str, 
 # PART 3: INSTITUTIONAL ACCUMULATION TRACKER - HELPER FUNCTIONS
 # =========================
 
+# =========================
+# CONFIGURATION - Tunable Thresholds
+# =========================
+INSTITUTIONAL_CONFIG = {
+    # Volume & Flow Filters (to eliminate thin/noisy names)
+    'MIN_AVG_TOTAL_VOLUME': 100000,     # Minimum average CE+PE volume
+    'MIN_ABS_NET_FLOW': 10000,           # Minimum absolute net flow
+
+    # Score Bands for Classification
+    'STRONG_BULLISH_SCORE': 40,          # Score > 40 = Strong Bullish
+    'MODERATE_BULLISH_SCORE': 20,        # Score > 20 = Moderate Bullish
+    'STRONG_BEARISH_SCORE': -40,         # Score < -40 = Strong Bearish
+    'MODERATE_BEARISH_SCORE': -20,       # Score < -20 = Moderate Bearish
+
+    # Volatility Compression Thresholds
+    'VOLATILITY_COMPRESSED_RATIO': 0.8,  # Strong compression (5d < 80% of 10d)
+    'VOLATILITY_NORMAL_RATIO': 1.0,      # Normal/expanding
+
+    # Range Position Thresholds
+    'RANGE_UPPER_THRESHOLD': 70,         # Upper 70% = strong position
+    'RANGE_LOWER_THRESHOLD': 30,         # Lower 30% = weak position
+    'BREAKOUT_THRESHOLD': 90,            # >90% = breakout (triggered)
+    'BREAKDOWN_THRESHOLD': 10,           # <10% = breakdown (triggered)
+
+    # Lookback Periods
+    'MIN_DAYS_FOR_SCORING': 3,           # Minimum days needed for scoring
+    'MAX_DAYS_FOR_SCORING': 8,           # Maximum days to analyze
+    'MIN_DAYS_IN_CAMPAIGN': 3,           # Minimum consecutive days for "Strong" label
+    'SMOOTHING_DAYS': 5,                 # Days for watchlist score smoothing
+
+    # Watchlist Criteria
+    'WATCHLIST_BULLISH_SCORE': 30,       # Min score for bullish watchlist
+    'WATCHLIST_BEARISH_SCORE': -30,      # Max score for bearish watchlist
+    'WATCHLIST_VOL_COMPRESSION': 0.9,    # Max volatility ratio for watchlist
+    'WATCHLIST_MAX_SIZE': 20,            # Max stocks per watchlist
+}
+
 def calculate_10day_metrics(symbol, current_price):
     """Calculate 10-day high/low and current position in range"""
     try:
@@ -5945,6 +5982,74 @@ def calculate_volatility_metrics(symbol):
     except Exception as e:
         print(f"Error calculating volatility for {symbol}: {e}")
         return 0, 0, 1.0
+
+def calculate_days_in_campaign(symbol):
+    """
+    Calculate how many consecutive days a stock has been in the same buildup regime.
+    Returns: (days_in_campaign, current_regime)
+    """
+    try:
+        today = datetime.now().date()
+
+        # Load last 10 days of data to look for consecutive pattern
+        daily_records = []
+        for i in range(10):
+            date_to_check = today - timedelta(days=i)
+            date_str = date_to_check.strftime('%d%b%Y').upper()
+            csv_path = Path("data/institutional_tracking") / f"daily_summary_{date_str}.csv"
+
+            if csv_path.exists():
+                df = pd.read_csv(csv_path)
+                stock_row = df[df['symbol'] == symbol]
+                if not stock_row.empty:
+                    daily_records.append({
+                        'date': date_str,
+                        'net_flow': stock_row.iloc[0].get('net_flow', 0),
+                        'oi_change': stock_row.iloc[0].get('futures_oi_change', 0),
+                        'price_change': stock_row.iloc[0].get('price_change_pct', 0)
+                    })
+
+        if len(daily_records) < 2:
+            return 0, 'neutral'
+
+        # Sort by date (most recent first)
+        daily_records = sorted(daily_records, key=lambda x: x['date'], reverse=True)
+
+        # Determine current regime based on today's data
+        latest = daily_records[0]
+        current_regime = 'neutral'
+
+        # Bullish regime: CE dominant (net_flow > 0) AND (OI up + price up OR OI up + price stable)
+        if latest['net_flow'] > 0 and latest['oi_change'] > 0:
+            if latest['price_change'] > -0.5:  # Price stable or up
+                current_regime = 'bullish'
+        # Bearish regime: PE dominant (net_flow < 0) AND (OI up + price down OR OI up + price stable)
+        elif latest['net_flow'] < 0 and latest['oi_change'] > 0:
+            if latest['price_change'] < 0.5:  # Price stable or down
+                current_regime = 'bearish'
+
+        # Count consecutive days in same regime
+        days_in_campaign = 1  # Start with today
+        for i in range(1, len(daily_records)):
+            day = daily_records[i]
+
+            # Check if this day matches current regime
+            day_regime = 'neutral'
+            if day['net_flow'] > 0 and day['oi_change'] > 0 and day['price_change'] > -0.5:
+                day_regime = 'bullish'
+            elif day['net_flow'] < 0 and day['oi_change'] > 0 and day['price_change'] < 0.5:
+                day_regime = 'bearish'
+
+            if day_regime == current_regime:
+                days_in_campaign += 1
+            else:
+                break  # Stop at first non-matching day
+
+        return days_in_campaign, current_regime
+
+    except Exception as e:
+        print(f"Error calculating days in campaign for {symbol}: {e}")
+        return 0, 'neutral'
 
 def get_nifty_close_price():
     """Get NIFTY close price from latest quote data"""
@@ -6232,14 +6337,11 @@ def calculate_accumulation_scores():
 
     try:
         today = datetime.now().date()
+        cfg = INSTITUTIONAL_CONFIG  # Use config
 
-        # MINIMUM THRESHOLDS FOR FILTERING THIN/NOISY NAMES
-        MIN_AVG_TOTAL_VOLUME = 100000  # Minimum average CE+PE volume
-        MIN_ABS_NET_FLOW = 10000       # Minimum absolute net flow
-
-        # Load last 8 days of data
+        # Load last MAX_DAYS_FOR_SCORING days of data
         historical_data = {}
-        for i in range(8):
+        for i in range(cfg['MAX_DAYS_FOR_SCORING']):
             date_to_check = today - timedelta(days=i)
             date_str = date_to_check.strftime('%d%b%Y').upper()
             csv_path = Path("data/institutional_tracking") / f"daily_summary_{date_str}.csv"
@@ -6255,20 +6357,20 @@ def calculate_accumulation_scores():
         # Calculate score for each stock
         filtered_count = 0
         for symbol, daily_records in historical_data.items():
-            if len(daily_records) < 3:
-                continue  # Need at least 3 days
+            if len(daily_records) < cfg['MIN_DAYS_FOR_SCORING']:
+                continue  # Need at least minimum days
 
             # Sort by date (most recent first)
             daily_records = sorted(daily_records, key=lambda x: x['date'], reverse=True)
 
-            # Take last 3-8 days (whatever we have)
-            recent_days = daily_records[:min(8, len(daily_records))]
+            # Take last MIN_DAYS to MAX_DAYS (whatever we have)
+            recent_days = daily_records[:min(cfg['MAX_DAYS_FOR_SCORING'], len(daily_records))]
 
             # FILTER: Check minimum volume and flow thresholds
             avg_total_volume = sum(day.get('total_volume', 0) for day in recent_days) / len(recent_days)
             avg_abs_net_flow = sum(abs(day.get('net_flow', 0)) for day in recent_days) / len(recent_days)
 
-            if avg_total_volume < MIN_AVG_TOTAL_VOLUME or avg_abs_net_flow < MIN_ABS_NET_FLOW:
+            if avg_total_volume < cfg['MIN_AVG_TOTAL_VOLUME'] or avg_abs_net_flow < cfg['MIN_ABS_NET_FLOW']:
                 filtered_count += 1
                 continue  # Skip thin/noisy names
 
@@ -6287,7 +6389,7 @@ def calculate_accumulation_scores():
             flow_magnitude_score = max(-20, min(20, (avg_net_flow / 10000000) * 20))
             score += flow_magnitude_score
 
-            # 3. OI Regime Component (-20 to +20 points) - NEW!
+            # 3. OI Regime Component (-20 to +20 points)
             # Long buildup (OI up, price stable/up) = bullish
             # Short buildup (OI up, price stable/down) = bearish
             latest_oi_change = recent_days[0].get('futures_oi_change', 0)
@@ -6312,25 +6414,48 @@ def calculate_accumulation_scores():
 
             # 4. Volatility Compression (0 to +20 points)
             latest_volatility_ratio = recent_days[0].get('volatility_ratio', 1.0)
-            if latest_volatility_ratio < 0.8:  # 5d vol < 80% of 10d vol
+            if latest_volatility_ratio < cfg['VOLATILITY_COMPRESSED_RATIO']:
                 score += 20
-            elif latest_volatility_ratio < 1.0:
+            elif latest_volatility_ratio < cfg['VOLATILITY_NORMAL_RATIO']:
                 score += 10
 
-            # 5. Relative Strength (RS) Factor (-10 to +10 points) - NEW!
+            # 5. Relative Strength (RS) Factor (-10 to +10 points)
             latest_rs_trend = recent_days[0].get('rs_trend', 0)
             if latest_rs_trend == 1:  # Improving RS
                 score += 10
             elif latest_rs_trend == -1:  # Deteriorating RS
                 score -= 10
-            # rs_trend == 0 (neutral) adds nothing
 
             # 6. Position in 10-day Range (-10 to +10 points)
             latest_position = recent_days[0].get('position_in_range_pct', 50)
-            if latest_position > 70:  # Upper range
+            if latest_position > cfg['RANGE_UPPER_THRESHOLD']:
                 score += 10
-            elif latest_position < 30:  # Lower range
+            elif latest_position < cfg['RANGE_LOWER_THRESHOLD']:
                 score -= 10
+
+            # Calculate days in campaign and triggered status
+            days_in_campaign, current_regime = calculate_days_in_campaign(symbol)
+
+            # Determine classification based on score and days_in_campaign
+            classification = 'neutral'
+            triggered_status = None
+
+            if score > cfg['STRONG_BULLISH_SCORE'] and days_in_campaign >= cfg['MIN_DAYS_IN_CAMPAIGN']:
+                classification = 'strong_bullish'
+            elif score > cfg['MODERATE_BULLISH_SCORE']:
+                classification = 'moderate_bullish'
+            elif score < cfg['STRONG_BEARISH_SCORE'] and days_in_campaign >= cfg['MIN_DAYS_IN_CAMPAIGN']:
+                classification = 'strong_bearish'
+            elif score < cfg['MODERATE_BEARISH_SCORE']:
+                classification = 'moderate_bearish'
+
+            # Check for breakout/breakdown (triggered status)
+            if latest_position >= cfg['BREAKOUT_THRESHOLD'] and classification in ['strong_bullish', 'moderate_bullish']:
+                triggered_status = 'Triggered - Bullish'
+                classification = 'triggered_bullish'  # Move from accumulation to trade candidate
+            elif latest_position <= cfg['BREAKDOWN_THRESHOLD'] and classification in ['strong_bearish', 'moderate_bearish']:
+                triggered_status = 'Triggered - Bearish'
+                classification = 'triggered_bearish'  # Move from accumulation to trade candidate
 
             # Store score with date
             if symbol not in st.session_state.accumulation_scores:
@@ -6341,7 +6466,12 @@ def calculate_accumulation_scores():
                 'score': score,
                 'days_analyzed': len(recent_days),
                 'avg_volume': avg_total_volume,
-                'avg_abs_flow': avg_abs_net_flow
+                'avg_abs_flow': avg_abs_net_flow,
+                'days_in_campaign': days_in_campaign,
+                'current_regime': current_regime,
+                'classification': classification,
+                'triggered_status': triggered_status,
+                'position_in_range': latest_position
             })
 
             # Keep only last 30 days of scores
@@ -6363,14 +6493,28 @@ def generate_daily_watchlist():
     print("="*60)
 
     try:
-        # Calculate smoothed scores (3-5 day average)
+        cfg = INSTITUTIONAL_CONFIG
+
+        # Initialize lists
+        st.session_state.bullish_watchlist = []
+        st.session_state.bearish_watchlist = []
+        st.session_state.triggered_bullish = []  # NEW: Breakout stocks
+        st.session_state.triggered_bearish = []  # NEW: Breakdown stocks
+
+        # Calculate smoothed scores (use config smoothing days)
         smoothed_scores = {}
 
         for symbol, score_history in st.session_state.accumulation_scores.items():
-            if len(score_history) >= 3:
-                # Take last 3-5 days
-                recent_scores = score_history[-5:] if len(score_history) >= 5 else score_history[-3:]
+            if len(score_history) >= cfg['MIN_DAYS_FOR_SCORING']:
+                # Take last SMOOTHING_DAYS days
+                recent_scores = score_history[-cfg['SMOOTHING_DAYS']:] if len(score_history) >= cfg['SMOOTHING_DAYS'] else score_history[-cfg['MIN_DAYS_FOR_SCORING']:]
                 smoothed_score = sum(s['score'] for s in recent_scores) / len(recent_scores)
+
+                # Get latest classification and triggered status
+                latest = score_history[-1]
+                classification = latest.get('classification', 'neutral')
+                triggered_status = latest.get('triggered_status')
+                days_in_campaign = latest.get('days_in_campaign', 0)
 
                 # Get latest data
                 today_str = datetime.now().date().strftime('%d%b%Y').upper()
@@ -6385,40 +6529,59 @@ def generate_daily_watchlist():
                         smoothed_scores[symbol] = {
                             'score': smoothed_score,
                             'volatility_ratio': volatility_ratio,
-                            'position_in_range': position_in_range
+                            'position_in_range': position_in_range,
+                            'classification': classification,
+                            'triggered_status': triggered_status,
+                            'days_in_campaign': days_in_campaign
                         }
 
-        # Filter for bullish watchlist
+        # Separate into accumulation watchlists and triggered lists
         bullish_candidates = []
-        for symbol, data in smoothed_scores.items():
-            # Criteria: Strong positive score, compressed volatility, not yet broken out
-            if (data['score'] > 30 and
-                data['volatility_ratio'] < 0.9 and
-                data['position_in_range'] < 80):  # Not yet at top
-                bullish_candidates.append((symbol, data['score']))
-
-        # Sort by score and take top 20
-        bullish_candidates.sort(key=lambda x: x[1], reverse=True)
-        st.session_state.bullish_watchlist = [symbol for symbol, _ in bullish_candidates[:20]]
-
-        # Filter for bearish watchlist
         bearish_candidates = []
-        for symbol, data in smoothed_scores.items():
-            # Criteria: Strong negative score, compressed volatility, not yet broken down
-            if (data['score'] < -30 and
-                data['volatility_ratio'] < 0.9 and
-                data['position_in_range'] > 20):  # Not yet at bottom
-                bearish_candidates.append((symbol, data['score']))
+        triggered_bullish = []
+        triggered_bearish = []
 
-        # Sort by score (most negative first) and take top 20
+        for symbol, data in smoothed_scores.items():
+            # Check if triggered (breakout/breakdown)
+            if data['triggered_status'] == 'Triggered - Bullish':
+                triggered_bullish.append((symbol, data['score']))
+            elif data['triggered_status'] == 'Triggered - Bearish':
+                triggered_bearish.append((symbol, data['score']))
+            else:
+                # Not triggered - check for accumulation watchlist
+                # Bullish criteria: Strong positive score, compressed volatility, not yet broken out
+                if (data['score'] > cfg['WATCHLIST_BULLISH_SCORE'] and
+                    data['volatility_ratio'] < cfg['WATCHLIST_VOL_COMPRESSION'] and
+                    data['position_in_range'] < cfg['BREAKOUT_THRESHOLD']):
+                    bullish_candidates.append((symbol, data['score']))
+
+                # Bearish criteria: Strong negative score, compressed volatility, not yet broken down
+                elif (data['score'] < cfg['WATCHLIST_BEARISH_SCORE'] and
+                      data['volatility_ratio'] < cfg['WATCHLIST_VOL_COMPRESSION'] and
+                      data['position_in_range'] > cfg['BREAKDOWN_THRESHOLD']):
+                    bearish_candidates.append((symbol, data['score']))
+
+        # Sort and limit accumulation watchlists
+        bullish_candidates.sort(key=lambda x: x[1], reverse=True)
+        st.session_state.bullish_watchlist = [symbol for symbol, _ in bullish_candidates[:cfg['WATCHLIST_MAX_SIZE']]]
+
         bearish_candidates.sort(key=lambda x: x[1])
-        st.session_state.bearish_watchlist = [symbol for symbol, _ in bearish_candidates[:20]]
+        st.session_state.bearish_watchlist = [symbol for symbol, _ in bearish_candidates[:cfg['WATCHLIST_MAX_SIZE']]]
+
+        # Sort and store triggered lists
+        triggered_bullish.sort(key=lambda x: x[1], reverse=True)
+        st.session_state.triggered_bullish = [symbol for symbol, _ in triggered_bullish]
+
+        triggered_bearish.sort(key=lambda x: x[1])
+        st.session_state.triggered_bearish = [symbol for symbol, _ in triggered_bearish]
 
         st.session_state.watchlist_last_updated = datetime.now()
 
         print(f"✅ Generated watchlists:")
-        print(f"   Bullish: {len(st.session_state.bullish_watchlist)} stocks")
-        print(f"   Bearish: {len(st.session_state.bearish_watchlist)} stocks")
+        print(f"   Bullish Accumulation: {len(st.session_state.bullish_watchlist)} stocks")
+        print(f"   Bearish Accumulation: {len(st.session_state.bearish_watchlist)} stocks")
+        print(f"   Triggered Bullish (Breakout): {len(st.session_state.triggered_bullish)} stocks")
+        print(f"   Triggered Bearish (Breakdown): {len(st.session_state.triggered_bearish)} stocks")
 
     except Exception as e:
         print(f"❌ Error generating watchlist: {e}")
@@ -6427,31 +6590,89 @@ def generate_daily_watchlist():
 
 def get_watchlist_for_project1():
     """
-    HOOK FOR PROJECT 1: Get current bullish and bearish watchlists
-    Returns dict with 'bullish' and 'bearish' lists of stock symbols
-    Project 1 can use this to filter/prioritize intraday trade signals
+    HOOK FOR PROJECT 1: Get current watchlists with priority levels
+
+    Returns dict with:
+        - 'bullish_accumulation': Stocks building bullish positions (pre-breakout)
+        - 'bearish_accumulation': Stocks building bearish positions (pre-breakdown)
+        - 'triggered_bullish': Stocks that have broken out (HIGHEST PRIORITY for longs)
+        - 'triggered_bearish': Stocks that have broken down (HIGHEST PRIORITY for shorts)
+        - 'last_updated': Timestamp
+
+    Usage in Project 1:
+        watchlists = get_watchlist_for_project1()
+
+        # HIGH PRIORITY: Generate signals ONLY for watchlist stocks
+        for symbol in watchlists['triggered_bullish']:
+            generate_long_signal(symbol, priority='HIGH')
+
+        for symbol in watchlists['triggered_bearish']:
+            generate_short_signal(symbol, priority='HIGH')
+
+        # MEDIUM PRIORITY: Monitor accumulation watchlist
+        for symbol in watchlists['bullish_accumulation']:
+            generate_long_signal(symbol, priority='MEDIUM')
+
+        for symbol in watchlists['bearish_accumulation']:
+            generate_short_signal(symbol, priority='MEDIUM')
     """
     return {
-        'bullish': st.session_state.bullish_watchlist,
-        'bearish': st.session_state.bearish_watchlist,
+        'bullish_accumulation': st.session_state.bullish_watchlist,
+        'bearish_accumulation': st.session_state.bearish_watchlist,
+        'triggered_bullish': st.session_state.triggered_bullish,
+        'triggered_bearish': st.session_state.triggered_bearish,
         'last_updated': st.session_state.watchlist_last_updated
     }
 
-def is_stock_in_watchlist(symbol, direction='both'):
+def is_stock_in_watchlist(symbol, direction='both', include_triggered=True):
     """
     HOOK FOR PROJECT 1: Check if a stock is in watchlist
+
     Args:
         symbol: Stock symbol (e.g., 'RELIANCE')
         direction: 'bullish', 'bearish', or 'both'
+        include_triggered: If True, also checks triggered lists (default: True)
+
     Returns:
-        True if stock is in the specified watchlist(s)
+        dict with:
+            - 'in_watchlist': True/False
+            - 'priority': 'HIGH' (triggered), 'MEDIUM' (accumulation), or None
+            - 'status': 'triggered_bullish', 'accumulation_bullish', 'triggered_bearish', 'accumulation_bearish', or None
     """
-    if direction == 'bullish':
-        return symbol in st.session_state.bullish_watchlist
-    elif direction == 'bearish':
-        return symbol in st.session_state.bearish_watchlist
-    else:  # both
-        return symbol in st.session_state.bullish_watchlist or symbol in st.session_state.bearish_watchlist
+    result = {
+        'in_watchlist': False,
+        'priority': None,
+        'status': None
+    }
+
+    # Check triggered lists first (HIGHEST PRIORITY)
+    if include_triggered:
+        if symbol in st.session_state.triggered_bullish and direction in ['bullish', 'both']:
+            result['in_watchlist'] = True
+            result['priority'] = 'HIGH'
+            result['status'] = 'triggered_bullish'
+            return result
+
+        if symbol in st.session_state.triggered_bearish and direction in ['bearish', 'both']:
+            result['in_watchlist'] = True
+            result['priority'] = 'HIGH'
+            result['status'] = 'triggered_bearish'
+            return result
+
+    # Check accumulation watchlists (MEDIUM PRIORITY)
+    if symbol in st.session_state.bullish_watchlist and direction in ['bullish', 'both']:
+        result['in_watchlist'] = True
+        result['priority'] = 'MEDIUM'
+        result['status'] = 'accumulation_bullish'
+        return result
+
+    if symbol in st.session_state.bearish_watchlist and direction in ['bearish', 'both']:
+        result['in_watchlist'] = True
+        result['priority'] = 'MEDIUM'
+        result['status'] = 'accumulation_bearish'
+        return result
+
+    return result
 
 def load_historical_eod_data():
     """Load historical EOD data from CSV files on startup"""
@@ -6514,9 +6735,13 @@ if 'daily_stock_summary' not in st.session_state:
 if 'accumulation_scores' not in st.session_state:
     st.session_state.accumulation_scores = {}  # Dict with symbol as key -> list of daily scores
 if 'bullish_watchlist' not in st.session_state:
-    st.session_state.bullish_watchlist = []  # List of bullish stock symbols
+    st.session_state.bullish_watchlist = []  # List of bullish accumulation stocks
 if 'bearish_watchlist' not in st.session_state:
-    st.session_state.bearish_watchlist = []  # List of bearish stock symbols
+    st.session_state.bearish_watchlist = []  # List of bearish accumulation stocks
+if 'triggered_bullish' not in st.session_state:
+    st.session_state.triggered_bullish = []  # List of triggered bullish (breakout) stocks
+if 'triggered_bearish' not in st.session_state:
+    st.session_state.triggered_bearish = []  # List of triggered bearish (breakdown) stocks
 if 'last_eod_capture' not in st.session_state:
     st.session_state.last_eod_capture = None  # Last date when EOD data was captured
 if 'watchlist_last_updated' not in st.session_state:
@@ -10087,25 +10312,35 @@ if has_eod_data:
     st.caption("🌅 **Morning View**: Generated before market open based on 3-5 day accumulation patterns")
 
     # Watchlist metrics
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.metric("🟢 Bullish Candidates", len(st.session_state.bullish_watchlist))
+        st.metric("🟢 Bullish Accumulation", len(st.session_state.bullish_watchlist))
     with col2:
-        st.metric("🔴 Bearish Candidates", len(st.session_state.bearish_watchlist))
+        st.metric("🔴 Bearish Accumulation", len(st.session_state.bearish_watchlist))
     with col3:
-        last_updated = st.session_state.watchlist_last_updated
-        if last_updated:
-            st.metric("Last Updated", last_updated.strftime('%d %b, %I:%M %p'))
-        else:
-            st.metric("Last Updated", "—")
+        st.metric("🚀 Triggered Bullish", len(st.session_state.triggered_bullish))
+    with col4:
+        st.metric("⚡ Triggered Bearish", len(st.session_state.triggered_bearish))
 
-    # Display watchlists side by side
-    tab1, tab2 = st.tabs(["🟢 Bullish Watchlist", "🔴 Bearish Watchlist"])
+    # Last updated time
+    last_updated = st.session_state.watchlist_last_updated
+    if last_updated:
+        st.caption(f"Last Updated: {last_updated.strftime('%d %b %Y, %I:%M %p')}")
+    else:
+        st.caption("Last Updated: —")
+
+    # Display watchlists in tabs
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "🟢 Bullish Accumulation",
+        "🚀 Triggered Bullish (HIGH PRIORITY)",
+        "🔴 Bearish Accumulation",
+        "⚡ Triggered Bearish (HIGH PRIORITY)"
+    ])
 
     with tab1:
         if st.session_state.bullish_watchlist:
             st.markdown("#### Bullish Accumulation Detected")
-            st.caption("Stocks showing CE dominance + OI buildup + RS strength + volatility compression")
+            st.caption("Stocks showing CE dominance + OI buildup + RS strength + volatility compression (NOT yet broken out)")
 
             # Build watchlist data
             bullish_data = []
@@ -10113,7 +10348,10 @@ if has_eod_data:
                 # Get latest score
                 if symbol in st.session_state.accumulation_scores:
                     score_history = st.session_state.accumulation_scores[symbol]
-                    latest_score = score_history[-1]['score'] if score_history else 0
+                    latest = score_history[-1]
+                    latest_score = latest.get('score', 0)
+                    days_in_campaign = latest.get('days_in_campaign', 0)
+                    classification = latest.get('classification', 'neutral')
 
                     # Get latest daily data
                     if today_str in st.session_state.daily_stock_summary:
@@ -10141,22 +10379,31 @@ if has_eod_data:
                             else:
                                 rs_indicator = "➡️ Neutral"
 
+                            # Classification label
+                            if classification == 'strong_bullish':
+                                class_label = "🔥 Strong"
+                            elif classification == 'moderate_bullish':
+                                class_label = "📈 Moderate"
+                            else:
+                                class_label = "—"
+
                             bullish_data.append({
                                 'Rank': rank,
                                 'Symbol': symbol,
                                 'Score': f"{latest_score:.1f}",
+                                'Days': days_in_campaign,
+                                'Class': class_label,
                                 'Price': f"₹{row['futures_close']:.2f}",
                                 'Campaign': row.get('campaign_label', 'N/A'),
                                 'OI Δ': oi_indicator,
                                 'RS': rs_indicator,
-                                'Net Flow': f"{row['net_flow']:,.0f}",
-                                'Signal': '🟢 BUY READY'
+                                'Signal': '🟢 ACCUMULATING'
                             })
 
             if bullish_data:
                 df_bullish = pd.DataFrame(bullish_data)
                 st.dataframe(df_bullish, use_container_width=True, hide_index=True, height=400)
-                st.caption(f"💡 **{len(bullish_data)} stocks** showing bullish institutional accumulation patterns")
+                st.caption(f"💡 **{len(bullish_data)} stocks** showing bullish institutional accumulation | ⏳ **Waiting for breakout** (>90% range)")
             else:
                 st.info("No bullish candidates meet the criteria currently")
         else:
