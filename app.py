@@ -5905,6 +5905,44 @@ INSTITUTIONAL_CONFIG = {
     'WATCHLIST_MAX_SIZE': 20,            # Max stocks per watchlist
 }
 
+# =========================
+# TELEGRAM ALERTS - INSTITUTIONAL TRACKER
+# =========================
+def send_institutional_telegram_alert(message):
+    """
+    Send Telegram alert for institutional state-change events.
+    Only used for high-signal institutional campaign transitions.
+    """
+    try:
+        load_dotenv()
+        bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
+        chat_id = os.getenv('TELEGRAM_CHAT_ID')
+
+        if not bot_token or not chat_id:
+            print("⚠️ Telegram credentials not configured in .env file")
+            return False
+
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        payload = {
+            'chat_id': chat_id,
+            'text': message,
+            'parse_mode': 'HTML',
+            'disable_web_page_preview': True
+        }
+
+        response = requests.post(url, json=payload, timeout=5)
+
+        if response.status_code == 200:
+            print(f"✅ Telegram alert sent successfully")
+            return True
+        else:
+            print(f"❌ Telegram alert failed: {response.status_code}")
+            return False
+
+    except Exception as e:
+        print(f"❌ Error sending Telegram alert: {e}")
+        return False
+
 def calculate_10day_metrics(symbol, current_price):
     """Calculate 10-day high/low and current position in range"""
     try:
@@ -6457,6 +6495,128 @@ def calculate_accumulation_scores():
                 triggered_status = 'Triggered - Bearish'
                 classification = 'triggered_bearish'  # Move from accumulation to trade candidate
 
+            # =========================
+            # STATE-CHANGE DETECTION & TELEGRAM ALERTS
+            # =========================
+            # Check if classification has changed (state transition)
+            previous_classification = None
+            if symbol in st.session_state.accumulation_scores and len(st.session_state.accumulation_scores[symbol]) > 0:
+                previous_classification = st.session_state.accumulation_scores[symbol][-1].get('classification', 'neutral')
+
+            # Determine if we should send alert (4 event types only)
+            should_alert = False
+            alert_type = None
+            priority = None
+
+            # Event 1: Triggered Bullish (Breakout)
+            if (classification == 'triggered_bullish' and
+                previous_classification in ['strong_bullish', 'moderate_bullish', 'neutral', None]):
+                should_alert = True
+                alert_type = 'triggered_bullish'
+                priority = 'HIGH'
+
+            # Event 2: Triggered Bearish (Breakdown)
+            elif (classification == 'triggered_bearish' and
+                  previous_classification in ['strong_bearish', 'moderate_bearish', 'neutral', None]):
+                should_alert = True
+                alert_type = 'triggered_bearish'
+                priority = 'HIGH'
+
+            # Event 3: New Strong Bullish Campaign (first time entering strong_bullish)
+            elif (classification == 'strong_bullish' and
+                  previous_classification not in ['strong_bullish', 'triggered_bullish']):
+                should_alert = True
+                alert_type = 'new_strong_bullish'
+                priority = 'MEDIUM'
+
+            # Event 4: New Strong Bearish Campaign (first time entering strong_bearish)
+            elif (classification == 'strong_bearish' and
+                  previous_classification not in ['strong_bearish', 'triggered_bearish']):
+                should_alert = True
+                alert_type = 'new_strong_bearish'
+                priority = 'MEDIUM'
+
+            # Send alert if state changed AND not already alerted for this transition
+            if should_alert:
+                # Check if we've already alerted for this classification
+                already_alerted = (symbol in st.session_state.institutional_alerts_sent and
+                                 st.session_state.institutional_alerts_sent.get(symbol) == classification)
+
+                if not already_alerted:
+                    # Prepare alert data
+                    rs_trend_text = "💪 Strong" if latest_rs_trend == 1 else ("⚠️ Weak" if latest_rs_trend == -1 else "➡️ Neutral")
+
+                    # Determine OI regime text
+                    if latest_oi_change > 0 and latest_price_change > 0.5:
+                        oi_regime_text = "📈 Long Buildup (OI↑ Price↑)"
+                    elif latest_oi_change > 0 and latest_price_change < -0.5:
+                        oi_regime_text = "📉 Short Buildup (OI↑ Price↓)"
+                    elif latest_oi_change > 0:
+                        oi_regime_text = "📊 Consolidation (OI↑ Price→)"
+                    else:
+                        oi_regime_text = "🔄 Unwinding (OI↓)"
+
+                    # Format alert message based on event type
+                    if alert_type == 'triggered_bullish':
+                        alert_message = f"""<b>🚀 TRIGGERED BULLISH BREAKOUT</b>
+
+<b>Symbol:</b> {symbol}
+<b>Score:</b> {score:.1f}
+<b>Days in Campaign:</b> {days_in_campaign}
+<b>RS Trend:</b> {rs_trend_text}
+<b>OI Regime:</b> {oi_regime_text}
+<b>Priority:</b> {priority}
+
+<i>Stock moved from accumulation to breakout (>{cfg['BREAKOUT_THRESHOLD']}% of range)</i>
+⏰ {datetime.now().strftime('%I:%M %p')}"""
+
+                    elif alert_type == 'triggered_bearish':
+                        alert_message = f"""<b>⚡ TRIGGERED BEARISH BREAKDOWN</b>
+
+<b>Symbol:</b> {symbol}
+<b>Score:</b> {score:.1f}
+<b>Days in Campaign:</b> {days_in_campaign}
+<b>RS Trend:</b> {rs_trend_text}
+<b>OI Regime:</b> {oi_regime_text}
+<b>Priority:</b> {priority}
+
+<i>Stock moved from accumulation to breakdown (<{cfg['BREAKDOWN_THRESHOLD']}% of range)</i>
+⏰ {datetime.now().strftime('%I:%M %p')}"""
+
+                    elif alert_type == 'new_strong_bullish':
+                        alert_message = f"""<b>🔥 NEW STRONG BULLISH CAMPAIGN</b>
+
+<b>Symbol:</b> {symbol}
+<b>Score:</b> {score:.1f}
+<b>Days in Campaign:</b> {days_in_campaign}
+<b>RS Trend:</b> {rs_trend_text}
+<b>OI Regime:</b> {oi_regime_text}
+<b>Priority:</b> {priority}
+
+<i>First entry into Strong Bullish classification (Score >{cfg['STRONG_BULLISH_SCORE']}, {cfg['MIN_DAYS_IN_CAMPAIGN']}+ days)</i>
+⏰ {datetime.now().strftime('%I:%M %p')}"""
+
+                    elif alert_type == 'new_strong_bearish':
+                        alert_message = f"""<b>🔻 NEW STRONG BEARISH CAMPAIGN</b>
+
+<b>Symbol:</b> {symbol}
+<b>Score:</b> {score:.1f}
+<b>Days in Campaign:</b> {days_in_campaign}
+<b>RS Trend:</b> {rs_trend_text}
+<b>OI Regime:</b> {oi_regime_text}
+<b>Priority:</b> {priority}
+
+<i>First entry into Strong Bearish classification (Score <{cfg['STRONG_BEARISH_SCORE']}, {cfg['MIN_DAYS_IN_CAMPAIGN']}+ days)</i>
+⏰ {datetime.now().strftime('%I:%M %p')}"""
+
+                    # Send the alert
+                    if send_institutional_telegram_alert(alert_message):
+                        # Track that we've alerted for this classification
+                        st.session_state.institutional_alerts_sent[symbol] = classification
+                        print(f"📱 Institutional Alert: {alert_type.upper()} - {symbol} ({priority})")
+                    else:
+                        print(f"⚠️ Failed to send alert for {symbol}")
+
             # Store score with date
             if symbol not in st.session_state.accumulation_scores:
                 st.session_state.accumulation_scores[symbol] = []
@@ -6746,6 +6906,8 @@ if 'last_eod_capture' not in st.session_state:
     st.session_state.last_eod_capture = None  # Last date when EOD data was captured
 if 'watchlist_last_updated' not in st.session_state:
     st.session_state.watchlist_last_updated = None  # Last time watchlist was generated
+if 'institutional_alerts_sent' not in st.session_state:
+    st.session_state.institutional_alerts_sent = {}  # Track which state changes have been alerted (symbol -> classification)
 
 def polling_loop():
     print("\n" + "="*50)
