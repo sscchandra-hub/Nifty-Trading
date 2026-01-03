@@ -5946,6 +5946,125 @@ def calculate_volatility_metrics(symbol):
         print(f"Error calculating volatility for {symbol}: {e}")
         return 0, 0, 1.0
 
+def get_nifty_close_price():
+    """Get NIFTY close price from latest quote data"""
+    try:
+        # Try to get from kite API
+        if engine.kite:
+            nifty_quote = engine.kite.quote(["NSE:NIFTY 50"])
+            if nifty_quote and "NSE:NIFTY 50" in nifty_quote:
+                return nifty_quote["NSE:NIFTY 50"].get("last_price", 0)
+    except:
+        pass
+
+    # Fallback to 0 if not available
+    return 0
+
+def get_futures_oi_data(symbol):
+    """Get futures OI and OI change for a stock from quotes"""
+    try:
+        if not engine.kite or not engine.ins_df.empty:
+            return 0, 0
+
+        # Find current month futures contract
+        today = datetime.now().date()
+
+        # Get futures contracts for this symbol
+        futures_df = engine.ins_df[
+            (engine.ins_df['tradingsymbol'].str.startswith(symbol)) &
+            (engine.ins_df['instrument_type'] == 'FUT') &
+            (engine.ins_df['expiry'] >= today)
+        ].sort_values('expiry')
+
+        if futures_df.empty:
+            return 0, 0
+
+        # Get the nearest expiry futures contract
+        fut_contract = futures_df.iloc[0]
+        fut_token = f"NFO:{fut_contract['tradingsymbol']}"
+
+        # Get quote
+        quote = engine.kite.quote([fut_token])
+        if quote and fut_token in quote:
+            oi = quote[fut_token].get('oi', 0)
+            oi_day_high = quote[fut_token].get('oi_day_high', oi)
+            oi_day_low = quote[fut_token].get('oi_day_low', oi)
+
+            # OI change approximation (day high - day low could indicate change)
+            oi_change = oi_day_high - oi_day_low
+
+            return oi, oi_change
+    except:
+        pass
+
+    return 0, 0
+
+def separate_ce_pe_by_expiry(symbol, summary_data):
+    """Separate CE/PE volumes by current vs next expiry"""
+    try:
+        full_data = summary_data.get('data')  # Full strike-wise DataFrame
+        if full_data is None or full_data.empty:
+            return {
+                'current_ce_vol': 0,
+                'current_pe_vol': 0,
+                'next_ce_vol': 0,
+                'next_pe_vol': 0,
+                'campaign_label': 'No Data'
+            }
+
+        # Get current and next expiry dates from instruments
+        today = datetime.now().date()
+        expiries_df = engine.ins_df[
+            (engine.ins_df['tradingsymbol'].str.startswith(symbol)) &
+            (engine.ins_df['instrument_type'].isin(['CE', 'PE'])) &
+            (engine.ins_df['expiry'] >= today)
+        ]['expiry'].unique()
+
+        expiries = sorted([exp for exp in expiries_df if exp >= today])
+
+        if len(expiries) < 1:
+            return {
+                'current_ce_vol': summary_data.get('ce_volume', 0),
+                'current_pe_vol': summary_data.get('pe_volume', 0),
+                'next_ce_vol': 0,
+                'next_pe_vol': 0,
+                'campaign_label': 'Building (Current)'
+            }
+
+        current_expiry = expiries[0]
+        next_expiry = expiries[1] if len(expiries) > 1 else current_expiry
+
+        # For now, we don't have expiry-specific volume in our data
+        # So we'll use total volumes and mark as current expiry
+        # In a future enhancement, we'd separate by actual expiry in the data collection
+
+        current_ce_vol = summary_data.get('ce_volume', 0)
+        current_pe_vol = summary_data.get('pe_volume', 0)
+        next_ce_vol = 0
+        next_pe_vol = 0
+
+        # Determine campaign label based on volume distribution
+        # For now, assume all activity is in current expiry
+        campaign_label = 'Building (Current)'
+
+        return {
+            'current_ce_vol': current_ce_vol,
+            'current_pe_vol': current_pe_vol,
+            'next_ce_vol': next_ce_vol,
+            'next_pe_vol': next_pe_vol,
+            'current_expiry': current_expiry,
+            'next_expiry': next_expiry,
+            'campaign_label': campaign_label
+        }
+    except Exception as e:
+        return {
+            'current_ce_vol': summary_data.get('ce_volume', 0),
+            'current_pe_vol': summary_data.get('pe_volume', 0),
+            'next_ce_vol': 0,
+            'next_pe_vol': 0,
+            'campaign_label': 'Building (Current)'
+        }
+
 def capture_end_of_day_data():
     """Capture end-of-day summary for all 191 F&O stocks"""
     print("\n" + "="*60)
@@ -5967,34 +6086,45 @@ def capture_end_of_day_data():
 
         csv_path = data_dir / f"daily_summary_{today_str}.csv"
 
+        # Get NIFTY close price for RS calculation
+        nifty_close = get_nifty_close_price()
+        print(f"   📊 NIFTY Close: {nifty_close:.2f}")
+
+        # Get yesterday's NIFTY close for RS trend
+        yesterday = today - timedelta(days=1)
+        yesterday_str = yesterday.strftime('%d%b%Y').upper()
+        yesterday_csv = data_dir / f"daily_summary_{yesterday_str}.csv"
+        yesterday_nifty = 0
+
+        if yesterday_csv.exists():
+            df_yesterday = pd.read_csv(yesterday_csv)
+            if not df_yesterday.empty and 'nifty_close' in df_yesterday.columns:
+                yesterday_nifty = df_yesterday.iloc[0]['nifty_close']
+
         # Collect data for all stocks
         eod_rows = []
         stocks_processed = 0
 
         for symbol, summary in st.session_state.stock_expiry_summary.items():
             try:
-                # Get current and next expiry
-                current_expiry = summary['expiry']
+                # Get futures data (use stock price as proxy for futures close)
+                futures_close = summary.get('price', 0)
 
-                # Get total CE/PE volume from cumulative data
+                # Get futures OI and OI change
+                futures_oi, futures_oi_change = get_futures_oi_data(symbol)
+
+                # Separate CE/PE by expiry
+                expiry_data = separate_ce_pe_by_expiry(symbol, summary)
+
+                # Total volumes (for backward compatibility)
                 ce_volume = summary.get('ce_volume', 0)
                 pe_volume = summary.get('pe_volume', 0)
                 total_volume = summary.get('total_volume', 0)
                 net_flow = summary.get('net_flow', 0)
 
-                # Get futures data (use stock price as proxy for futures close)
-                futures_close = summary.get('price', 0)
-
-                # For now, we'll use zeros for futures OI and OI change
-                # (we'd need to add futures data collection to get real values)
-                futures_oi = 0
-                futures_oi_change = 0
-
                 # Calculate price change % (will be 0 for first day, real from day 2)
-                yesterday = today - timedelta(days=1)
-                yesterday_str = yesterday.strftime('%d%b%Y').upper()
-                yesterday_csv = data_dir / f"daily_summary_{yesterday_str}.csv"
                 price_change_pct = 0
+                prev_oi = 0
 
                 if yesterday_csv.exists():
                     df_yesterday = pd.read_csv(yesterday_csv)
@@ -6003,6 +6133,33 @@ def capture_end_of_day_data():
                         prev_close = stock_yesterday.iloc[0]['futures_close']
                         if prev_close > 0:
                             price_change_pct = ((futures_close - prev_close) / prev_close) * 100
+
+                        # Get previous OI for better OI change calculation
+                        if 'futures_oi' in stock_yesterday.columns:
+                            prev_oi = stock_yesterday.iloc[0]['futures_oi']
+                            if prev_oi > 0 and futures_oi > 0:
+                                futures_oi_change = futures_oi - prev_oi
+
+                # Calculate Relative Strength (RS) vs NIFTY
+                rs_value = 0
+                rs_trend = 0  # -1 (deteriorating), 0 (neutral), +1 (improving)
+
+                if nifty_close > 0 and futures_close > 0:
+                    rs_value = futures_close / nifty_close
+
+                    # Calculate RS trend (compare today's RS to yesterday's RS)
+                    if yesterday_nifty > 0 and yesterday_csv.exists():
+                        stock_yesterday = df_yesterday[df_yesterday['symbol'] == symbol]
+                        if not stock_yesterday.empty:
+                            prev_close = stock_yesterday.iloc[0]['futures_close']
+                            if prev_close > 0:
+                                prev_rs = prev_close / yesterday_nifty
+                                if rs_value > prev_rs * 1.001:  # 0.1% threshold
+                                    rs_trend = 1  # Improving
+                                elif rs_value < prev_rs * 0.999:
+                                    rs_trend = -1  # Deteriorating
+                                else:
+                                    rs_trend = 0  # Neutral
 
                 # Calculate 10-day high/low and position
                 day_10_high, day_10_low, position_in_range_pct = calculate_10day_metrics(symbol, futures_close)
@@ -6013,16 +6170,24 @@ def capture_end_of_day_data():
                 eod_rows.append({
                     'date': today_str,
                     'symbol': symbol,
-                    'current_expiry': current_expiry.strftime('%d%b%Y').upper() if isinstance(current_expiry, datetime) else current_expiry,
-                    'next_expiry': '',  # Will calculate in future enhancement
+                    'nifty_close': nifty_close,
+                    'current_expiry': expiry_data.get('current_expiry', summary['expiry']).strftime('%d%b%Y').upper() if isinstance(expiry_data.get('current_expiry', summary['expiry']), datetime) else str(expiry_data.get('current_expiry', summary['expiry'])),
+                    'next_expiry': expiry_data.get('next_expiry', '').strftime('%d%b%Y').upper() if isinstance(expiry_data.get('next_expiry'), datetime) else '',
+                    'current_ce_volume': expiry_data['current_ce_vol'],
+                    'current_pe_volume': expiry_data['current_pe_vol'],
+                    'next_ce_volume': expiry_data['next_ce_vol'],
+                    'next_pe_volume': expiry_data['next_pe_vol'],
                     'ce_volume': ce_volume,
                     'pe_volume': pe_volume,
                     'total_volume': total_volume,
                     'net_flow': net_flow,
+                    'campaign_label': expiry_data['campaign_label'],
                     'futures_close': futures_close,
                     'futures_oi': futures_oi,
                     'futures_oi_change': futures_oi_change,
                     'price_change_pct': price_change_pct,
+                    'rs_value': rs_value,
+                    'rs_trend': rs_trend,
                     'day_10_high': day_10_high,
                     'day_10_low': day_10_low,
                     'position_in_range_pct': position_in_range_pct,
@@ -6068,6 +6233,10 @@ def calculate_accumulation_scores():
     try:
         today = datetime.now().date()
 
+        # MINIMUM THRESHOLDS FOR FILTERING THIN/NOISY NAMES
+        MIN_AVG_TOTAL_VOLUME = 100000  # Minimum average CE+PE volume
+        MIN_ABS_NET_FLOW = 10000       # Minimum absolute net flow
+
         # Load last 8 days of data
         historical_data = {}
         for i in range(8):
@@ -6084,6 +6253,7 @@ def calculate_accumulation_scores():
                     historical_data[symbol].append(row)
 
         # Calculate score for each stock
+        filtered_count = 0
         for symbol, daily_records in historical_data.items():
             if len(daily_records) < 3:
                 continue  # Need at least 3 days
@@ -6094,30 +6264,69 @@ def calculate_accumulation_scores():
             # Take last 3-8 days (whatever we have)
             recent_days = daily_records[:min(8, len(daily_records))]
 
-            # Calculate score components
+            # FILTER: Check minimum volume and flow thresholds
+            avg_total_volume = sum(day.get('total_volume', 0) for day in recent_days) / len(recent_days)
+            avg_abs_net_flow = sum(abs(day.get('net_flow', 0)) for day in recent_days) / len(recent_days)
+
+            if avg_total_volume < MIN_AVG_TOTAL_VOLUME or avg_abs_net_flow < MIN_ABS_NET_FLOW:
+                filtered_count += 1
+                continue  # Skip thin/noisy names
+
+            # Calculate score components (Total: -100 to +100)
             score = 0
 
-            # 1. CE/PE Flow Dominance (-40 to +40 points)
-            ce_dominant_days = sum(1 for day in recent_days if day['net_flow'] > 0)
-            pe_dominant_days = sum(1 for day in recent_days if day['net_flow'] < 0)
-            flow_score = ((ce_dominant_days - pe_dominant_days) / len(recent_days)) * 40
+            # 1. CE/PE Flow Dominance (-30 to +30 points)
+            ce_dominant_days = sum(1 for day in recent_days if day.get('net_flow', 0) > 0)
+            pe_dominant_days = sum(1 for day in recent_days if day.get('net_flow', 0) < 0)
+            flow_score = ((ce_dominant_days - pe_dominant_days) / len(recent_days)) * 30
             score += flow_score
 
-            # 2. Average Net Flow Magnitude (-30 to +30 points)
-            avg_net_flow = sum(day['net_flow'] for day in recent_days) / len(recent_days)
-            # Normalize to -30 to +30 range (assume max flow is 10,000,000)
-            flow_magnitude_score = max(-30, min(30, (avg_net_flow / 10000000) * 30))
+            # 2. Average Net Flow Magnitude (-20 to +20 points)
+            avg_net_flow = sum(day.get('net_flow', 0) for day in recent_days) / len(recent_days)
+            # Normalize to -20 to +20 range (assume max flow is 10,000,000)
+            flow_magnitude_score = max(-20, min(20, (avg_net_flow / 10000000) * 20))
             score += flow_magnitude_score
 
-            # 3. Volatility Compression (+20 points if shrinking)
-            latest_volatility_ratio = recent_days[0]['volatility_ratio']
+            # 3. OI Regime Component (-20 to +20 points) - NEW!
+            # Long buildup (OI up, price stable/up) = bullish
+            # Short buildup (OI up, price stable/down) = bearish
+            latest_oi_change = recent_days[0].get('futures_oi_change', 0)
+            latest_price_change = recent_days[0].get('price_change_pct', 0)
+
+            oi_regime_score = 0
+            if latest_oi_change > 0:  # OI increasing
+                if latest_price_change > 0.5:  # Price up (long buildup)
+                    oi_regime_score = 20
+                elif latest_price_change >= -0.5:  # Price stable
+                    # Check CE vs PE dominance
+                    if recent_days[0].get('net_flow', 0) > 0:
+                        oi_regime_score = 15  # Long buildup (CE dominant)
+                    else:
+                        oi_regime_score = -15  # Short buildup (PE dominant)
+                else:  # Price down (short buildup)
+                    oi_regime_score = -20
+            elif latest_oi_change < -1000:  # OI falling significantly - weaken signal
+                oi_regime_score = -10  # Reduce score for unwinding positions
+
+            score += oi_regime_score
+
+            # 4. Volatility Compression (0 to +20 points)
+            latest_volatility_ratio = recent_days[0].get('volatility_ratio', 1.0)
             if latest_volatility_ratio < 0.8:  # 5d vol < 80% of 10d vol
                 score += 20
             elif latest_volatility_ratio < 1.0:
                 score += 10
 
-            # 4. Position in 10-day Range (+10 or -10 points)
-            latest_position = recent_days[0]['position_in_range_pct']
+            # 5. Relative Strength (RS) Factor (-10 to +10 points) - NEW!
+            latest_rs_trend = recent_days[0].get('rs_trend', 0)
+            if latest_rs_trend == 1:  # Improving RS
+                score += 10
+            elif latest_rs_trend == -1:  # Deteriorating RS
+                score -= 10
+            # rs_trend == 0 (neutral) adds nothing
+
+            # 6. Position in 10-day Range (-10 to +10 points)
+            latest_position = recent_days[0].get('position_in_range_pct', 50)
             if latest_position > 70:  # Upper range
                 score += 10
             elif latest_position < 30:  # Lower range
@@ -6130,14 +6339,17 @@ def calculate_accumulation_scores():
             st.session_state.accumulation_scores[symbol].append({
                 'date': today.strftime('%d%b%Y').upper(),
                 'score': score,
-                'days_analyzed': len(recent_days)
+                'days_analyzed': len(recent_days),
+                'avg_volume': avg_total_volume,
+                'avg_abs_flow': avg_abs_net_flow
             })
 
             # Keep only last 30 days of scores
             if len(st.session_state.accumulation_scores[symbol]) > 30:
                 st.session_state.accumulation_scores[symbol] = st.session_state.accumulation_scores[symbol][-30:]
 
-        print(f"✅ Calculated accumulation scores for {len(historical_data)} stocks")
+        print(f"✅ Calculated accumulation scores for {len(historical_data) - filtered_count} stocks")
+        print(f"   (Filtered out {filtered_count} thin/noisy names)")
 
     except Exception as e:
         print(f"❌ Error calculating accumulation scores: {e}")
@@ -6212,6 +6424,34 @@ def generate_daily_watchlist():
         print(f"❌ Error generating watchlist: {e}")
         import traceback
         traceback.print_exc()
+
+def get_watchlist_for_project1():
+    """
+    HOOK FOR PROJECT 1: Get current bullish and bearish watchlists
+    Returns dict with 'bullish' and 'bearish' lists of stock symbols
+    Project 1 can use this to filter/prioritize intraday trade signals
+    """
+    return {
+        'bullish': st.session_state.bullish_watchlist,
+        'bearish': st.session_state.bearish_watchlist,
+        'last_updated': st.session_state.watchlist_last_updated
+    }
+
+def is_stock_in_watchlist(symbol, direction='both'):
+    """
+    HOOK FOR PROJECT 1: Check if a stock is in watchlist
+    Args:
+        symbol: Stock symbol (e.g., 'RELIANCE')
+        direction: 'bullish', 'bearish', or 'both'
+    Returns:
+        True if stock is in the specified watchlist(s)
+    """
+    if direction == 'bullish':
+        return symbol in st.session_state.bullish_watchlist
+    elif direction == 'bearish':
+        return symbol in st.session_state.bearish_watchlist
+    else:  # both
+        return symbol in st.session_state.bullish_watchlist or symbol in st.session_state.bearish_watchlist
 
 def load_historical_eod_data():
     """Load historical EOD data from CSV files on startup"""
@@ -9865,7 +10105,7 @@ if has_eod_data:
     with tab1:
         if st.session_state.bullish_watchlist:
             st.markdown("#### Bullish Accumulation Detected")
-            st.caption("Stocks showing CE dominance + volatility compression + not yet broken out")
+            st.caption("Stocks showing CE dominance + OI buildup + RS strength + volatility compression")
 
             # Build watchlist data
             bullish_data = []
@@ -9882,14 +10122,34 @@ if has_eod_data:
 
                         if not stock_data.empty:
                             row = stock_data.iloc[0]
+
+                            # OI indicator
+                            oi_change = row.get('futures_oi_change', 0)
+                            if oi_change > 0:
+                                oi_indicator = f"📈 +{oi_change:,.0f}"
+                            elif oi_change < 0:
+                                oi_indicator = f"📉 {oi_change:,.0f}"
+                            else:
+                                oi_indicator = "—"
+
+                            # RS trend indicator
+                            rs_trend = row.get('rs_trend', 0)
+                            if rs_trend == 1:
+                                rs_indicator = "💪 Strong"
+                            elif rs_trend == -1:
+                                rs_indicator = "📉 Weak"
+                            else:
+                                rs_indicator = "➡️ Neutral"
+
                             bullish_data.append({
                                 'Rank': rank,
                                 'Symbol': symbol,
                                 'Score': f"{latest_score:.1f}",
                                 'Price': f"₹{row['futures_close']:.2f}",
+                                'Campaign': row.get('campaign_label', 'N/A'),
+                                'OI Δ': oi_indicator,
+                                'RS': rs_indicator,
                                 'Net Flow': f"{row['net_flow']:,.0f}",
-                                'Vol Ratio': f"{row['volatility_ratio']:.2f}",
-                                'Range Position': f"{row['position_in_range_pct']:.1f}%",
                                 'Signal': '🟢 BUY READY'
                             })
 
@@ -9905,7 +10165,7 @@ if has_eod_data:
     with tab2:
         if st.session_state.bearish_watchlist:
             st.markdown("#### Bearish Buildup Detected")
-            st.caption("Stocks showing PE dominance + volatility compression + not yet broken down")
+            st.caption("Stocks showing PE dominance + OI buildup + RS weakness + volatility compression")
 
             # Build watchlist data
             bearish_data = []
@@ -9922,14 +10182,34 @@ if has_eod_data:
 
                         if not stock_data.empty:
                             row = stock_data.iloc[0]
+
+                            # OI indicator
+                            oi_change = row.get('futures_oi_change', 0)
+                            if oi_change > 0:
+                                oi_indicator = f"📈 +{oi_change:,.0f}"
+                            elif oi_change < 0:
+                                oi_indicator = f"📉 {oi_change:,.0f}"
+                            else:
+                                oi_indicator = "—"
+
+                            # RS trend indicator
+                            rs_trend = row.get('rs_trend', 0)
+                            if rs_trend == 1:
+                                rs_indicator = "💪 Strong"
+                            elif rs_trend == -1:
+                                rs_indicator = "📉 Weak"
+                            else:
+                                rs_indicator = "➡️ Neutral"
+
                             bearish_data.append({
                                 'Rank': rank,
                                 'Symbol': symbol,
                                 'Score': f"{latest_score:.1f}",
                                 'Price': f"₹{row['futures_close']:.2f}",
+                                'Campaign': row.get('campaign_label', 'N/A'),
+                                'OI Δ': oi_indicator,
+                                'RS': rs_indicator,
                                 'Net Flow': f"{row['net_flow']:,.0f}",
-                                'Vol Ratio': f"{row['volatility_ratio']:.2f}",
-                                'Range Position': f"{row['position_in_range_pct']:.1f}%",
                                 'Signal': '🔴 SELL READY'
                             })
 
@@ -10003,21 +10283,21 @@ if has_eod_data:
         # Format for display
         df_table = pd.DataFrame({
             'Symbol': df_display['symbol'],
-            'Expiry': df_display['current_expiry'],
+            'Campaign': df_display.get('campaign_label', 'N/A'),
             'Close': df_display['futures_close'].apply(lambda x: f"₹{x:.2f}"),
             'Change %': df_display['price_change_pct'].apply(lambda x: f"{x:+.2f}%"),
+            'OI Δ': df_display.get('futures_oi_change', 0).apply(lambda x: f"+{x:,.0f}" if x > 0 else f"{x:,.0f}" if x < 0 else "—"),
+            'RS': df_display.get('rs_trend', 0).apply(lambda x: "💪" if x == 1 else "📉" if x == -1 else "➡️"),
             'Net Flow': df_display['net_flow'].apply(lambda x: f"{x:+,.0f}"),
             'CE Vol': df_display['ce_volume'].apply(lambda x: f"{x:,.0f}"),
             'PE Vol': df_display['pe_volume'].apply(lambda x: f"{x:,.0f}"),
             'Score': df_display['accumulation_score'].apply(lambda x: f"{x:.1f}"),
             'Vol Ratio': df_display['volatility_ratio'].apply(lambda x: f"{x:.2f}"),
-            'Range %': df_display['position_in_range_pct'].apply(lambda x: f"{x:.1f}%"),
-            '10D High': df_display['day_10_high'].apply(lambda x: f"₹{x:.2f}"),
-            '10D Low': df_display['day_10_low'].apply(lambda x: f"₹{x:.2f}")
+            'Range %': df_display['position_in_range_pct'].apply(lambda x: f"{x:.1f}%")
         })
 
         st.dataframe(df_table, use_container_width=True, hide_index=True, height=500)
-        st.caption(f"💡 Showing {len(df_table)} stocks for {selected_date}")
+        st.caption(f"💡 Showing {len(df_table)} stocks for {selected_date} | **Campaign Labels**: Building (Current) / Rolling (Current→Next) / Building (Next)")
 
         # Download button
         csv_data = df_display.to_csv(index=False).encode('utf-8')
