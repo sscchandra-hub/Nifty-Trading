@@ -6877,6 +6877,17 @@ if 'weekly_expiries_list' not in st.session_state:
 if 'last_expiry_update' not in st.session_state:
     st.session_state.last_expiry_update = None
 
+# CRITICAL FIX: Load weekly expiry data from CSV files on page load
+# This ensures UI shows data that background thread has saved
+if st.session_state.weekly_expiries_list:
+    for expiry_str, expiry_dt in st.session_state.weekly_expiries_list:
+        if expiry_str not in st.session_state.weekly_expiry_data:
+            # Load from CSV if not in session_state
+            df_loaded = load_weekly_expiry_data(expiry_str)
+            if not df_loaded.empty:
+                st.session_state.weekly_expiry_data[expiry_str] = df_loaded
+                print(f"📂 Loaded {len(df_loaded)} rows from CSV for {expiry_str}")
+
 # Initialize stock expiry session state
 if 'stock_expiry_summary' not in st.session_state:
     st.session_state.stock_expiry_summary = {}  # Dict with symbol as key
