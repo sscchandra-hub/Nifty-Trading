@@ -6951,14 +6951,19 @@ def polling_loop():
 
                 chunks = [engine.subscribe_tokens[i:i+500] for i in range(0, len(engine.subscribe_tokens), 500)]
                 all_quotes = {}
-                for chunk in chunks:
+                for chunk_idx, chunk in enumerate(chunks):
                     try:
                         quotes = engine.kite.quote(chunk)
                         all_quotes.update(quotes)
+                        if chunk_idx == 0:  # Log first chunk only to avoid spam
+                            print(f"✅ Poll cycle: Fetched {len(quotes)} quotes from chunk 1/{len(chunks)}")
                     except Exception as e:
-                        print(f"Poll error: {e}")
+                        print(f"❌ Poll error (chunk {chunk_idx+1}/{len(chunks)}): {e}")
+                        import traceback
+                        traceback.print_exc()
 
                 if all_quotes:
+                    print(f"📊 Processing {len(all_quotes)} quotes...")
                     indices_data = {}
                     stocks_data = {}
 
@@ -8426,6 +8431,14 @@ def polling_loop():
                         poll_msg += f" | Î”1m: Collecting baseline..."
                 
                     print(poll_msg)
+                else:
+                    # No quotes received - diagnose why
+                    print(f"⚠️ WARNING: all_quotes is EMPTY - no data fetched from KiteConnect!")
+                    print(f"   Subscription tokens: {len(engine.subscribe_tokens)}")
+                    print(f"   Possible causes:")
+                    print(f"   1. Access token expired (need to re-authenticate)")
+                    print(f"   2. Market is closed")
+                    print(f"   3. API rate limiting or network issue")
 
                 # AUTO-BACKUP: Check if we need to backup after market close
                 try:
