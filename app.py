@@ -898,7 +898,7 @@ class EngineState:
     nifty_fut_token: int = None
     nifty_fut_symbol: str = ""
     nifty_fut_expiry: str = ""
-    last_stock_alert: dict = field(default_factory=dict)  # Track stock alerts with cooldowns
+    last_stock_alert: dict = field(default_factory=dict)  # Track stock alerts with cooldowns and momentum data (time, change_pct, net_flow)
     top_10_stocks: set = field(default_factory=set)  # Track current Top 10 stocks
     alert_cooldowns: dict = field(default_factory=dict)  # Track smart alert cooldowns (stock_name -> timestamp)
     daily_score_history: list = field(default_factory=list)  # Track all scores for daily summary
@@ -3331,24 +3331,45 @@ def generate_session_summary():
 
 def send_stock_alert(stock_name, alert_type, price, change_pct, net_flow, volume_ratio=None):
     """
-    Send stock alerts via Telegram with cooldown logic
+    Send stock alerts via Telegram with cooldown and momentum validation
 
     Alert Types & Cooldowns:
-    - BULLISH: 60-min cooldown per stock
-    - BEARISH: 60-min cooldown per stock
+    - BULLISH: 5-min cooldown per stock
+    - BEARISH: 5-min cooldown per stock
+
+    Momentum Filter:
+    - For repeat alerts, BOTH % change AND net flow must be HIGHER than previous alert
+    - This ensures we only alert on ACCELERATING momentum, not weakening moves
     """
     now = datetime.now()
 
-    # Check cooldown based on alert type
+    # Check cooldown and momentum based on alert type
     cooldown_key = f"{stock_name}_{alert_type}"
 
     if cooldown_key in engine.last_stock_alert:
-        last_alert_time = engine.last_stock_alert[cooldown_key]
+        last_alert_data = engine.last_stock_alert[cooldown_key]
+        last_alert_time = last_alert_data['time']
+        last_change_pct = last_alert_data['change_pct']
+        last_net_flow = last_alert_data['net_flow']
+
         time_diff = (now - last_alert_time).total_seconds() / 60  # minutes
 
-        # Apply 60-minute cooldown
-        if time_diff < 60:
+        # Apply 5-minute cooldown
+        if time_diff < 5:
             return False
+
+        # MOMENTUM VALIDATION: Both % and flow must be HIGHER than previous alert
+        # This filters out weakening momentum and only catches accelerating moves
+        if abs(change_pct) <= abs(last_change_pct):
+            print(f"⚠️ {stock_name} momentum filter: % not higher ({abs(change_pct):.2f}% vs {abs(last_change_pct):.2f}%)")
+            return False
+
+        if abs(net_flow) <= abs(last_net_flow):
+            print(f"⚠️ {stock_name} momentum filter: Flow not higher ({abs(net_flow):.0f}M vs {abs(last_net_flow):.0f}M)")
+            return False
+
+        # If we reach here, momentum is ACCELERATING - allow alert!
+        print(f"✅ {stock_name} momentum ACCELERATING: {abs(last_change_pct):.2f}%→{abs(change_pct):.2f}%, {abs(last_net_flow):.0f}M→{abs(net_flow):.0f}M")
 
     # Get NIFTY market context
     nifty_pct = get_nifty_daily_change(kite=engine.kite)
@@ -3390,7 +3411,13 @@ def send_stock_alert(stock_name, alert_type, price, change_pct, net_flow, volume
     try:
         send_telegram_alert(telegram_message)
         print(f"📱 Stock Alert: {stock_name} - {signal}")
-        engine.last_stock_alert[cooldown_key] = now
+
+        # Store alert data for momentum validation
+        engine.last_stock_alert[cooldown_key] = {
+            'time': now,
+            'change_pct': change_pct,
+            'net_flow': net_flow
+        }
 
         # Save to alert history for next-day follow-up tracking
         save_alert_to_history(
