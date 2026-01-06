@@ -3329,17 +3329,23 @@ def generate_session_summary():
     return "\n".join(summary)
 
 
-def send_stock_alert(stock_name, alert_type, price, change_pct, net_flow, volume_ratio=None):
+def send_stock_alert(stock_name, alert_type, price, change_pct, net_flow, ce_flow=None, pe_flow=None, ce_selling_rank=None, volume_ratio=None):
     """
     Send stock alerts via Telegram with cooldown and momentum validation
 
     Alert Types & Cooldowns:
     - BULLISH: 5-min cooldown per stock
     - BEARISH: 5-min cooldown per stock
+    - BEARISH with CE SELLING: Detected when ce_flow < -50M
 
     Momentum Filter:
     - For repeat alerts, BOTH % change AND net flow must be HIGHER than previous alert
     - This ensures we only alert on ACCELERATING momentum, not weakening moves
+
+    CE Selling Detection (BEARISH only):
+    - When ce_flow < -50M, alert shows "Heavy CE Selling"
+    - Displays CE and PE breakdown
+    - Shows ranking among top CE sellers
     """
     now = datetime.now()
 
@@ -3375,11 +3381,20 @@ def send_stock_alert(stock_name, alert_type, price, change_pct, net_flow, volume
     nifty_pct = get_nifty_daily_change(kite=engine.kite)
     market_ctx = get_market_context(alert_type, nifty_pct)
 
+    # CE SELLING DETECTION for BEARISH alerts
+    has_ce_selling = False
+    if alert_type == "BEARISH" and ce_flow is not None and ce_flow < -50:
+        has_ce_selling = True
+        print(f"💥 {stock_name} HEAVY CE SELLING detected: {ce_flow:.0f}M")
+
     # Format alert message with market context
     if alert_type == "BULLISH":
         base_interpretation = "Price rising + Strong call buying"
     elif alert_type == "BEARISH":
-        base_interpretation = "Price falling + Strong put buying"
+        if has_ce_selling:
+            base_interpretation = "Price falling + AGGRESSIVE call selling"
+        else:
+            base_interpretation = "Price falling + Strong put buying"
     else:
         return False  # Only BULLISH/BEARISH alerts allowed
 
@@ -3387,6 +3402,14 @@ def send_stock_alert(stock_name, alert_type, price, change_pct, net_flow, volume
     emoji = market_ctx['emoji']
     signal = market_ctx['upgraded_signal']
     tag = market_ctx['tag']
+
+    # Add CE Selling tag for BEARISH alerts
+    if has_ce_selling:
+        if ce_selling_rank and ce_selling_rank <= 3:
+            tag = f"[Heavy CE Selling - Rank #{ce_selling_rank}]"
+        else:
+            tag = "[Heavy CE Selling!]"
+
     interpretation = base_interpretation + market_ctx['interpretation_suffix']
 
     # Format price and flow
@@ -3402,6 +3425,13 @@ def send_stock_alert(stock_name, alert_type, price, change_pct, net_flow, volume
     # Build message with market context
     telegram_message = f"{emoji} {signal} - {stock_name} {tag}\n"
     telegram_message += f"{price_str} {change_str} | Flow {flow_str}\n"
+
+    # Add CE/PE breakdown for CE selling alerts
+    if has_ce_selling and ce_flow is not None and pe_flow is not None:
+        ce_emoji = "🟢" if ce_flow > 0 else "🔴"
+        pe_emoji = "🟢" if pe_flow > 0 else "🔴"
+        telegram_message += f"💥 CE: {ce_emoji}{format_number(ce_flow)}, PE: {pe_emoji}{format_number(pe_flow)}\n"
+
     if sector_info:
         telegram_message += f"{sector_info}\n"
     telegram_message += f"{market_ctx['nifty_line']}\n"
@@ -3410,7 +3440,11 @@ def send_stock_alert(stock_name, alert_type, price, change_pct, net_flow, volume
     # Send to Telegram
     try:
         send_telegram_alert(telegram_message)
-        print(f"📱 Stock Alert: {stock_name} - {signal}")
+
+        if has_ce_selling:
+            print(f"📱 Stock Alert: {stock_name} - {signal} with CE SELLING (Rank #{ce_selling_rank})")
+        else:
+            print(f"📱 Stock Alert: {stock_name} - {signal}")
 
         # Store alert data for momentum validation
         engine.last_stock_alert[cooldown_key] = {
@@ -7396,7 +7430,8 @@ def polling_loop():
                     # ============================================
                     # BULLISH/BEARISH ALERTS FOR TOP 10 STOCKS
                     # ============================================
-                    # Check each Top 10 stock for BULLISH or BEARISH conditions
+                    # First pass: Collect BEARISH candidates with CE selling for ranking
+                    bearish_ce_sellers = []
                     for stock_name, _ in sorted_stocks[:10]:
                         stock_data = stocks_data.get(stock_name)
                         if not stock_data:
@@ -7405,6 +7440,38 @@ def polling_loop():
                         stock_price = stock_data.get("price")
                         change_pct = stock_data.get("change_pct")
                         net_flow = stock_data.get("net_flow", 0)
+                        ce_flow = stock_data.get("ce_flow", 0)
+                        pe_flow = stock_data.get("pe_flow", 0)
+
+                        # Check if stock qualifies for BEARISH alert with CE selling
+                        if (stock_price is not None and change_pct is not None and
+                            change_pct < -1.0 and net_flow < -50 and ce_flow < -50):
+                            bearish_ce_sellers.append({
+                                'stock': stock_name,
+                                'ce_flow': ce_flow,
+                                'price': stock_price,
+                                'change_pct': change_pct,
+                                'net_flow': net_flow,
+                                'pe_flow': pe_flow
+                            })
+
+                    # Sort by CE flow (most negative = highest selling = rank #1)
+                    bearish_ce_sellers.sort(key=lambda x: x['ce_flow'])
+
+                    # Create ranking map
+                    ce_selling_ranks = {item['stock']: idx + 1 for idx, item in enumerate(bearish_ce_sellers)}
+
+                    # Second pass: Check each Top 10 stock for BULLISH or BEARISH conditions
+                    for stock_name, _ in sorted_stocks[:10]:
+                        stock_data = stocks_data.get(stock_name)
+                        if not stock_data:
+                            continue
+
+                        stock_price = stock_data.get("price")
+                        change_pct = stock_data.get("change_pct")
+                        net_flow = stock_data.get("net_flow", 0)
+                        ce_flow = stock_data.get("ce_flow", 0)
+                        pe_flow = stock_data.get("pe_flow", 0)
 
                         # Skip if missing critical data
                         if stock_price is None or change_pct is None:
@@ -7412,12 +7479,15 @@ def polling_loop():
 
                         # BULLISH Alert: Price > +1% AND Net Flow > +100M
                         if change_pct > 1.0 and net_flow > 100:
-                            send_stock_alert(stock_name, "BULLISH", stock_price, change_pct, net_flow)
+                            send_stock_alert(stock_name, "BULLISH", stock_price, change_pct, net_flow,
+                                           ce_flow=ce_flow, pe_flow=pe_flow)
 
                         # BEARISH Alert: Price < -1% AND Net Flow < -50M
                         # (Reduced from -100M to match realistic put buying behavior)
                         elif change_pct < -1.0 and net_flow < -50:
-                            send_stock_alert(stock_name, "BEARISH", stock_price, change_pct, net_flow)
+                            ce_selling_rank = ce_selling_ranks.get(stock_name, None)
+                            send_stock_alert(stock_name, "BEARISH", stock_price, change_pct, net_flow,
+                                           ce_flow=ce_flow, pe_flow=pe_flow, ce_selling_rank=ce_selling_rank)
 
 
                 cache_data = {
