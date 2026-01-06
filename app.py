@@ -7414,8 +7414,9 @@ def polling_loop():
                         if change_pct > 1.0 and net_flow > 100:
                             send_stock_alert(stock_name, "BULLISH", stock_price, change_pct, net_flow)
 
-                        # BEARISH Alert: Price < -1% AND Net Flow < -100M
-                        elif change_pct < -1.0 and net_flow < -100:
+                        # BEARISH Alert: Price < -1% AND Net Flow < -50M
+                        # (Reduced from -100M to match realistic put buying behavior)
+                        elif change_pct < -1.0 and net_flow < -50:
                             send_stock_alert(stock_name, "BEARISH", stock_price, change_pct, net_flow)
 
 
