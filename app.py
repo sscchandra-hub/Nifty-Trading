@@ -10663,7 +10663,7 @@ if 'chartink_last_fetch_time' not in st.session_state:
 if 'chartink_fetch_count' not in st.session_state:
     st.session_state.chartink_fetch_count = 0
 if 'chartink_auto_fetch_enabled' not in st.session_state:
-    st.session_state.chartink_auto_fetch_enabled = False
+    st.session_state.chartink_auto_fetch_enabled = True
 
 # UI Debug logging helper - writes to both console and file
 from pathlib import Path
