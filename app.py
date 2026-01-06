@@ -2987,6 +2987,13 @@ def fetch_chartink_alerts(mode='LIVE'):
 # TELEGRAM ALERTS
 # =========================
 
+def is_market_hours() -> bool:
+    """Check if current time is within market hours (09:15 AM - 3:30 PM)"""
+    now = datetime.now()
+    market_open = now.replace(hour=9, minute=15, second=0, microsecond=0)
+    market_close = now.replace(hour=15, minute=30, second=0, microsecond=0)
+    return market_open <= now <= market_close
+
 def send_telegram_alert(message):
     """Send alert to Telegram"""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -3354,6 +3361,10 @@ def send_stock_alert(stock_name, alert_type, price, change_pct, net_flow, ce_flo
     - Shows ranking among top PE sellers
     - Indicates EXTREME bullish conviction (dumping protection)
     """
+    # CHECK MARKET HOURS: Only send alerts between 09:15 AM - 3:30 PM
+    if not is_market_hours():
+        return False  # Silently skip alerts outside market hours
+
     now = datetime.now()
 
     # Check cooldown and momentum based on alert type
@@ -3534,6 +3545,10 @@ def send_nifty_enhanced_alert(score_result):
     - BULLISH DIVERGENCE: Score <-60 but price up >0.15%
     - REVERSAL WARNING: Previous strong signal weakening
     """
+    # CHECK MARKET HOURS: Only send alerts between 09:15 AM - 3:30 PM
+    if not is_market_hours():
+        return False
+
     now = datetime.now()
     total_score = score_result['total_score']
     current_price = score_result.get('nifty_price', 0)
@@ -3803,6 +3818,10 @@ def send_nifty_comprehensive_alert(score_result):
     Confidence: Medium (60-69), High (70-84), Very High (85-100)
     Cooldown: 15 minutes per signal type
     """
+    # CHECK MARKET HOURS: Only send alerts between 09:15 AM - 3:30 PM
+    if not is_market_hours():
+        return False
+
     total_score = score_result['total_score']
     breakdown = score_result['breakdown']
 
@@ -3934,6 +3953,10 @@ def send_stock_confluence_alert(confluence_stocks):
     confluence_stocks: dict of {stock_name: count}
     Sends alert on ANY change to the list
     """
+    # CHECK MARKET HOURS: Only send alerts between 09:15 AM - 3:30 PM
+    if not is_market_hours():
+        return False
+
     if not confluence_stocks:
         return False
 
@@ -5181,6 +5204,10 @@ def send_followup_alert(stock: str, opening_pct: float, current_pct: float, curr
     """
     Send priority Telegram alert for follow-up opportunity.
     """
+    # CHECK MARKET HOURS: Only send alerts between 09:15 AM - 3:30 PM
+    if not is_market_hours():
+        return False
+
     try:
         emoji = "🟢" if signal == "BULLISH" else "🔴"
         action = "BUY" if signal == "BULLISH" else "AVOID/SHORT"
@@ -5346,6 +5373,10 @@ def send_recurring_alert(stock: str, current_alert_type: str, current_score: int
         current_score: Current alert score
         recurring_data: Data from check_recurring_alert()
     """
+    # CHECK MARKET HOURS: Only send alerts between 09:15 AM - 3:30 PM
+    if not is_market_hours():
+        return False
+
     try:
         if not recurring_data or not recurring_data.get('is_recurring'):
             return
@@ -5542,6 +5573,10 @@ def send_milestone_alert(stock: str, milestone_data: dict, kite=None):
         milestone_data: Milestone information from check_milestone_alert()
         kite: Kite instance for fetching live stock data
     """
+    # CHECK MARKET HOURS: Only send alerts between 09:15 AM - 3:30 PM
+    if not is_market_hours():
+        return False
+
     try:
         milestone = milestone_data['milestone']
 
