@@ -3392,6 +3392,11 @@ def send_stock_alert(stock_name, alert_type, price, change_pct, net_flow, volume
         if recurring_data:
             send_recurring_alert(stock_name, alert_type, 0, recurring_data)
 
+        # Check for milestone achievement (3, 5, 10, 15, 20...)
+        milestone_data = check_milestone_alert(stock_name)
+        if milestone_data:
+            send_milestone_alert(stock_name, milestone_data, kite=engine.kite)
+
         # 🚀 TRIGGER ROCKET ANIMATION (Stars for stocks)
         # Fixed count of 4 stars/sparkles for stock alerts
         if 'rocket_triggers' not in st.session_state:
@@ -5319,6 +5324,209 @@ def send_recurring_alert(stock: str, current_alert_type: str, current_score: int
         print(f"❌ Error sending recurring alert: {e}")
 
 # ============================================
+# MILESTONE ALERT FUNCTIONS
+# Real-time alerts when stock hits alert milestones (3, 5, 10, 15, 20...)
+# ============================================
+
+def check_milestone_alert(stock: str, data_dir: str = "data") -> dict:
+    """
+    Check if stock has hit an alert milestone (3, 5, 10, 15, 20, 25, 30...).
+
+    Args:
+        stock: Stock symbol
+        data_dir: Data directory path
+
+    Returns:
+        dict with milestone info if milestone hit, None otherwise
+    """
+    try:
+        history_file = Path(data_dir) / "alert_history.csv"
+
+        if not history_file.exists():
+            return None
+
+        df = pd.read_csv(history_file)
+        df['date'] = pd.to_datetime(df['date'])
+
+        # Get all alerts for this stock
+        stock_alerts = df[df['stock'] == stock].copy()
+
+        if stock_alerts.empty:
+            return None
+
+        total_count = len(stock_alerts)
+
+        # Define milestones (3, 5, 10, 15, 20, 25, 30, 40, 50...)
+        milestones = [3, 5, 10, 15, 20, 25, 30, 40, 50, 75, 100]
+
+        # Check if current count is a milestone
+        if total_count not in milestones:
+            return None
+
+        # Get first and last alert
+        stock_alerts = stock_alerts.sort_values('date')
+        first_alert = stock_alerts.iloc[0]
+        last_alert = stock_alerts.iloc[-1]
+
+        # Calculate time span
+        first_date = first_alert['date']
+        last_date = last_alert['date']
+        days_span = (last_date - first_date).days
+
+        # Analyze pattern
+        signal_types = stock_alerts['alert_type'].value_counts()
+        if len(signal_types) == 1:
+            pattern = f"All {signal_types.index[0]}"
+        else:
+            bullish_count = signal_types.get('BULLISH', 0)
+            bearish_count = signal_types.get('BEARISH', 0)
+            pattern = f"{bullish_count} BULLISH, {bearish_count} BEARISH"
+
+        # Analyze score trend (if scores available)
+        score_trend = None
+        if not stock_alerts['score'].isna().all():
+            scores = stock_alerts['score'].dropna()
+            if len(scores) >= 3:
+                recent_avg = scores.tail(3).mean()
+                older_avg = scores.head(3).mean()
+
+                if recent_avg > older_avg * 1.15:
+                    score_trend = "UP"
+                elif recent_avg < older_avg * 0.85:
+                    score_trend = "DOWN"
+                else:
+                    score_trend = "STABLE"
+
+        # Get recent alerts (last 3 days)
+        three_days_ago = datetime.now() - timedelta(days=3)
+        recent_alerts = stock_alerts[stock_alerts['date'] >= three_days_ago]
+        recent_count = len(recent_alerts)
+
+        return {
+            'milestone': total_count,
+            'first_alert': {
+                'date': first_date.strftime('%b %d, %I:%M %p'),
+                'type': first_alert['alert_type'],
+                'score': first_alert['score'] if not pd.isna(first_alert['score']) else 0
+            },
+            'last_alert': {
+                'date': last_date.strftime('%b %d, %I:%M %p'),
+                'type': last_alert['alert_type'],
+                'score': last_alert['score'] if not pd.isna(last_alert['score']) else 0
+            },
+            'days_span': days_span,
+            'pattern': pattern,
+            'score_trend': score_trend,
+            'recent_count': recent_count
+        }
+
+    except Exception as e:
+        print(f"❌ Error checking milestone alert: {e}")
+        return None
+
+def send_milestone_alert(stock: str, milestone_data: dict, kite=None):
+    """
+    Send Telegram alert for milestone achievement with live stock data.
+
+    Args:
+        stock: Stock symbol
+        milestone_data: Milestone information from check_milestone_alert()
+        kite: Kite instance for fetching live stock data
+    """
+    try:
+        milestone = milestone_data['milestone']
+
+        # Get milestone emoji
+        if milestone >= 20:
+            emoji = "🔥🔥🔥"
+        elif milestone >= 10:
+            emoji = "🔥🔥"
+        else:
+            emoji = "🎯"
+
+        # Build message header
+        message = f"{emoji} <b>MILESTONE ALERT - {stock}</b>\n\n"
+        message += f"🎯 <b>This is the {milestone}th alert for {stock}!</b>\n\n"
+
+        # Live stock data (if kite available)
+        if kite:
+            try:
+                quote = kite.quote(f"NSE:{stock}")
+                if f"NSE:{stock}" in quote:
+                    q = quote[f"NSE:{stock}"]
+                    current_price = q.get('last_price', 0)
+                    ohlc = q.get('ohlc', {})
+                    prev_close = ohlc.get('close', 0)
+                    volume = q.get('volume', 0)
+                    avg_volume = q.get('average_price', 0)
+
+                    if prev_close > 0:
+                        change_pct = ((current_price - prev_close) / prev_close) * 100
+                        change_emoji = "🟢" if change_pct > 0 else "🔴"
+
+                        message += f"💰 <b>Live Data:</b>\n"
+                        message += f"Price: ₹{current_price:,.2f} {change_emoji}{change_pct:+.2f}%\n"
+
+                        if volume > 0:
+                            message += f"Volume: {volume:,}\n"
+                        message += "\n"
+            except Exception as e:
+                print(f"⚠️ Could not fetch live data: {e}")
+
+        # Timeline
+        message += f"📅 <b>Timeline:</b>\n"
+        message += f"• 1st alert: {milestone_data['first_alert']['date']}\n"
+        message += f"• {milestone}th alert: {milestone_data['last_alert']['date']}\n"
+
+        if milestone_data['days_span'] == 0:
+            message += f"• Span: <b>Same day</b>\n\n"
+        elif milestone_data['days_span'] == 1:
+            message += f"• Span: <b>1 day</b>\n\n"
+        else:
+            message += f"• Span: <b>{milestone_data['days_span']} days</b>\n\n"
+
+        # Pattern analysis
+        message += f"📊 <b>Pattern:</b> {milestone_data['pattern']}\n"
+
+        # Score trend
+        if milestone_data['score_trend']:
+            if milestone_data['score_trend'] == "UP":
+                message += f"📈 Score trending <b>UP</b> 🔥\n"
+            elif milestone_data['score_trend'] == "DOWN":
+                message += f"📉 Score trending <b>DOWN</b>\n"
+            else:
+                message += f"📊 Score <b>STABLE</b>\n"
+
+        # Recent activity
+        if milestone_data['recent_count'] >= 5:
+            message += f"⚡ <b>{milestone_data['recent_count']} alerts in last 3 days!</b>\n"
+
+        message += "\n"
+
+        # Action recommendation based on milestone
+        if milestone >= 20:
+            message += "🔥 <b>EXTREME HIGH CONVICTION!</b>\n"
+            message += "💡 This stock is showing exceptional momentum\n"
+        elif milestone >= 10:
+            message += "⚡ <b>HIGH CONVICTION PATTERN!</b>\n"
+            message += "💡 Monitor closely - sustained momentum\n"
+        elif milestone >= 5:
+            message += "👀 <b>Building strong pattern</b>\n"
+            message += "💡 Watch for continuation\n"
+        else:
+            message += "🎯 <b>Pattern emerging</b>\n"
+            message += "💡 Track this stock closely\n"
+
+        message += f"\n⏰ {datetime.now().strftime('%I:%M:%S %p')}"
+
+        # Send alert
+        send_telegram_message(message, parse_mode='HTML')
+        print(f"🎯 MILESTONE ALERT sent for {stock} ({milestone} alerts)")
+
+    except Exception as e:
+        print(f"❌ Error sending milestone alert: {e}")
+
+# ============================================
 # STOCK ENTRY TRACKING FUNCTIONS
 # Track how many times stocks enter Top 10 & Volume Spikes lists
 # ============================================
@@ -6484,6 +6692,11 @@ def polling_loop():
                                     int(score_result['total_score']),
                                     recurring_data
                                 )
+
+                            # Check for milestone achievement (3, 5, 10, 15, 20...)
+                            milestone_data = check_milestone_alert(stock_name)
+                            if milestone_data:
+                                send_milestone_alert(stock_name, milestone_data, kite=kite)
 
                             # Update cooldown
                             engine.alert_cooldowns[stock_name] = now
