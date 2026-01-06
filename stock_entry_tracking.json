@@ -1,0 +1,493 @@
+{
+  "top10_stocks": {
+    "IDEA": {
+      "count": 4,
+      "in_list": true,
+      "last_seen": "2026-01-06T21:25:01.815230"
+    },
+    "ASHOKLEY": {
+      "count": 2,
+      "in_list": false,
+      "last_seen": "2026-01-02T16:00:54.678432"
+    },
+    "YESBANK": {
+      "count": 4,
+      "in_list": true,
+      "last_seen": "2026-01-06T21:25:01.815230"
+    },
+    "RECLTD": {
+      "count": 5,
+      "in_list": false,
+      "last_seen": "2026-01-06T11:39:53.614401"
+    },
+    "INDUSTOWER": {
+      "count": 1,
+      "in_list": false,
+      "last_seen": "2026-01-01T23:41:19.369290"
+    },
+    "TATASTEEL": {
+      "count": 9,
+      "in_list": false,
+      "last_seen": "2026-01-06T14:21:51.328772"
+    },
+    "GMRAIRPORT": {
+      "count": 6,
+      "in_list": false,
+      "last_seen": "2026-01-06T10:00:13.448627"
+    },
+    "MOTHERSON": {
+      "count": 3,
+      "in_list": false,
+      "last_seen": "2026-01-02T11:59:58.968592"
+    },
+    "BHEL": {
+      "count": 2,
+      "in_list": false,
+      "last_seen": "2026-01-02T16:00:54.678432"
+    },
+    "PFC": {
+      "count": 2,
+      "in_list": false,
+      "last_seen": "2026-01-02T16:00:54.678432"
+    },
+    "360ONE": {
+      "count": 3,
+      "in_list": false,
+      "last_seen": "2026-01-06T09:15:41.609518"
+    },
+    "ABB": {
+      "count": 3,
+      "in_list": false,
+      "last_seen": "2026-01-06T09:15:41.609518"
+    },
+    "ABCAPITAL": {
+      "count": 5,
+      "in_list": false,
+      "last_seen": "2026-01-06T10:42:21.660695"
+    },
+    "ADANIENSOL": {
+      "count": 3,
+      "in_list": false,
+      "last_seen": "2026-01-06T09:15:41.609518"
+    },
+    "ADANIENT": {
+      "count": 3,
+      "in_list": false,
+      "last_seen": "2026-01-06T09:15:41.609518"
+    },
+    "ADANIGREEN": {
+      "count": 3,
+      "in_list": false,
+      "last_seen": "2026-01-06T09:15:41.609518"
+    },
+    "ADANIPORTS": {
+      "count": 3,
+      "in_list": false,
+      "last_seen": "2026-01-06T09:15:41.609518"
+    },
+    "ALKEM": {
+      "count": 3,
+      "in_list": false,
+      "last_seen": "2026-01-06T09:15:41.609518"
+    },
+    "AMBER": {
+      "count": 3,
+      "in_list": false,
+      "last_seen": "2026-01-06T09:15:41.609518"
+    },
+    "AMBUJACEM": {
+      "count": 3,
+      "in_list": false,
+      "last_seen": "2026-01-06T09:15:41.609518"
+    },
+    "BEL": {
+      "count": 7,
+      "in_list": false,
+      "last_seen": "2026-01-06T09:17:35.424270"
+    },
+    "TMPV": {
+      "count": 2,
+      "in_list": false,
+      "last_seen": "2026-01-06T09:17:49.980645"
+    },
+    "ONGC": {
+      "count": 13,
+      "in_list": true,
+      "last_seen": "2026-01-06T21:25:01.815230"
+    },
+    "CANBK": {
+      "count": 5,
+      "in_list": false,
+      "last_seen": "2026-01-06T14:48:13.420472"
+    },
+    "BANKBARODA": {
+      "count": 7,
+      "in_list": false,
+      "last_seen": "2026-01-05T16:57:01.952696"
+    },
+    "NATIONALUM": {
+      "count": 3,
+      "in_list": true,
+      "last_seen": "2026-01-06T21:25:01.815230"
+    },
+    "IRFC": {
+      "count": 3,
+      "in_list": false,
+      "last_seen": "2026-01-02T13:45:03.762538"
+    },
+    "IDFCFIRSTB": {
+      "count": 6,
+      "in_list": true,
+      "last_seen": "2026-01-06T21:25:01.815230"
+    },
+    "COALINDIA": {
+      "count": 4,
+      "in_list": false,
+      "last_seen": "2026-01-05T16:57:01.952696"
+    },
+    "IREDA": {
+      "count": 2,
+      "in_list": false,
+      "last_seen": "2026-01-02T16:00:54.678432"
+    },
+    "SUZLON": {
+      "count": 4,
+      "in_list": false,
+      "last_seen": "2026-01-06T14:50:13.839421"
+    },
+    "NYKAA": {
+      "count": 1,
+      "in_list": false,
+      "last_seen": "2026-01-05T09:17:11.559006"
+    },
+    "HDFCBANK": {
+      "count": 4,
+      "in_list": false,
+      "last_seen": "2026-01-06T12:24:01.011289"
+    },
+    "VEDL": {
+      "count": 1,
+      "in_list": false,
+      "last_seen": "2026-01-05T09:17:11.559006"
+    },
+    "PNB": {
+      "count": 2,
+      "in_list": false,
+      "last_seen": "2026-01-05T09:26:05.274480"
+    },
+    "BAJFINANCE": {
+      "count": 1,
+      "in_list": false,
+      "last_seen": "2026-01-05T09:17:42.560187"
+    },
+    "BANDHANBNK": {
+      "count": 2,
+      "in_list": false,
+      "last_seen": "2026-01-05T15:28:06.515882"
+    },
+    "IOC": {
+      "count": 1,
+      "in_list": false,
+      "last_seen": "2026-01-05T09:17:42.560187"
+    },
+    "UNIONBANK": {
+      "count": 4,
+      "in_list": true,
+      "last_seen": "2026-01-06T21:25:01.815230"
+    },
+    "RELIANCE": {
+      "count": 5,
+      "in_list": true,
+      "last_seen": "2026-01-06T21:25:01.815230"
+    },
+    "AXISBANK": {
+      "count": 2,
+      "in_list": false,
+      "last_seen": "2026-01-06T09:57:27.369101"
+    },
+    "SBIN": {
+      "count": 3,
+      "in_list": false,
+      "last_seen": "2026-01-06T20:50:41.473737"
+    },
+    "KOTAKBANK": {
+      "count": 1,
+      "in_list": false,
+      "last_seen": "2026-01-06T09:17:49.980645"
+    },
+    "LTF": {
+      "count": 1,
+      "in_list": false,
+      "last_seen": "2026-01-06T09:50:52.046306"
+    },
+    "HINDZINC": {
+      "count": 5,
+      "in_list": false,
+      "last_seen": "2026-01-06T14:36:40.046290"
+    },
+    "ICICIBANK": {
+      "count": 4,
+      "in_list": true,
+      "last_seen": "2026-01-06T21:25:01.815230"
+    },
+    "HINDALCO": {
+      "count": 5,
+      "in_list": true,
+      "last_seen": "2026-01-06T21:25:01.815230"
+    },
+    "IEX": {
+      "count": 1,
+      "in_list": true,
+      "last_seen": "2026-01-06T21:25:01.815230"
+    }
+  },
+  "volume_spikes": {
+    "IDEA": {
+      "count": 5,
+      "in_list": true,
+      "last_seen": "2026-01-06T21:25:01.815230"
+    },
+    "ASHOKLEY": {
+      "count": 2,
+      "in_list": false,
+      "last_seen": "2026-01-02T16:00:54.678432"
+    },
+    "YESBANK": {
+      "count": 4,
+      "in_list": true,
+      "last_seen": "2026-01-06T21:25:01.815230"
+    },
+    "TATASTEEL": {
+      "count": 4,
+      "in_list": true,
+      "last_seen": "2026-01-06T21:25:01.815230"
+    },
+    "INDUSTOWER": {
+      "count": 1,
+      "in_list": false,
+      "last_seen": "2026-01-01T23:41:19.369290"
+    },
+    "CANBK": {
+      "count": 5,
+      "in_list": false,
+      "last_seen": "2026-01-06T14:53:22.388813"
+    },
+    "BANKBARODA": {
+      "count": 3,
+      "in_list": false,
+      "last_seen": "2026-01-05T16:57:01.952696"
+    },
+    "RECLTD": {
+      "count": 2,
+      "in_list": false,
+      "last_seen": "2026-01-02T16:00:54.678432"
+    },
+    "SAIL": {
+      "count": 1,
+      "in_list": false,
+      "last_seen": "2026-01-01T23:41:19.369290"
+    },
+    "MOTHERSON": {
+      "count": 2,
+      "in_list": false,
+      "last_seen": "2026-01-02T10:09:58.537582"
+    },
+    "360ONE": {
+      "count": 3,
+      "in_list": false,
+      "last_seen": "2026-01-06T09:15:41.609518"
+    },
+    "ABB": {
+      "count": 3,
+      "in_list": false,
+      "last_seen": "2026-01-06T09:15:41.609518"
+    },
+    "ABCAPITAL": {
+      "count": 3,
+      "in_list": false,
+      "last_seen": "2026-01-06T09:15:41.609518"
+    },
+    "ADANIENSOL": {
+      "count": 3,
+      "in_list": false,
+      "last_seen": "2026-01-06T09:15:41.609518"
+    },
+    "ADANIENT": {
+      "count": 3,
+      "in_list": false,
+      "last_seen": "2026-01-06T09:15:41.609518"
+    },
+    "ADANIGREEN": {
+      "count": 3,
+      "in_list": false,
+      "last_seen": "2026-01-06T09:15:41.609518"
+    },
+    "ADANIPORTS": {
+      "count": 3,
+      "in_list": false,
+      "last_seen": "2026-01-06T09:15:41.609518"
+    },
+    "ALKEM": {
+      "count": 3,
+      "in_list": false,
+      "last_seen": "2026-01-06T09:15:41.609518"
+    },
+    "AMBER": {
+      "count": 3,
+      "in_list": false,
+      "last_seen": "2026-01-06T09:15:41.609518"
+    },
+    "AMBUJACEM": {
+      "count": 3,
+      "in_list": false,
+      "last_seen": "2026-01-06T09:15:41.609518"
+    },
+    "TMPV": {
+      "count": 3,
+      "in_list": false,
+      "last_seen": "2026-01-06T09:52:58.646037"
+    },
+    "BEL": {
+      "count": 5,
+      "in_list": false,
+      "last_seen": "2026-01-05T16:57:01.952696"
+    },
+    "RELIANCE": {
+      "count": 4,
+      "in_list": true,
+      "last_seen": "2026-01-06T21:25:01.815230"
+    },
+    "NATIONALUM": {
+      "count": 3,
+      "in_list": true,
+      "last_seen": "2026-01-06T21:25:01.815230"
+    },
+    "PFC": {
+      "count": 1,
+      "in_list": false,
+      "last_seen": "2026-01-02T16:00:54.678432"
+    },
+    "IDFCFIRSTB": {
+      "count": 3,
+      "in_list": true,
+      "last_seen": "2026-01-06T21:25:01.815230"
+    },
+    "BHEL": {
+      "count": 2,
+      "in_list": false,
+      "last_seen": "2026-01-02T16:00:54.678432"
+    },
+    "COALINDIA": {
+      "count": 3,
+      "in_list": false,
+      "last_seen": "2026-01-05T16:57:01.952696"
+    },
+    "SUZLON": {
+      "count": 1,
+      "in_list": false,
+      "last_seen": "2026-01-02T16:00:54.678432"
+    },
+    "NYKAA": {
+      "count": 1,
+      "in_list": false,
+      "last_seen": "2026-01-05T09:17:11.562432"
+    },
+    "SBIN": {
+      "count": 5,
+      "in_list": true,
+      "last_seen": "2026-01-06T21:25:01.815230"
+    },
+    "HDFCBANK": {
+      "count": 3,
+      "in_list": false,
+      "last_seen": "2026-01-06T14:35:44.133755"
+    },
+    "ONGC": {
+      "count": 3,
+      "in_list": false,
+      "last_seen": "2026-01-06T10:42:21.661788"
+    },
+    "BAJFINANCE": {
+      "count": 1,
+      "in_list": false,
+      "last_seen": "2026-01-05T09:17:42.561400"
+    },
+    "VEDL": {
+      "count": 1,
+      "in_list": false,
+      "last_seen": "2026-01-05T09:17:11.562432"
+    },
+    "IOC": {
+      "count": 6,
+      "in_list": false,
+      "last_seen": "2026-01-06T11:35:42.419127"
+    },
+    "BANDHANBNK": {
+      "count": 2,
+      "in_list": false,
+      "last_seen": "2026-01-05T10:44:03.722708"
+    },
+    "PNB": {
+      "count": 1,
+      "in_list": false,
+      "last_seen": "2026-01-05T16:57:01.952696"
+    },
+    "GMRAIRPORT": {
+      "count": 1,
+      "in_list": false,
+      "last_seen": "2026-01-05T09:23:56.320684"
+    },
+    "UNIONBANK": {
+      "count": 4,
+      "in_list": false,
+      "last_seen": "2026-01-06T15:28:13.528273"
+    },
+    "AXISBANK": {
+      "count": 3,
+      "in_list": false,
+      "last_seen": "2026-01-06T10:04:18.794614"
+    },
+    "POWERGRID": {
+      "count": 1,
+      "in_list": false,
+      "last_seen": "2026-01-06T09:17:35.426767"
+    },
+    "DABUR": {
+      "count": 1,
+      "in_list": false,
+      "last_seen": "2026-01-06T09:24:50.158423"
+    },
+    "LTF": {
+      "count": 1,
+      "in_list": false,
+      "last_seen": "2026-01-06T09:33:58.845803"
+    },
+    "ICICIBANK": {
+      "count": 1,
+      "in_list": true,
+      "last_seen": "2026-01-06T21:25:01.815230"
+    },
+    "HINDALCO": {
+      "count": 2,
+      "in_list": true,
+      "last_seen": "2026-01-06T21:25:01.815230"
+    },
+    "ETERNAL": {
+      "count": 2,
+      "in_list": false,
+      "last_seen": "2026-01-06T10:24:45.066511"
+    },
+    "HINDZINC": {
+      "count": 3,
+      "in_list": false,
+      "last_seen": "2026-01-06T11:33:28.374308"
+    },
+    "IEX": {
+      "count": 1,
+      "in_list": true,
+      "last_seen": "2026-01-06T21:25:01.815230"
+    }
+  },
+  "last_expiry_reset": null,
+  "current_expiry": null
+}
