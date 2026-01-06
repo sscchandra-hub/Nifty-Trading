@@ -904,6 +904,7 @@ class EngineState:
     daily_score_history: list = field(default_factory=list)  # Track all scores for daily summary
     nifty_momentum_state: str = None  # Track NIFTY momentum class for reversal detection
     nifty_momentum_last_alert: datetime = None  # Track last NIFTY momentum alert time
+    sector_mapping: dict = field(default_factory=dict)  # Stock to sector mapping
 
     # Enhanced Alert System - 3-minute confirmation tracking
     nifty_score_buffer: list = field(default_factory=list)  # Last 3 scores for confirmation
@@ -3368,9 +3369,14 @@ def send_stock_alert(stock_name, alert_type, price, change_pct, net_flow, volume
     flow_emoji = "🟢" if net_flow > 0 else "🔴"
     flow_str = f"{flow_emoji}{format_number(net_flow)}"
 
+    # Get sector performance
+    sector_info = get_sector_performance(stock_name, kite=engine.kite, sector_map=engine.sector_mapping)
+
     # Hybrid format (2-3 lines)
     telegram_message = f"{emoji} {signal} - {stock_name}\n"
     telegram_message += f"{price_str} {change_str} | Flow {flow_str}\n"
+    if sector_info:
+        telegram_message += f"{sector_info}\n"
     telegram_message += f"{interpretation}"
 
     # Send to Telegram
@@ -5287,6 +5293,11 @@ def send_recurring_alert(stock: str, current_alert_type: str, current_score: int
         # Frequency
         message += f"🔄 <b>{total_count} alerts</b> in last 7 days\n"
 
+        # Get sector performance
+        sector_info = get_sector_performance(stock, kite=engine.kite, sector_map=engine.sector_mapping)
+        if sector_info:
+            message += f"{sector_info}\n"
+
         # Trend analysis
         if "All" in trend:
             message += f"📊 {trend} - <b>Strong trend!</b>\n"
@@ -5469,6 +5480,12 @@ def send_milestone_alert(stock: str, milestone_data: dict, kite=None):
 
                         if volume > 0:
                             message += f"Volume: {volume:,}\n"
+
+                        # Get sector performance
+                        sector_info = get_sector_performance(stock, kite=kite, sector_map=engine.sector_mapping)
+                        if sector_info:
+                            message += f"{sector_info}\n"
+
                         message += "\n"
             except Exception as e:
                 print(f"⚠️ Could not fetch live data: {e}")
@@ -5778,19 +5795,19 @@ def load_sector_mapping():
         Path("FO Stocks with Indices.csv"),
         Path("F&O Stocks with Indices.csv"),
     ]
-    
+
     sector_map = {}
     csv_path = None
-    
+
     for path in possible_paths:
         if path.exists():
             csv_path = path
             break
-    
+
     if csv_path is None:
         print(f"⚠️ Sector mapping file not found")
         return sector_map
-    
+
     try:
         df = pd.read_csv(csv_path)
         for _, row in df.iterrows():
@@ -5801,8 +5818,97 @@ def load_sector_mapping():
         print(f"✓ Loaded sector mapping for {len(sector_map)} stocks")
     except Exception as e:
         print(f"Error loading sector mapping: {e}")
-    
+
     return sector_map
+
+def get_sector_emoji(sector_name: str) -> str:
+    """Get emoji for sector based on name."""
+    sector_emojis = {
+        "NIFTY BANK": "🏦",
+        "NIFTY IT": "💻",
+        "NIFTY PHARMA": "💊",
+        "NIFTY METAL": "🏭",
+        "NIFTY AUTO": "🚗",
+        "NIFTY FMCG": "🛒",
+        "NIFTY ENERGY": "⚡",
+        "NIFTY OIL & GAS": "🛢️",
+        "NIFTY REALTY": "🏢",
+        "NIFTY PSU BANK": "🏛️",
+        "NIFTY INFRA": "🏗️",
+        "NIFTY MEDIA": "📺",
+        "NIFTY HEALTHCARE": "🏥",
+        "NIFTY FIN SERVICE": "💰",
+        "NIFTY MIDCAP 50": "📊",
+        "NIFTY 50": "📈"
+    }
+
+    # Try exact match first
+    if sector_name in sector_emojis:
+        return sector_emojis[sector_name]
+
+    # Try partial match
+    for key, emoji in sector_emojis.items():
+        if key in sector_name or sector_name in key:
+            return emoji
+
+    # Default
+    return "📊"
+
+def get_sector_display_name(sector_name: str) -> str:
+    """Get clean display name for sector."""
+    # Remove "NIFTY" prefix for cleaner display
+    if sector_name.startswith("NIFTY "):
+        return sector_name[6:]  # Remove "NIFTY "
+    return sector_name
+
+def get_sector_performance(stock_name: str, kite=None, sector_map=None) -> str:
+    """
+    Get sector performance for a stock.
+
+    Args:
+        stock_name: Stock symbol (e.g., "RELIANCE")
+        kite: Kite instance for fetching live data
+        sector_map: Sector mapping dictionary
+
+    Returns:
+        Formatted string like "🏭 Sector: Metals & Mining (🟢+1.2%)" or ""
+    """
+    try:
+        if not kite or not sector_map:
+            return ""
+
+        # Get sector for stock
+        sector_index = sector_map.get(stock_name.upper(), None)
+        if not sector_index:
+            return ""
+
+        # Fetch sector index performance
+        try:
+            quote = kite.quote(f"NSE:{sector_index}")
+            if f"NSE:{sector_index}" in quote:
+                q = quote[f"NSE:{sector_index}"]
+                ohlc = q.get('ohlc', {})
+                last_price = q.get('last_price', 0)
+                prev_close = ohlc.get('close', 0)
+
+                if prev_close > 0:
+                    sector_pct = ((last_price - prev_close) / prev_close) * 100
+                    emoji = get_sector_emoji(sector_index)
+                    display_name = get_sector_display_name(sector_index)
+                    change_emoji = "🟢" if sector_pct >= 0 else "🔴"
+
+                    return f"{emoji} Sector: {display_name} ({change_emoji}{sector_pct:+.2f}%)"
+        except Exception as e:
+            # Sector index might not be available, return basic info
+            emoji = get_sector_emoji(sector_index)
+            display_name = get_sector_display_name(sector_index)
+            return f"{emoji} Sector: {display_name}"
+
+    except Exception as e:
+        print(f"⚠️ Error getting sector performance for {stock_name}: {e}")
+
+    return ""
+
 
 def nearest_fut(ins_df: pd.DataFrame, name: str):
     df = ins_df[(ins_df["segment"].isin(DERIV_FUT_SEGMENTS)) & (ins_df["name"]==name)].copy()
@@ -8354,7 +8460,9 @@ if not engine.nifty_fut_token and not engine.ins_df.empty:
 if not engine.stocks_with_fo:
     engine.stocks_with_fo = discover_stocks_with_fo(engine.ins_df)
 
+# Load sector mapping and store in engine
 sector_mapping = load_sector_mapping()
+engine.sector_mapping = sector_mapping
 load_flow_history()
 
 if DASHBOARD_CACHE_FILE.exists():
