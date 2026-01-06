@@ -10125,6 +10125,9 @@ with st.expander("📈 View Top 10 Stocks (Live Rankings)", expanded=False):
                 with col1:
                     # Stock name with entry count tracking
                     tracking_data = st.session_state.get('stock_entry_tracking', {})
+                    # Fallback: Load from JSON if session state is empty
+                    if not tracking_data:
+                        tracking_data = load_stock_entry_tracking()
                     display_name = get_stock_display_name(stock_name, "top10_stocks", tracking_data)
 
                     price_str = f"₹{stock_price:,.2f}" if stock_price else "N/A"
@@ -10345,6 +10348,9 @@ if cached_data and "stocks_data" in cached_data:
 
                     # Get stock display name with entry count tracking
                     tracking_data = st.session_state.get('stock_entry_tracking', {})
+                    # Fallback: Load from JSON if session state is empty
+                    if not tracking_data:
+                        tracking_data = load_stock_entry_tracking()
                     display_name = get_stock_display_name(stock_name, "volume_spikes", tracking_data)
 
                     price_str = f"₹{price:,.2f}" if price else "N/A"
