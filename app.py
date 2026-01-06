@@ -3350,17 +3350,23 @@ def send_stock_alert(stock_name, alert_type, price, change_pct, net_flow, volume
         if time_diff < 60:
             return False
 
-    # Format alert message (Hybrid format - 2-3 lines)
+    # Get NIFTY market context
+    nifty_pct = get_nifty_daily_change(kite=engine.kite)
+    market_ctx = get_market_context(alert_type, nifty_pct)
+
+    # Format alert message with market context
     if alert_type == "BULLISH":
-        emoji = "🟢"
-        signal = "STRONG BULLISH"
-        interpretation = "Price rising + Strong call buying"
+        base_interpretation = "Price rising + Strong call buying"
     elif alert_type == "BEARISH":
-        emoji = "🔴"
-        signal = "STRONG BEARISH"
-        interpretation = "Price falling + Strong put buying"
+        base_interpretation = "Price falling + Strong put buying"
     else:
         return False  # Only BULLISH/BEARISH alerts allowed
+
+    # Use market context for emoji, signal, and interpretation
+    emoji = market_ctx['emoji']
+    signal = market_ctx['upgraded_signal']
+    tag = market_ctx['tag']
+    interpretation = base_interpretation + market_ctx['interpretation_suffix']
 
     # Format price and flow
     price_str = f"₹{price:,.2f}"
@@ -3372,11 +3378,12 @@ def send_stock_alert(stock_name, alert_type, price, change_pct, net_flow, volume
     # Get sector performance
     sector_info = get_sector_performance(stock_name, kite=engine.kite, sector_map=engine.sector_mapping)
 
-    # Hybrid format (2-3 lines)
-    telegram_message = f"{emoji} {signal} - {stock_name}\n"
+    # Build message with market context
+    telegram_message = f"{emoji} {signal} - {stock_name} {tag}\n"
     telegram_message += f"{price_str} {change_str} | Flow {flow_str}\n"
     if sector_info:
         telegram_message += f"{sector_info}\n"
+    telegram_message += f"{market_ctx['nifty_line']}\n"
     telegram_message += f"{interpretation}"
 
     # Send to Telegram
@@ -5298,6 +5305,11 @@ def send_recurring_alert(stock: str, current_alert_type: str, current_score: int
         if sector_info:
             message += f"{sector_info}\n"
 
+        # Get NIFTY market context
+        nifty_pct = get_nifty_daily_change(kite=engine.kite)
+        market_ctx = get_market_context(current_alert_type, nifty_pct)
+        message += f"{market_ctx['nifty_line']}\n"
+
         # Trend analysis
         if "All" in trend:
             message += f"📊 {trend} - <b>Strong trend!</b>\n"
@@ -5475,6 +5487,11 @@ def send_milestone_alert(stock: str, milestone_data: dict, kite=None):
                         change_pct = ((current_price - prev_close) / prev_close) * 100
                         change_emoji = "🟢" if change_pct > 0 else "🔴"
 
+                        # Get NIFTY market context for milestone alert
+                        stock_direction = "BULLISH" if change_pct > 0 else "BEARISH"
+                        nifty_pct = get_nifty_daily_change(kite=kite)
+                        market_ctx = get_market_context(stock_direction, nifty_pct)
+
                         message += f"💰 <b>Live Data:</b>\n"
                         message += f"Price: ₹{current_price:,.2f} {change_emoji}{change_pct:+.2f}%\n"
 
@@ -5485,6 +5502,9 @@ def send_milestone_alert(stock: str, milestone_data: dict, kite=None):
                         sector_info = get_sector_performance(stock, kite=kite, sector_map=engine.sector_mapping)
                         if sector_info:
                             message += f"{sector_info}\n"
+
+                        # Add NIFTY market context
+                        message += f"{market_ctx['nifty_line']}\n"
 
                         message += "\n"
             except Exception as e:
@@ -5908,6 +5928,114 @@ def get_sector_performance(stock_name: str, kite=None, sector_map=None) -> str:
         print(f"⚠️ Error getting sector performance for {stock_name}: {e}")
 
     return ""
+
+def get_nifty_daily_change(kite=None) -> float:
+    """
+    Get NIFTY 50 daily % change.
+
+    Returns:
+        Float with NIFTY daily change % (e.g., 0.35 for +0.35%)
+        Returns 0.0 if unable to fetch
+    """
+    try:
+        if not kite:
+            return 0.0
+
+        # Fetch NIFTY 50 spot index
+        quote = kite.quote("NSE:NIFTY 50")
+        if "NSE:NIFTY 50" in quote:
+            q = quote["NSE:NIFTY 50"]
+            last_price = q.get('last_price', 0)
+            ohlc = q.get('ohlc', {})
+            prev_close = ohlc.get('close', 0)
+
+            if prev_close > 0:
+                nifty_pct = ((last_price - prev_close) / prev_close) * 100
+                return nifty_pct
+
+    except Exception as e:
+        print(f"⚠️ Error getting NIFTY daily change: {e}")
+
+    return 0.0
+
+def get_market_context(stock_alert_type: str, nifty_pct: float) -> dict:
+    """
+    Determine market context for stock alert based on NIFTY movement.
+
+    Args:
+        stock_alert_type: "BULLISH" or "BEARISH"
+        nifty_pct: NIFTY daily change % (e.g., 0.35 for +0.35%)
+
+    Returns:
+        dict with:
+        - upgraded_signal: "MORE BULLISH", "MORE BEARISH", or original
+        - emoji: Alert emoji with modifications
+        - tag: Market context tag (e.g., "[Market Tailwind]")
+        - nifty_line: Formatted NIFTY info line
+        - interpretation_suffix: Additional interpretation text
+    """
+    THRESHOLD = 0.10  # 0.10% threshold
+
+    context = {
+        'upgraded_signal': '',
+        'emoji': '',
+        'tag': '',
+        'nifty_line': '',
+        'interpretation_suffix': ''
+    }
+
+    # Format NIFTY line
+    nifty_emoji = "📈" if nifty_pct >= 0 else "📉"
+    nifty_color = "🟢" if nifty_pct >= 0 else "🔴"
+    context['nifty_line'] = f"{nifty_emoji} NIFTY: {nifty_color}{nifty_pct:+.2f}%"
+
+    if stock_alert_type == "BULLISH":
+        if nifty_pct >= THRESHOLD:
+            # Market confirming bullish move
+            context['upgraded_signal'] = "MORE BULLISH"
+            context['emoji'] = "🟢🟢"
+            context['tag'] = "[Market Tailwind]"
+            context['nifty_line'] += " ✓ Market supporting"
+            context['interpretation_suffix'] = " + Market momentum"
+        elif nifty_pct <= -THRESHOLD:
+            # Stock bullish despite bearish market
+            context['upgraded_signal'] = "STRONG BULLISH"
+            context['emoji'] = "🟢💪"
+            context['tag'] = "[Against Market!]"
+            context['nifty_line'] += " 💪 Strong independent move!"
+            context['interpretation_suffix'] = " + Fighting market"
+        else:
+            # Stock outperforming flat market
+            context['upgraded_signal'] = "STRONG BULLISH"
+            context['emoji'] = "🟢⭐"
+            context['tag'] = "[Relative Strength]"
+            context['nifty_line'] += " ⚠️ Stock outperforming"
+            context['interpretation_suffix'] = " + Relative strength"
+
+    elif stock_alert_type == "BEARISH":
+        if nifty_pct <= -THRESHOLD:
+            # Market confirming bearish move
+            context['upgraded_signal'] = "MORE BEARISH"
+            context['emoji'] = "🔴🔴"
+            context['tag'] = "[Market Confirming]"
+            context['nifty_line'] += " ✓ Market confirming downtrend"
+            context['interpretation_suffix'] = " + Market weakness"
+        elif nifty_pct >= THRESHOLD:
+            # Stock bearish despite bullish market
+            context['upgraded_signal'] = "STRONG BEARISH"
+            context['emoji'] = "🔴⚠️"
+            context['tag'] = "[Against Market!]"
+            context['nifty_line'] += " ⚠️ Weak despite market strength!"
+            context['interpretation_suffix'] = " + Relative weakness"
+        else:
+            # Stock underperforming flat market
+            context['upgraded_signal'] = "STRONG BEARISH"
+            context['emoji'] = "🔴⚠️"
+            context['tag'] = "[Relative Weakness]"
+            context['nifty_line'] += " ⚠️ Stock underperforming"
+            context['interpretation_suffix'] = " + Relative weakness"
+
+    return context
 
 
 def nearest_fut(ins_df: pd.DataFrame, name: str):
