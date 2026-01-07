@@ -5794,6 +5794,152 @@ def save_stock_flow_snapshot(stocks_data: dict, sector_mapping: dict, data_dir: 
         print(f"❌ Error saving stock flow snapshot: {e}")
 
 # ============================================
+# VOLUME HISTORY TRACKING FOR UNUSUAL ACTIVITY DETECTION
+# Stores 10-day rolling volume to identify relative spikes
+# ============================================
+
+def save_daily_volume_snapshot(stocks_data: dict, data_dir: str = "data/volume_history"):
+    """
+    Save end-of-day volume snapshot for each stock to calculate rolling averages.
+
+    File: volume_history.json
+    Structure: {
+        "RELIANCE": {
+            "2026-01-07": {"ce_vol": 150000, "pe_vol": 50000, "total_vol": 200000},
+            "2026-01-06": {"ce_vol": 180000, "pe_vol": 60000, "total_vol": 240000},
+            ...
+        }
+    }
+
+    Called at end of market day to snapshot today's final volumes.
+    """
+    try:
+        os.makedirs(data_dir, exist_ok=True)
+        history_file = Path(data_dir) / "volume_history.json"
+
+        # Load existing history
+        if history_file.exists():
+            with open(history_file, 'r') as f:
+                history = json.load(f)
+        else:
+            history = {}
+
+        date_str = datetime.now().strftime('%Y-%m-%d')
+
+        # Update history for each stock
+        for stock_name, data in stocks_data.items():
+            ce_vol = abs(data.get('ce_flow', 0))
+            pe_vol = abs(data.get('pe_flow', 0))
+            total_vol = ce_vol + pe_vol
+
+            # Initialize stock if not exists
+            if stock_name not in history:
+                history[stock_name] = {}
+
+            # Save today's volume
+            history[stock_name][date_str] = {
+                'ce_vol': ce_vol,
+                'pe_vol': pe_vol,
+                'total_vol': total_vol
+            }
+
+            # Keep only last 15 days (for 10-day rolling avg with buffer)
+            dates = sorted(history[stock_name].keys(), reverse=True)
+            if len(dates) > 15:
+                for old_date in dates[15:]:
+                    del history[stock_name][old_date]
+
+        # Save updated history
+        with open(history_file, 'w') as f:
+            json.dump(history, f, indent=2)
+
+        print(f"📊 Volume history: Saved snapshots for {len(stocks_data)} stocks")
+
+    except Exception as e:
+        print(f"❌ Error saving volume history: {e}")
+
+def load_volume_history(data_dir: str = "data/volume_history") -> dict:
+    """Load volume history from JSON file."""
+    try:
+        history_file = Path(data_dir) / "volume_history.json"
+
+        if history_file.exists():
+            with open(history_file, 'r') as f:
+                return json.load(f)
+        else:
+            return {}
+    except Exception as e:
+        print(f"❌ Error loading volume history: {e}")
+        return {}
+
+def calculate_volume_spike_ratio(stocks_data: dict, volume_history: dict) -> list:
+    """
+    Calculate volume spike ratio for each stock (today vs 10-day average).
+
+    Returns list of stocks with unusual volume (ratio > 2.0x) sorted by ratio.
+    """
+    try:
+        unusual_stocks = []
+        today_date = datetime.now().strftime('%Y-%m-%d')
+
+        for stock_name, data in stocks_data.items():
+            # Today's volume
+            ce_vol_today = abs(data.get('ce_flow', 0))
+            pe_vol_today = abs(data.get('pe_flow', 0))
+            total_vol_today = ce_vol_today + pe_vol_today
+
+            # Skip if no volume today
+            if total_vol_today == 0:
+                continue
+
+            # Get historical data
+            stock_history = volume_history.get(stock_name, {})
+
+            # Calculate 10-day average (excluding today)
+            historical_volumes = []
+            for date_str, vol_data in stock_history.items():
+                if date_str != today_date:  # Exclude today
+                    historical_volumes.append(vol_data.get('total_vol', 0))
+
+            # Need at least 5 days of history for reliable average
+            if len(historical_volumes) < 5:
+                continue
+
+            # Take last 10 days
+            recent_volumes = historical_volumes[-10:] if len(historical_volumes) >= 10 else historical_volumes
+            avg_volume = sum(recent_volumes) / len(recent_volumes)
+
+            # Avoid division by zero
+            if avg_volume == 0:
+                continue
+
+            # Calculate spike ratio
+            spike_ratio = total_vol_today / avg_volume
+
+            # Only include if unusual (>2.0x normal)
+            if spike_ratio >= 2.0:
+                unusual_stocks.append({
+                    'stock': stock_name,
+                    'today_volume': total_vol_today,
+                    'avg_volume': avg_volume,
+                    'spike_ratio': spike_ratio,
+                    'price': data.get('price'),
+                    'change_pct': data.get('change_pct'),
+                    'ce_flow': data.get('ce_flow', 0),
+                    'pe_flow': data.get('pe_flow', 0),
+                    'net_flow': data.get('net_flow', 0)
+                })
+
+        # Sort by spike ratio (highest relative spike first)
+        unusual_stocks.sort(key=lambda x: x['spike_ratio'], reverse=True)
+
+        return unusual_stocks
+
+    except Exception as e:
+        print(f"❌ Error calculating volume spike ratios: {e}")
+        return []
+
+# ============================================
 # STOCK ENTRY TRACKING FUNCTIONS
 # Track how many times stocks enter Top 10 & Volume Spikes lists
 # ============================================
@@ -7717,6 +7863,31 @@ def polling_loop():
                 # Track all stocks with ±2% moves for analysis
                 if stocks_data:
                     save_stock_flow_snapshot(stocks_data, engine.sector_mapping)
+
+                # ============================================
+                # VOLUME HISTORY SNAPSHOT - 3:25 PM (End of Day)
+                # ============================================
+                # Save end-of-day volume snapshot for 10-day rolling average
+                current_time = datetime.now()
+
+                # Initialize volume snapshot flag if not exists
+                if not hasattr(engine, 'volume_snapshot_saved_today'):
+                    engine.volume_snapshot_saved_today = False
+
+                # Reset flag at midnight
+                if current_time.hour == 0 and current_time.minute == 0:
+                    engine.volume_snapshot_saved_today = False
+
+                # Execute at 3:25 PM (5 mins before close, ±2 minute window) once per day
+                if (current_time.hour == 15 and 25 <= current_time.minute <= 27 and
+                    not engine.volume_snapshot_saved_today and stocks_data):
+                    try:
+                        print("📊 Saving end-of-day volume snapshot for historical tracking...")
+                        save_daily_volume_snapshot(stocks_data)
+                        engine.volume_snapshot_saved_today = True
+                        print("✅ Volume snapshot saved successfully")
+                    except Exception as e:
+                        print(f"❌ Error saving volume snapshot: {e}")
 
                 # ============================================
                 # ALERT FOLLOW-UP TRACKER - 9:20 AM CHECK
@@ -11212,6 +11383,147 @@ if cached_data and "stocks_data" in cached_data:
                 """)
         else:
             st.info("No significant volume spikes detected yet. Spikes appear when net flow ≥ 200M")
+
+
+# ============================================
+# UNUSUAL VOLUME ACTIVITY (Relative to 10-Day Average)
+# ============================================
+if cached_data and "stocks_data" in cached_data:
+    stocks_data_unusual = cached_data.get("stocks_data", {})
+
+    if stocks_data_unusual and len(stocks_data_unusual) > 0:
+        st.markdown("")
+        st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        st.markdown(create_enhanced_section_header("⚡ UNUSUAL VOLUME ACTIVITY (vs 10-Day Avg)", "📊"), unsafe_allow_html=True)
+        st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+        # Load volume history and calculate spike ratios
+        volume_history = load_volume_history()
+        unusual_stocks = calculate_volume_spike_ratio(stocks_data_unusual, volume_history)
+
+        if unusual_stocks and len(unusual_stocks) > 0:
+            # Display summary metrics
+            col1, col2, col3, col4 = st.columns(4)
+
+            with col1:
+                st.metric("⚡ Unusual Stocks", len(unusual_stocks))
+                st.caption("Volume >2.0x normal")
+
+            with col2:
+                extreme_spikes = sum(1 for s in unusual_stocks if s['spike_ratio'] >= 3.0)
+                st.metric("🔥 Extreme Spikes", extreme_spikes)
+                st.caption("Volume >3.0x normal")
+
+            with col3:
+                bullish_unusual = sum(1 for s in unusual_stocks if s['net_flow'] > 0)
+                st.metric("🟢 Bullish Unusual", bullish_unusual)
+                st.caption("Positive net flow")
+
+            with col4:
+                bearish_unusual = sum(1 for s in unusual_stocks if s['net_flow'] < 0)
+                st.metric("🔴 Bearish Unusual", bearish_unusual)
+                st.caption("Negative net flow")
+
+            st.markdown("")
+
+            # Display top 10 unusual volume stocks
+            st.markdown("#### ⚡ Top 10 Unusual Volume Activity (By Spike Ratio)")
+
+            for i, stock_data in enumerate(unusual_stocks[:10], 1):
+                col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
+
+                with col1:
+                    stock_name = stock_data['stock']
+                    price = stock_data['price']
+                    change_pct = stock_data['change_pct']
+
+                    price_str = f"₹{price:,.2f}" if price else "N/A"
+                    if change_pct is not None:
+                        change_emoji = "🟢" if change_pct > 0 else "🔴"
+                        change_str = f"{change_emoji}{change_pct:+.2f}%"
+                    else:
+                        change_str = ""
+
+                    st.markdown(f"**{i}. {stock_name}**")
+                    st.caption(f"{price_str} {change_str}")
+
+                with col2:
+                    spike_ratio = stock_data['spike_ratio']
+
+                    # Intensity indicator
+                    if spike_ratio >= 3.0:
+                        intensity_label = "🔥 Extreme"
+                        intensity_color = "red"
+                    elif spike_ratio >= 2.5:
+                        intensity_label = "⚡ High"
+                        intensity_color = "orange"
+                    else:
+                        intensity_label = "📊 Moderate"
+                        intensity_color = "blue"
+
+                    st.metric("Spike Ratio", f"{spike_ratio:.2f}x")
+                    st.caption(intensity_label)
+
+                with col3:
+                    today_vol = stock_data['today_volume']
+                    avg_vol = stock_data['avg_volume']
+
+                    st.markdown(f"**Today:** {format_number(today_vol)}")
+                    st.caption(f"Avg: {format_number(avg_vol)}")
+
+                with col4:
+                    net_flow = stock_data['net_flow']
+                    flow_emoji = "🟢" if net_flow > 0 else "🔴"
+
+                    st.metric(f"{flow_emoji} Net", format_number(net_flow))
+                    if change_pct and change_pct != 0:
+                        if abs(change_pct) >= 5:
+                            st.caption("💥 Strong move!")
+                        elif abs(change_pct) >= 3:
+                            st.caption("⚡ Good move")
+
+                st.markdown("---")
+
+            # Interpretation Guide
+            with st.expander("📖 How to Read Unusual Volume Activity"):
+                st.markdown("""
+                **What is Unusual Volume?**
+                - Volume significantly higher than the stock's normal trading
+                - Indicates smart money or institutional interest
+                - Better for catching mid-cap quality moves
+
+                **Spike Ratio:**
+                - **Today's Volume / 10-Day Average Volume**
+                - **🔥 Extreme (>3.0x):** Very unusual activity - investigate!
+                - **⚡ High (2.5-3.0x):** Strong unusual activity
+                - **📊 Moderate (2.0-2.5x):** Above normal activity
+
+                **Why This Matters:**
+                - Large caps naturally have 200M+ volume daily
+                - Mid caps might only have 30M normally
+                - **3.0x spike on mid-cap = HUGE relative interest**
+                - **1.1x on large-cap = Normal day**
+
+                **Example:**
+                ```
+                TATAELXSI (Mid-cap IT):
+                - Today: 30M volume (Stock up +9%)
+                - 10-day avg: 8M volume
+                - Spike Ratio: 3.75x 🔥 EXTREME
+
+                → Smart money entering aggressively!
+                → Would've been missed in absolute volume rankings
+                → Now caught due to relative spike!
+                ```
+
+                **Trading Signals:**
+                - **High spike + Price up:** Breakout potential
+                - **High spike + Price down:** Breakdown or capitulation
+                - **Extreme spike:** Major news or big player entering
+                """)
+        else:
+            st.info("⏳ Unusual volume detection requires 5+ days of historical data. Keep dashboard running to build history.")
+            st.caption("Snapshots are automatically saved daily at 3:25 PM. Check back after a few trading days!")
 
 
 # ============================================
