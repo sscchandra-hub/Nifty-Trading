@@ -5872,9 +5872,81 @@ def load_volume_history(data_dir: str = "data/volume_history") -> dict:
         print(f"❌ Error loading volume history: {e}")
         return {}
 
-def calculate_volume_spike_ratio(stocks_data: dict, volume_history: dict) -> list:
+def fetch_historical_volume_from_kite(stock_name: str, kite, token_meta, days: int = 10) -> float:
+    """
+    Fetch last N days of volume data from Kite API for a stock's options.
+
+    Returns: Average daily volume over the period, or 0 if data unavailable.
+    """
+    try:
+        from_date = datetime.now() - timedelta(days=days+2)  # Extra buffer for weekends
+        to_date = datetime.now() - timedelta(days=1)  # Yesterday (exclude today)
+
+        # Get all option tokens for this stock
+        stock_options = token_meta[
+            (token_meta["name"] == stock_name) &
+            (token_meta["instrument_type"].isin(["CE", "PE"]))
+        ].copy()
+
+        if stock_options.empty:
+            return 0
+
+        # Take sample of strikes to avoid too many API calls (ATM ±5 strikes)
+        # Limit to 20 strikes max (10 CE + 10 PE)
+        ce_options = stock_options[stock_options["instrument_type"] == "CE"].head(10)
+        pe_options = stock_options[stock_options["instrument_type"] == "PE"].head(10)
+        sample_options = pd.concat([ce_options, pe_options])
+
+        daily_volumes = {}  # {date: total_volume}
+
+        for _, option in sample_options.iterrows():
+            try:
+                token = int(option["instrument_token"])
+
+                # Fetch historical data
+                hist_data = kite.historical_data(
+                    instrument_token=token,
+                    from_date=from_date,
+                    to_date=to_date,
+                    interval="day"
+                )
+
+                if not hist_data:
+                    continue
+
+                # Aggregate volumes by date
+                for candle in hist_data:
+                    date_str = candle['date'].strftime('%Y-%m-%d') if isinstance(candle['date'], datetime) else str(candle['date'])
+                    volume = candle.get('volume', 0)
+
+                    if date_str not in daily_volumes:
+                        daily_volumes[date_str] = 0
+                    daily_volumes[date_str] += volume
+
+            except Exception as e:
+                # Skip individual strikes that fail
+                continue
+
+        if not daily_volumes:
+            return 0
+
+        # Calculate average daily volume
+        volumes = list(daily_volumes.values())
+        avg_volume = sum(volumes) / len(volumes) if volumes else 0
+
+        return avg_volume
+
+    except Exception as e:
+        print(f"❌ Error fetching historical volume for {stock_name}: {e}")
+        return 0
+
+def calculate_volume_spike_ratio(stocks_data: dict, volume_history: dict, kite=None, token_meta=None) -> list:
     """
     Calculate volume spike ratio for each stock (today vs 10-day average).
+
+    Fallback logic:
+    1. Try local volume_history first (fast)
+    2. If insufficient (<5 days), fetch from Kite API (immediate, works day 1)
 
     Returns list of stocks with unusual volume (ratio > 2.0x) sorted by ratio.
     """
@@ -5892,7 +5964,7 @@ def calculate_volume_spike_ratio(stocks_data: dict, volume_history: dict) -> lis
             if total_vol_today == 0:
                 continue
 
-            # Get historical data
+            # Get historical data from local storage
             stock_history = volume_history.get(stock_name, {})
 
             # Calculate 10-day average (excluding today)
@@ -5901,13 +5973,19 @@ def calculate_volume_spike_ratio(stocks_data: dict, volume_history: dict) -> lis
                 if date_str != today_date:  # Exclude today
                     historical_volumes.append(vol_data.get('total_vol', 0))
 
-            # Need at least 5 days of history for reliable average
-            if len(historical_volumes) < 5:
+            # FALLBACK: If insufficient local history, fetch from Kite API
+            avg_volume = 0
+            if len(historical_volumes) >= 5:
+                # Use local history (fast path)
+                recent_volumes = historical_volumes[-10:] if len(historical_volumes) >= 10 else historical_volumes
+                avg_volume = sum(recent_volumes) / len(recent_volumes)
+            elif kite and token_meta is not None:
+                # Fetch from Kite API (works from day 1!)
+                print(f"📡 Fetching historical volume for {stock_name} from Kite API...")
+                avg_volume = fetch_historical_volume_from_kite(stock_name, kite, token_meta, days=10)
+            else:
+                # No data available
                 continue
-
-            # Take last 10 days
-            recent_volumes = historical_volumes[-10:] if len(historical_volumes) >= 10 else historical_volumes
-            avg_volume = sum(recent_volumes) / len(recent_volumes)
 
             # Avoid division by zero
             if avg_volume == 0:
@@ -11399,7 +11477,17 @@ if cached_data and "stocks_data" in cached_data:
 
         # Load volume history and calculate spike ratios
         volume_history = load_volume_history()
-        unusual_stocks = calculate_volume_spike_ratio(stocks_data_unusual, volume_history)
+
+        # Pass kite and token_meta for API fallback (works from day 1!)
+        kite_instance = engine.kite if hasattr(engine, 'kite') else None
+        token_meta_df = engine.token_meta if hasattr(engine, 'token_meta') else None
+
+        unusual_stocks = calculate_volume_spike_ratio(
+            stocks_data_unusual,
+            volume_history,
+            kite=kite_instance,
+            token_meta=token_meta_df
+        )
 
         if unusual_stocks and len(unusual_stocks) > 0:
             # Display summary metrics
@@ -11522,8 +11610,8 @@ if cached_data and "stocks_data" in cached_data:
                 - **Extreme spike:** Major news or big player entering
                 """)
         else:
-            st.info("⏳ Unusual volume detection requires 5+ days of historical data. Keep dashboard running to build history.")
-            st.caption("Snapshots are automatically saved daily at 3:25 PM. Check back after a few trading days!")
+            st.info("🔄 Loading historical volume data from Kite API... This may take a moment on first run.")
+            st.caption("💡 Historical data is fetched automatically from Kite API. Feature works from day 1!")
 
 
 # ============================================
