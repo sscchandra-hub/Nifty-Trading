@@ -10759,7 +10759,7 @@ with st.expander("📈 View Top 10 Stocks (Live Rankings)", expanded=False):
                     pe_pct = 50
 
                 # Display
-                col1, col2 = st.columns([3, 1])
+                col1, col2, col3 = st.columns([3, 1, 1])
 
                 with col1:
                     # Stock name with entry count tracking
@@ -10778,6 +10778,21 @@ with st.expander("📈 View Top 10 Stocks (Live Rankings)", expanded=False):
                     st.markdown(create_cepe_progress_bar(ce_flow, pe_flow, show_labels=True), unsafe_allow_html=True)
 
                 with col2:
+                    # CE Flow with dumping detection
+                    ce_emoji = "🟢" if ce_flow > 0 else "🔴"
+                    ce_label = "CE"
+                    if ce_flow < -50 and change_pct and change_pct < -1.0 and net_flow < -50:
+                        ce_label = "CE 💥"  # Heavy CE selling detected
+                    st.metric(ce_label, f"{ce_emoji}{format_number(ce_flow)}")
+
+                    # PE Flow with dumping detection
+                    pe_emoji = "🟢" if pe_flow > 0 else "🔴"
+                    pe_label = "PE"
+                    if pe_flow < -30 and change_pct and change_pct > 1.0 and net_flow > 100:
+                        pe_label = "PE 💥"  # Heavy PE dumping detected
+                    st.metric(pe_label, f"{pe_emoji}{format_number(pe_flow)}")
+
+                with col3:
                     # Net flow
                     if net_flow > 0:
                         st.metric("Net", f"+{format_number(net_flow)}", delta="Bullish", delta_color="normal")
@@ -10978,7 +10993,7 @@ if cached_data and "stocks_data" in cached_data:
             st.markdown("#### 📊 Top 10 Volume Spikes (By Total Activity)")
 
             for i, spike in enumerate(volume_spikes_sorted[:10], 1):
-                col1, col2, col3 = st.columns([2, 2, 1])
+                col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
 
                 with col1:
                     stock_name = spike['name']
@@ -11002,16 +11017,28 @@ if cached_data and "stocks_data" in cached_data:
                     st.markdown(f"**{i}. {display_name}**")
                     st.caption(f"{price_str} {change_str}")
 
-                with col2:
+                    # CE/PE progress bar
                     ce_flow = spike['ce_flow']
                     pe_flow = spike['pe_flow']
-                    total_volume = spike['total_volume']
-
-                    st.markdown(f"**Total Volume:** {format_number(total_volume)}")
-                    # Add CE/PE progress bar
                     st.markdown(create_cepe_progress_bar(abs(ce_flow), abs(pe_flow), show_labels=True), unsafe_allow_html=True)
 
+                with col2:
+                    # CE Flow with dumping detection
+                    ce_emoji = "🟢" if ce_flow > 0 else "🔴"
+                    ce_label = "CE"
+                    if ce_flow < -50 and change_pct and change_pct < -1.0:
+                        ce_label = "CE 💥"  # Heavy CE selling detected
+                    st.metric(ce_label, f"{ce_emoji}{format_number(ce_flow)}")
+
                 with col3:
+                    # PE Flow with dumping detection
+                    pe_emoji = "🟢" if pe_flow > 0 else "🔴"
+                    pe_label = "PE"
+                    if pe_flow < -30 and change_pct and change_pct > 1.0:
+                        pe_label = "PE 💥"  # Heavy PE dumping detected
+                    st.metric(pe_label, f"{pe_emoji}{format_number(pe_flow)}")
+
+                with col4:
                     net_flow = spike['net_flow']
                     intensity = spike['intensity']
 
