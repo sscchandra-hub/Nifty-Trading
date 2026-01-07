@@ -5685,6 +5685,115 @@ def send_milestone_alert(stock: str, milestone_data: dict, kite=None):
         print(f"❌ Error sending milestone alert: {e}")
 
 # ============================================
+# STOCK FLOW TRACKING TO CSV
+# Daily tracking of all stocks with significant moves (±2%)
+# ============================================
+
+def save_stock_flow_snapshot(stocks_data: dict, sector_mapping: dict, data_dir: str = "data/flow_tracking"):
+    """
+    Save snapshot of all stocks with abs(change_pct) >= 2.0% to daily CSV file.
+
+    Updates every 5 minutes during market hours to track:
+    - Which high % moves had low flow (missed opportunities)
+    - Flow patterns for different market caps
+    - Optimal threshold analysis
+
+    File: stock_flow_tracking_YYYY-MM-DD.csv
+    """
+    try:
+        # Only track during market hours
+        if not is_market_hours():
+            return
+
+        now = datetime.now()
+        date_str = now.strftime('%Y-%m-%d')
+        time_str = now.strftime('%H:%M:%S')
+        timestamp_str = now.strftime('%Y-%m-%d %H:%M:%S')
+
+        # Create directory if needed
+        os.makedirs(data_dir, exist_ok=True)
+
+        # Daily file
+        csv_file = Path(data_dir) / f"stock_flow_tracking_{date_str}.csv"
+
+        # Check if file exists to determine if we need headers
+        file_exists = csv_file.exists()
+
+        # Prepare rows for stocks meeting criteria
+        rows_to_save = []
+
+        # Calculate rankings
+        sorted_by_flow = sorted(stocks_data.items(), key=lambda x: abs(x[1].get("net_flow", 0)), reverse=True)
+        stock_ranks = {name: idx + 1 for idx, (name, _) in enumerate(sorted_by_flow)}
+        top_10_stocks = set([name for name, _ in sorted_by_flow[:10]])
+
+        for stock_name, data in stocks_data.items():
+            change_pct = data.get('change_pct')
+
+            # Only save if abs(change_pct) >= 2.0
+            if change_pct is None or abs(change_pct) < 2.0:
+                continue
+
+            price = data.get('price', 0)
+            ce_flow = data.get('ce_flow', 0)
+            pe_flow = data.get('pe_flow', 0)
+            net_flow = data.get('net_flow', 0)
+            sector = sector_mapping.get(stock_name.upper(), 'N/A')
+            rank = stock_ranks.get(stock_name, 999)
+            in_top_10 = stock_name in top_10_stocks
+
+            # Check if alert was sent (would have been sent if conditions met)
+            alerted = False
+            alert_type = ''
+
+            if change_pct > 1.0 and net_flow > 100:
+                alerted = True
+                alert_type = 'BULLISH'
+            elif change_pct < -1.0 and net_flow < -50:
+                alerted = True
+                alert_type = 'BEARISH'
+
+            row = {
+                'timestamp': timestamp_str,
+                'date': date_str,
+                'time': time_str,
+                'stock': stock_name,
+                'price': f"{price:.2f}",
+                'change_pct': f"{change_pct:.2f}",
+                'ce_flow': f"{ce_flow:.1f}",
+                'pe_flow': f"{pe_flow:.1f}",
+                'net_flow': f"{net_flow:.1f}",
+                'sector': sector,
+                'rank': rank,
+                'in_top_10': in_top_10,
+                'alerted': alerted,
+                'alert_type': alert_type
+            }
+            rows_to_save.append(row)
+
+        # Write to CSV
+        if rows_to_save:
+            import csv
+
+            with open(csv_file, 'a', newline='') as f:
+                fieldnames = ['timestamp', 'date', 'time', 'stock', 'price', 'change_pct',
+                             'ce_flow', 'pe_flow', 'net_flow', 'sector', 'rank',
+                             'in_top_10', 'alerted', 'alert_type']
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+
+                # Write header only if new file
+                if not file_exists:
+                    writer.writeheader()
+
+                # Write all rows
+                writer.writerows(rows_to_save)
+
+            print(f"📊 Flow tracking: Saved {len(rows_to_save)} stocks with ±2% moves to {csv_file.name}")
+
+    except Exception as e:
+        print(f"❌ Error saving stock flow snapshot: {e}")
+
+# ============================================
 # STOCK ENTRY TRACKING FUNCTIONS
 # Track how many times stocks enter Top 10 & Volume Spikes lists
 # ============================================
@@ -7601,6 +7710,13 @@ def polling_loop():
                     "last_update": datetime.now().isoformat()
                 }
                 save_dashboard_cache(cache_data)
+
+                # ============================================
+                # STOCK FLOW TRACKING TO CSV (Every 5 mins)
+                # ============================================
+                # Track all stocks with ±2% moves for analysis
+                if stocks_data:
+                    save_stock_flow_snapshot(stocks_data, engine.sector_mapping)
 
                 # ============================================
                 # ALERT FOLLOW-UP TRACKER - 9:20 AM CHECK
