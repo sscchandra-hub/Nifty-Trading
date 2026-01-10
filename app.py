@@ -5982,6 +5982,15 @@ def save_daily_volume_snapshot(stocks_data: dict, kite=None, token_meta=None, da
     Called at end of market day to snapshot today's final volumes.
     """
     try:
+        print("\n" + "▓"*80)
+        print("▓▓▓ SAVE_DAILY_VOLUME_SNAPSHOT STARTED")
+        print("▓"*80)
+
+        print(f"📥 Input: {len(stocks_data)} stocks in stocks_data")
+        print(f"🔧 Kite available: {kite is not None}")
+        print(f"🔧 Token_meta available: {token_meta is not None}")
+        print(f"🕐 Market hours: {is_market_hours()}")
+
         # Check if we have valid volume data
         has_volumes = False
         for stock_name, data in stocks_data.items():
@@ -5989,40 +5998,61 @@ def save_daily_volume_snapshot(stocks_data: dict, kite=None, token_meta=None, da
             pe_vol = abs(data.get('pe_flow', 0))
             if ce_vol > 0 or pe_vol > 0:
                 has_volumes = True
+                print(f"✅ Found volume data in stocks_data (e.g., {stock_name}: CE={ce_vol}, PE={pe_vol})")
                 break
+
+        print(f"📊 Has volume data: {has_volumes}")
 
         # If no volumes and market is closed, fetch from Kite API
         if not has_volumes and not is_market_hours() and kite and token_meta is not None:
+            print("\n" + "⚠️"*40)
             print("⚠️ No volume data in stocks_data (market closed)")
             print("📡 Falling back to Kite API to fetch end-of-day volumes...")
+            print("⚠️"*40 + "\n")
 
             # Get stock list from stocks_data keys (these are the F&O stocks we're tracking)
             stocks_list = list(stocks_data.keys()) if stocks_data else None
+            print(f"📋 Stock list to fetch: {len(stocks_list) if stocks_list else 0} stocks")
 
             # Fetch from Kite API
             fetched_data = fetch_eod_volumes_from_kite(kite, token_meta, stocks_list=stocks_list)
 
+            print(f"\n📦 Fetched data result: {len(fetched_data) if fetched_data else 0} stocks")
+
             if fetched_data and len(fetched_data) > 0:
                 stocks_data = fetched_data
                 print(f"✅ Successfully fetched {len(fetched_data)} stocks from Kite API")
+                # Show sample
+                sample_stock = list(fetched_data.keys())[0]
+                sample_data = fetched_data[sample_stock]
+                print(f"📊 Sample data: {sample_stock} = {sample_data}")
             else:
-                print("❌ Failed to fetch volumes from Kite API")
+                print("\n" + "❌"*40)
+                print("❌ FAILED to fetch volumes from Kite API - RETURNING WITHOUT SAVING")
+                print("❌"*40 + "\n")
                 return
 
+        print(f"\n📁 Creating directory: {data_dir}")
         os.makedirs(data_dir, exist_ok=True)
         history_file = Path(data_dir) / "volume_history.json"
+        print(f"📁 Target file: {history_file.absolute()}")
 
         # Load existing history
         if history_file.exists():
+            print(f"📖 Loading existing history file...")
             with open(history_file, 'r') as f:
                 history = json.load(f)
+            print(f"📖 Loaded {len(history)} existing stocks")
         else:
+            print(f"📝 No existing history file - creating new")
             history = {}
 
         date_str = datetime.now().strftime('%Y-%m-%d')
+        print(f"📅 Date string: {date_str}")
         saved_count = 0
 
         # Update history for each stock
+        print(f"\n🔄 Processing {len(stocks_data)} stocks...")
         for stock_name, data in stocks_data.items():
             ce_vol = abs(data.get('ce_flow', 0))
             pe_vol = abs(data.get('pe_flow', 0))
@@ -6044,22 +6074,39 @@ def save_daily_volume_snapshot(stocks_data: dict, kite=None, token_meta=None, da
             }
             saved_count += 1
 
+            # Show first few saves
+            if saved_count <= 3:
+                print(f"  ✓ Saved {stock_name}: CE={ce_vol:,.0f}, PE={pe_vol:,.0f}, Total={total_vol:,.0f}")
+
             # Keep only last 15 days (for 10-day rolling avg with buffer)
             dates = sorted(history[stock_name].keys(), reverse=True)
             if len(dates) > 15:
                 for old_date in dates[15:]:
                     del history[stock_name][old_date]
 
+        print(f"\n💾 Writing to file: {history_file}")
+        print(f"💾 Stocks to save: {saved_count}")
+
         # Save updated history
         with open(history_file, 'w') as f:
             json.dump(history, f, indent=2)
 
-        print(f"📊 Volume history: Saved snapshots for {saved_count} stocks")
+        file_size = os.path.getsize(history_file)
+        print(f"\n✅ FILE WRITTEN SUCCESSFULLY!")
+        print(f"📁 Location: {history_file.absolute()}")
+        print(f"📦 Size: {file_size:,} bytes")
+        print(f"📊 Stocks saved: {saved_count}")
+        print("▓"*80)
+        print("▓▓▓ SAVE_DAILY_VOLUME_SNAPSHOT COMPLETED SUCCESSFULLY")
+        print("▓"*80 + "\n")
 
     except Exception as e:
-        print(f"❌ Error saving volume history: {e}")
+        print("\n" + "❌"*40)
+        print(f"❌ ERROR in save_daily_volume_snapshot: {e}")
+        print("❌"*40)
         import traceback
         traceback.print_exc()
+        print("❌"*40 + "\n")
 
 def fetch_historical_volume_from_kite(stock_name: str, kite, token_meta, days: int = 10) -> float:
     """
