@@ -11822,7 +11822,7 @@ if cached_data and "stocks_data" in cached_data:
                 import sys
                 from datetime import datetime
                 log_filename = f"volume_save_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-                log_file = open(log_filename, 'w')
+                log_file = open(log_filename, 'w', encoding='utf-8')
                 old_stdout = sys.stdout
 
                 # Redirect print to both console and file
