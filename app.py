@@ -7168,6 +7168,11 @@ def polling_loop():
     daily_summary_sent = False  # Track if daily summary sent today
 
     while not engine.stop_flag:
+        # Check if polling is paused (e.g., during volume snapshot save)
+        if not engine.polling_active:
+            time.sleep(0.5)
+            continue
+
         try:
             if datetime.now().date() != current_date:
                 print(f"🗓️ New trading day detected - clearing caches")
