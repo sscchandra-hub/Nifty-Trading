@@ -5894,6 +5894,8 @@ def fetch_eod_volumes_from_kite(kite, token_meta, stocks_list: list = None) -> d
         # DEBUG: Show stocks_list sample
         print(f"\n🔍 DEBUG: stocks_list sample (first 5): {stocks_list[:5]}")
         print(f"🔍 DEBUG: Total stocks in list: {len(stocks_list)}")
+        print(f"\n🚀 Starting to fetch volumes for {len(stocks_list)} stocks (4 strikes each)...")
+        print(f"⏱️  Estimated time: ~{len(stocks_list) * 0.5:.0f} seconds (may vary with API speed)")
 
         stocks_data = {}
         stocks_processed = 0
@@ -5920,9 +5922,10 @@ def fetch_eod_volumes_from_kite(kite, token_meta, stocks_list: list = None) -> d
 
                 stocks_processed += 1
 
-                # Sample strikes to avoid too many API calls (20 strikes: 10 CE + 10 PE)
-                ce_options = stock_options[stock_options['instrument_type'] == 'CE'].head(10)
-                pe_options = stock_options[stock_options['instrument_type'] == 'PE'].head(10)
+                # Sample strikes to avoid too many API calls (4 strikes: 2 CE + 2 PE for speed)
+                # Using ATM strikes for representative volume data
+                ce_options = stock_options[stock_options['instrument_type'] == 'CE'].head(2)
+                pe_options = stock_options[stock_options['instrument_type'] == 'PE'].head(2)
                 sample_options = pd.concat([ce_options, pe_options])
 
                 ce_total_volume = 0
@@ -5965,9 +5968,9 @@ def fetch_eod_volumes_from_kite(kite, token_meta, stocks_list: list = None) -> d
                     }
                     stocks_with_data += 1
 
-                # Progress indicator every 20 stocks
-                if stocks_processed % 20 == 0:
-                    print(f"   Processed {stocks_processed}/{len(stocks_list)} stocks... ({stocks_with_data} with data)")
+                # Progress indicator every 10 stocks (more frequent for user feedback)
+                if stocks_processed % 10 == 0:
+                    print(f"   ⏳ Processed {stocks_processed}/{len(stocks_list)} stocks... ({stocks_with_data} with data so far)")
 
             except Exception as stock_error:
                 # Skip stocks that fail
