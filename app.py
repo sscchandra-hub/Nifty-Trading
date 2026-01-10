@@ -5873,6 +5873,13 @@ def fetch_eod_volumes_from_kite(kite, token_meta, stocks_list: list = None) -> d
 
         print(f"📡 Fetching end-of-day volumes from Kite API (market closed mode)...")
 
+        # DEBUG: Show token_meta structure
+        print(f"\n🔍 DEBUG: token_meta columns: {list(token_meta.columns)}")
+        print(f"🔍 DEBUG: token_meta shape: {token_meta.shape}")
+        if len(token_meta) > 0:
+            print(f"🔍 DEBUG: Sample token_meta row:")
+            print(token_meta.iloc[0].to_dict())
+
         # Get today's date
         today = datetime.now().date()
 
@@ -5883,6 +5890,10 @@ def fetch_eod_volumes_from_kite(kite, token_meta, stocks_list: list = None) -> d
                 token_meta['instrument_type'].isin(['CE', 'PE'])
             ]['name'].unique().tolist()
             print(f"📊 Auto-detected {len(stocks_list)} stocks with options from token_meta")
+
+        # DEBUG: Show stocks_list sample
+        print(f"\n🔍 DEBUG: stocks_list sample (first 5): {stocks_list[:5]}")
+        print(f"🔍 DEBUG: Total stocks in list: {len(stocks_list)}")
 
         stocks_data = {}
         stocks_processed = 0
@@ -5897,6 +5908,14 @@ def fetch_eod_volumes_from_kite(kite, token_meta, stocks_list: list = None) -> d
                 ].copy()
 
                 if stock_options.empty:
+                    # DEBUG: Show why first stock fails (only once)
+                    if stocks_processed == 0:
+                        print(f"\n🔍 DEBUG: First stock '{stock_name}' has ZERO options")
+                        print(f"🔍 DEBUG: Checking if name exists in token_meta...")
+                        name_matches = token_meta[token_meta['name'] == stock_name]
+                        print(f"🔍 DEBUG: Found {len(name_matches)} rows with name='{stock_name}'")
+                        if len(name_matches) > 0:
+                            print(f"🔍 DEBUG: But instrument_types are: {name_matches['instrument_type'].unique().tolist()}")
                     continue
 
                 stocks_processed += 1
