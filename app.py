@@ -3336,13 +3336,22 @@ def generate_session_summary():
     return "\n".join(summary)
 
 
-def send_stock_alert(stock_name, alert_type, price, change_pct, net_flow, volume_ratio=None):
+def send_stock_alert(stock_name, alert_type, price, change_pct, net_flow, ce_flow=None, pe_flow=None, ce_pe_ratio=None, volume_ratio=None):
     """
     Send stock alerts via Telegram with cooldown and momentum validation
 
-    Alert Types & Cooldowns:
-    - BULLISH: 5-min cooldown per stock
-    - BEARISH: 5-min cooldown per stock
+    Alert Conditions:
+    🟢 STRONGEST BULLISH:
+       - Price > +1.0%
+       - Net Flow > +100M
+       - CE/PE Ratio > 4.0
+       All 3 conditions must be TRUE
+
+    🔴 STRONGEST BEARISH:
+       - Price < -1.5%
+       - Net Flow < 0
+       - CE/PE Ratio < 1.0
+       All 3 conditions must be TRUE
 
     Momentum Filter:
     - For repeat alerts, BOTH % change AND net flow must be HIGHER than previous alert
@@ -3388,9 +3397,9 @@ def send_stock_alert(stock_name, alert_type, price, change_pct, net_flow, volume
 
     # Format alert message with market context
     if alert_type == "BULLISH":
-        base_interpretation = "Price rising + Strong call buying"
+        base_interpretation = f"Price rising + CE/PE ratio {ce_pe_ratio:.2f} (Call dominance)"
     elif alert_type == "BEARISH":
-        base_interpretation = "Price falling + Strong put buying"
+        base_interpretation = f"Price falling + CE/PE ratio {ce_pe_ratio:.2f} (Put dominance)"
     else:
         return False  # Only BULLISH/BEARISH alerts allowed
 
@@ -3414,6 +3423,12 @@ def send_stock_alert(stock_name, alert_type, price, change_pct, net_flow, volume
     # Build message with market context
     telegram_message = f"{emoji} {signal} - {stock_name} {tag}\n"
     telegram_message += f"{price_str} {change_str} | Flow {flow_str}\n"
+
+    # Add CE/PE breakdown
+    if ce_flow is not None and pe_flow is not None:
+        ce_emoji = "🟢" if ce_flow > 0 else "🔴"
+        pe_emoji = "🟢" if pe_flow > 0 else "🔴"
+        telegram_message += f"📊 CE: {ce_emoji}{format_number(ce_flow)} | PE: {pe_emoji}{format_number(pe_flow)} | Ratio: {ce_pe_ratio:.2f}\n"
 
     if sector_info:
         telegram_message += f"{sector_info}\n"
@@ -7784,18 +7799,30 @@ def polling_loop():
                         stock_price = stock_data.get("price")
                         change_pct = stock_data.get("change_pct")
                         net_flow = stock_data.get("net_flow", 0)
+                        ce_flow = stock_data.get("ce_flow", 0)
+                        pe_flow = stock_data.get("pe_flow", 0)
 
                         # Skip if missing critical data
                         if stock_price is None or change_pct is None:
                             continue
 
-                        # BULLISH Alert: Price > +1% AND Net Flow > +100M
-                        if change_pct > 1.0 and net_flow > 100:
-                            send_stock_alert(stock_name, "BULLISH", stock_price, change_pct, net_flow)
+                        # Calculate CE/PE ratio
+                        if pe_flow > 0:
+                            ce_pe_ratio = ce_flow / pe_flow
+                        elif ce_flow > 0:
+                            ce_pe_ratio = 999  # Infinite ratio (only CE activity)
+                        else:
+                            ce_pe_ratio = 0  # No activity
 
-                        # BEARISH Alert: Price < -1% AND Net Flow < -50M
-                        elif change_pct < -1.0 and net_flow < -50:
-                            send_stock_alert(stock_name, "BEARISH", stock_price, change_pct, net_flow)
+                        # 🟢 STRONGEST BULLISH: Price > +1.0% AND Net Flow > +100M AND CE/PE Ratio > 4.0
+                        if change_pct > 1.0 and net_flow > 100 and ce_pe_ratio > 4.0:
+                            send_stock_alert(stock_name, "BULLISH", stock_price, change_pct, net_flow,
+                                           ce_flow=ce_flow, pe_flow=pe_flow, ce_pe_ratio=ce_pe_ratio)
+
+                        # 🔴 STRONGEST BEARISH: Price < -1.5% AND Net Flow < 0 AND CE/PE Ratio < 1.0
+                        elif change_pct < -1.5 and net_flow < 0 and ce_pe_ratio < 1.0:
+                            send_stock_alert(stock_name, "BEARISH", stock_price, change_pct, net_flow,
+                                           ce_flow=ce_flow, pe_flow=pe_flow, ce_pe_ratio=ce_pe_ratio)
 
 
                 cache_data = {
