@@ -11843,16 +11843,30 @@ if cached_data and "stocks_data" in cached_data:
                 # PAUSE POLLING THREAD to prevent interruption
                 import time
 
+                # Debug: Check polling_active status
+                print("\n🔍 DEBUG: Checking polling_active status...")
+                print(f"🔍 DEBUG: hasattr(engine, 'polling_active'): {hasattr(engine, 'polling_active')}")
+                if hasattr(engine, 'polling_active'):
+                    print(f"🔍 DEBUG: engine.polling_active value: {engine.polling_active}")
+
                 # Initialize polling_active if it doesn't exist
                 if not hasattr(engine, 'polling_active'):
+                    print("🔍 DEBUG: polling_active doesn't exist - creating and setting to True")
                     engine.polling_active = True
+                else:
+                    print(f"🔍 DEBUG: polling_active exists - current value: {engine.polling_active}")
 
                 polling_was_active = engine.polling_active
+                print(f"🔍 DEBUG: polling_was_active = {polling_was_active}")
+                print(f"🔍 DEBUG: Will pause thread: {polling_was_active}")
+
                 if polling_was_active:
                     print("⏸️ Pausing polling thread...")
                     engine.polling_active = False
                     time.sleep(2)
                     print("✅ Polling paused")
+                else:
+                    print("⚠️ DEBUG: NOT pausing thread because polling_was_active is False")
 
                 try:
                     # Get kite instance
@@ -11917,10 +11931,13 @@ if cached_data and "stocks_data" in cached_data:
 
                 finally:
                     # RESUME POLLING THREAD (even if error occurred)
+                    print(f"\n🔍 DEBUG: In finally block - polling_was_active = {polling_was_active}")
                     if polling_was_active:
                         print("▶️ Resuming polling thread...")
                         engine.polling_active = True
                         print("✅ Polling resumed")
+                    else:
+                        print("⚠️ DEBUG: NOT resuming thread because polling_was_active is False")
 
                     # Restore stdout and close log file
                     sys.stdout = old_stdout
