@@ -11780,18 +11780,29 @@ if cached_data and "stocks_data" in cached_data:
                 print("="*80)
 
                 try:
-                    # Get kite and token_meta instances
+                    # Get kite instance
                     kite_instance = engine.kite if hasattr(engine, 'kite') else None
-                    token_meta_df = engine.token_meta if hasattr(engine, 'token_meta') else None
 
-                    print(f"📊 Stocks data available: {len(stocks_data_unusual)} stocks")
-                    print(f"🔧 Kite available: {kite_instance is not None}")
-                    print(f"🔧 Token_meta available: {token_meta_df is not None}")
+                    if not kite_instance:
+                        st.error("❌ Kite API not connected!")
+                        print("❌ Kite instance not available")
+                    else:
+                        print(f"📊 Stocks data available: {len(stocks_data_unusual)} stocks")
+                        print(f"🔧 Kite available: True")
 
-                    st.info("🔄 Saving volume snapshot... Please wait (may take 2-3 minutes if fetching from API)")
+                        # Fetch fresh instruments from Kite API (don't rely on engine.token_meta which is empty)
+                        st.info("🔄 Fetching instruments from Kite API...")
+                        print("📡 Fetching fresh instruments from Kite API...")
 
-                    # Save current volume snapshot (with Kite API fallback for after-hours)
-                    save_daily_volume_snapshot(stocks_data_unusual, kite=kite_instance, token_meta=token_meta_df)
+                        instruments = kite_instance.instruments("NFO")
+                        token_meta_df = pd.DataFrame(instruments)
+                        print(f"✅ Fetched {len(token_meta_df)} instruments from Kite API")
+                        print(f"🔧 Token_meta shape: {token_meta_df.shape}")
+
+                        st.info("🔄 Saving volume snapshot... Please wait (may take 2-3 minutes)")
+
+                        # Save current volume snapshot (with Kite API fallback for after-hours)
+                        save_daily_volume_snapshot(stocks_data_unusual, kite=kite_instance, token_meta=token_meta_df)
 
                     # Check if file was created
                     import os
