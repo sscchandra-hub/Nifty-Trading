@@ -11818,6 +11818,28 @@ if cached_data and "stocks_data" in cached_data:
                 print("🔔 BUTTON CLICKED - Starting volume snapshot save...")
                 print("="*80)
 
+                # Setup logging to file for debugging
+                import sys
+                from datetime import datetime
+                log_filename = f"volume_save_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+                log_file = open(log_filename, 'w')
+                old_stdout = sys.stdout
+
+                # Redirect print to both console and file
+                class Tee:
+                    def __init__(self, *files):
+                        self.files = files
+                    def write(self, obj):
+                        for f in self.files:
+                            f.write(obj)
+                            f.flush()
+                    def flush(self):
+                        for f in self.files:
+                            f.flush()
+
+                sys.stdout = Tee(sys.stdout, log_file)
+                print(f"📄 Logging to file: {log_filename}")
+
                 # PAUSE POLLING THREAD to prevent interruption
                 import time
 
@@ -11899,6 +11921,11 @@ if cached_data and "stocks_data" in cached_data:
                         print("▶️ Resuming polling thread...")
                         engine.polling_active = True
                         print("✅ Polling resumed")
+
+                    # Restore stdout and close log file
+                    sys.stdout = old_stdout
+                    log_file.close()
+                    print(f"📄 Log saved to: {log_filename}")
 
                 print("="*80)
                 print("🔔 SAVE OPERATION COMPLETED")
