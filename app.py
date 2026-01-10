@@ -7168,8 +7168,8 @@ def polling_loop():
     daily_summary_sent = False  # Track if daily summary sent today
 
     while not engine.stop_flag:
-        # Check if polling is paused (e.g., during volume snapshot save)
-        if not engine.polling_active:
+        # Check if polling is paused
+        if hasattr(engine, 'polling_active') and not engine.polling_active:
             time.sleep(0.5)
             continue
 
@@ -11820,14 +11820,17 @@ if cached_data and "stocks_data" in cached_data:
 
                 # PAUSE POLLING THREAD to prevent interruption
                 import time
-                polling_was_active = False
-                if hasattr(engine, 'polling_active'):
-                    polling_was_active = engine.polling_active
-                    if polling_was_active:
-                        print("⏸️ Pausing polling thread...")
-                        engine.polling_active = False
-                        time.sleep(2)  # Give thread time to stop
-                        print("✅ Polling paused")
+
+                # Initialize polling_active if it doesn't exist
+                if not hasattr(engine, 'polling_active'):
+                    engine.polling_active = True
+
+                polling_was_active = engine.polling_active
+                if polling_was_active:
+                    print("⏸️ Pausing polling thread...")
+                    engine.polling_active = False
+                    time.sleep(2)
+                    print("✅ Polling paused")
 
                 try:
                     # Get kite instance
