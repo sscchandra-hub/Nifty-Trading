@@ -5753,6 +5753,14 @@ def save_stock_flow_snapshot(stocks_data: dict, sector_mapping: dict, data_dir: 
                 alerted = True
                 alert_type = 'BEARISH'
 
+            # Calculate CE/PE ratio: IF(pe_flow>0, ce_flow/pe_flow, IF(ce_flow>0, 999, 0))
+            if pe_flow > 0:
+                ce_pe_ratio = ce_flow / pe_flow
+            elif ce_flow > 0:
+                ce_pe_ratio = 999
+            else:
+                ce_pe_ratio = 0
+
             row = {
                 'timestamp': timestamp_str,
                 'date': date_str,
@@ -5767,7 +5775,8 @@ def save_stock_flow_snapshot(stocks_data: dict, sector_mapping: dict, data_dir: 
                 'rank': rank,
                 'in_top_10': in_top_10,
                 'alerted': alerted,
-                'alert_type': alert_type
+                'alert_type': alert_type,
+                'ce_pe_ratio': f"{ce_pe_ratio:.2f}"
             }
             rows_to_save.append(row)
 
@@ -5778,7 +5787,7 @@ def save_stock_flow_snapshot(stocks_data: dict, sector_mapping: dict, data_dir: 
             with open(csv_file, 'a', newline='') as f:
                 fieldnames = ['timestamp', 'date', 'time', 'stock', 'price', 'change_pct',
                              'ce_flow', 'pe_flow', 'net_flow', 'sector', 'rank',
-                             'in_top_10', 'alerted', 'alert_type']
+                             'in_top_10', 'alerted', 'alert_type', 'ce_pe_ratio']
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
 
                 # Write header only if new file
