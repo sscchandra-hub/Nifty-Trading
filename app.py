@@ -5852,6 +5852,211 @@ def load_volume_history(data_dir: str = "data/volume_history") -> dict:
         print(f"❌ Error loading volume history: {e}")
         return {}
 
+def fetch_eod_volumes_from_kite(kite, token_meta, stocks_list: list = None) -> dict:
+    """
+    Fetch end-of-day volumes from Kite API for all F&O stocks.
+
+    Works after market hours when polling engine has stopped.
+    Uses today's day candle volume data.
+
+    Args:
+        kite: KiteConnect instance
+        token_meta: DataFrame with instrument tokens
+        stocks_list: List of stock names to fetch (default: all F&O stocks)
+
+    Returns:
+        dict: {stock_name: {'ce_flow': X, 'pe_flow': Y, 'net_flow': Z}}
+    """
+    try:
+        from datetime import datetime, timedelta
+        import pandas as pd
+
+        print(f"📡 Fetching end-of-day volumes from Kite API (market closed mode)...")
+
+        # Get today's date
+        today = datetime.now().date()
+
+        # If stocks_list not provided, get all F&O stocks
+        if stocks_list is None:
+            stocks_list = token_meta[
+                (token_meta['segment'] == 'NFO-OPT') &
+                (token_meta['instrument_type'].isin(['CE', 'PE']))
+            ]['name'].unique().tolist()
+
+        stocks_data = {}
+        stocks_processed = 0
+        stocks_with_data = 0
+
+        for stock_name in stocks_list:
+            try:
+                # Get all options for this stock
+                stock_options = token_meta[
+                    (token_meta['name'] == stock_name) &
+                    (token_meta['instrument_type'].isin(['CE', 'PE']))
+                ].copy()
+
+                if stock_options.empty:
+                    continue
+
+                stocks_processed += 1
+
+                # Sample strikes to avoid too many API calls (20 strikes: 10 CE + 10 PE)
+                ce_options = stock_options[stock_options['instrument_type'] == 'CE'].head(10)
+                pe_options = stock_options[stock_options['instrument_type'] == 'PE'].head(10)
+                sample_options = pd.concat([ce_options, pe_options])
+
+                ce_total_volume = 0
+                pe_total_volume = 0
+
+                # Fetch today's candle for each strike
+                for _, option in sample_options.iterrows():
+                    try:
+                        token = int(option['instrument_token'])
+                        instrument_type = option['instrument_type']
+
+                        # Fetch today's day candle
+                        hist_data = kite.historical_data(
+                            instrument_token=token,
+                            from_date=today,
+                            to_date=today,
+                            interval='day'
+                        )
+
+                        if hist_data and len(hist_data) > 0:
+                            volume = hist_data[0].get('volume', 0)
+
+                            if instrument_type == 'CE':
+                                ce_total_volume += volume
+                            elif instrument_type == 'PE':
+                                pe_total_volume += volume
+
+                    except Exception as strike_error:
+                        # Skip individual strikes that fail
+                        continue
+
+                # Store if we got any volume data
+                if ce_total_volume > 0 or pe_total_volume > 0:
+                    stocks_data[stock_name] = {
+                        'ce_flow': ce_total_volume,
+                        'pe_flow': pe_total_volume,
+                        'net_flow': ce_total_volume - pe_total_volume,
+                        'price': 0,  # Not fetching price in this mode
+                        'change_pct': None
+                    }
+                    stocks_with_data += 1
+
+                # Progress indicator every 20 stocks
+                if stocks_processed % 20 == 0:
+                    print(f"   Processed {stocks_processed}/{len(stocks_list)} stocks... ({stocks_with_data} with data)")
+
+            except Exception as stock_error:
+                # Skip stocks that fail
+                continue
+
+        print(f"✅ Fetched end-of-day volumes: {stocks_with_data}/{stocks_processed} stocks have data")
+        return stocks_data
+
+    except Exception as e:
+        print(f"❌ Error fetching end-of-day volumes from Kite API: {e}")
+        import traceback
+        traceback.print_exc()
+        return {}
+
+def save_daily_volume_snapshot(stocks_data: dict, kite=None, token_meta=None, data_dir: str = "data/volume_history"):
+    """
+    Save end-of-day volume snapshot for each stock to calculate rolling averages.
+
+    NEW: If market is closed and stocks_data is empty/zeros, fetches end-of-day
+    volumes directly from Kite API.
+
+    File: volume_history.json
+    Structure: {
+        "RELIANCE": {
+            "2026-01-07": {"ce_vol": 150000, "pe_vol": 50000, "total_vol": 200000},
+            "2026-01-06": {"ce_vol": 180000, "pe_vol": 60000, "total_vol": 240000},
+            ...
+        }
+    }
+
+    Called at end of market day to snapshot today's final volumes.
+    """
+    try:
+        # Check if we have valid volume data
+        has_volumes = False
+        for stock_name, data in stocks_data.items():
+            ce_vol = abs(data.get('ce_flow', 0))
+            pe_vol = abs(data.get('pe_flow', 0))
+            if ce_vol > 0 or pe_vol > 0:
+                has_volumes = True
+                break
+
+        # If no volumes and market is closed, fetch from Kite API
+        if not has_volumes and not is_market_hours() and kite and token_meta is not None:
+            print("⚠️ No volume data in stocks_data (market closed)")
+            print("📡 Falling back to Kite API to fetch end-of-day volumes...")
+
+            # Fetch from Kite API
+            fetched_data = fetch_eod_volumes_from_kite(kite, token_meta)
+
+            if fetched_data and len(fetched_data) > 0:
+                stocks_data = fetched_data
+                print(f"✅ Successfully fetched {len(fetched_data)} stocks from Kite API")
+            else:
+                print("❌ Failed to fetch volumes from Kite API")
+                return
+
+        os.makedirs(data_dir, exist_ok=True)
+        history_file = Path(data_dir) / "volume_history.json"
+
+        # Load existing history
+        if history_file.exists():
+            with open(history_file, 'r') as f:
+                history = json.load(f)
+        else:
+            history = {}
+
+        date_str = datetime.now().strftime('%Y-%m-%d')
+        saved_count = 0
+
+        # Update history for each stock
+        for stock_name, data in stocks_data.items():
+            ce_vol = abs(data.get('ce_flow', 0))
+            pe_vol = abs(data.get('pe_flow', 0))
+            total_vol = ce_vol + pe_vol
+
+            # Skip stocks with no volume
+            if total_vol == 0:
+                continue
+
+            # Initialize stock if not exists
+            if stock_name not in history:
+                history[stock_name] = {}
+
+            # Save today's volume
+            history[stock_name][date_str] = {
+                'ce_vol': ce_vol,
+                'pe_vol': pe_vol,
+                'total_vol': total_vol
+            }
+            saved_count += 1
+
+            # Keep only last 15 days (for 10-day rolling avg with buffer)
+            dates = sorted(history[stock_name].keys(), reverse=True)
+            if len(dates) > 15:
+                for old_date in dates[15:]:
+                    del history[stock_name][old_date]
+
+        # Save updated history
+        with open(history_file, 'w') as f:
+            json.dump(history, f, indent=2)
+
+        print(f"📊 Volume history: Saved snapshots for {saved_count} stocks")
+
+    except Exception as e:
+        print(f"❌ Error saving volume history: {e}")
+        import traceback
+        traceback.print_exc()
+
 def fetch_historical_volume_from_kite(stock_name: str, kite, token_meta, days: int = 10) -> float:
     """
     Fetch last N days of volume data from Kite API for a stock's options.
@@ -7993,7 +8198,8 @@ def polling_loop():
                     not engine.volume_snapshot_saved_today and stocks_data):
                     try:
                         print("📊 Saving end-of-day volume snapshot for historical tracking...")
-                        save_daily_volume_snapshot(stocks_data)
+                        # Pass kite and token_meta for API fallback if needed
+                        save_daily_volume_snapshot(stocks_data, kite=engine.kite, token_meta=engine.token_meta)
                         engine.volume_snapshot_saved_today = True
                         print("✅ Volume snapshot saved successfully")
                     except Exception as e:
@@ -11500,8 +11706,12 @@ if cached_data and "stocks_data" in cached_data:
         with col2:
             if st.button("💾 Save Volume Snapshot NOW", help="Manually save today's volume data for historical tracking"):
                 try:
-                    # Save current volume snapshot
-                    save_daily_volume_snapshot(stocks_data_unusual)
+                    # Get kite and token_meta instances
+                    kite_instance = engine.kite if hasattr(engine, 'kite') else None
+                    token_meta_df = engine.token_meta if hasattr(engine, 'token_meta') else None
+
+                    # Save current volume snapshot (with Kite API fallback for after-hours)
+                    save_daily_volume_snapshot(stocks_data_unusual, kite=kite_instance, token_meta=token_meta_df)
                     st.success("✅ Volume snapshot saved successfully!")
                     st.caption(f"📅 Saved for {datetime.now().strftime('%Y-%m-%d')}")
 
