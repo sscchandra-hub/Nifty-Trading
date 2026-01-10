@@ -5876,12 +5876,13 @@ def fetch_eod_volumes_from_kite(kite, token_meta, stocks_list: list = None) -> d
         # Get today's date
         today = datetime.now().date()
 
-        # If stocks_list not provided, get all F&O stocks
+        # If stocks_list not provided, get all unique stock names from token_meta with CE/PE options
         if stocks_list is None:
+            # Get all unique stock names that have CE or PE options
             stocks_list = token_meta[
-                (token_meta['segment'] == 'NFO-OPT') &
-                (token_meta['instrument_type'].isin(['CE', 'PE']))
+                token_meta['instrument_type'].isin(['CE', 'PE'])
             ]['name'].unique().tolist()
+            print(f"📊 Auto-detected {len(stocks_list)} stocks with options from token_meta")
 
         stocks_data = {}
         stocks_processed = 0
@@ -5995,8 +5996,11 @@ def save_daily_volume_snapshot(stocks_data: dict, kite=None, token_meta=None, da
             print("⚠️ No volume data in stocks_data (market closed)")
             print("📡 Falling back to Kite API to fetch end-of-day volumes...")
 
+            # Get stock list from stocks_data keys (these are the F&O stocks we're tracking)
+            stocks_list = list(stocks_data.keys()) if stocks_data else None
+
             # Fetch from Kite API
-            fetched_data = fetch_eod_volumes_from_kite(kite, token_meta)
+            fetched_data = fetch_eod_volumes_from_kite(kite, token_meta, stocks_list=stocks_list)
 
             if fetched_data and len(fetched_data) > 0:
                 stocks_data = fetched_data
