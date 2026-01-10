@@ -11705,15 +11705,41 @@ if cached_data and "stocks_data" in cached_data:
         col1, col2, col3 = st.columns([2, 1, 2])
         with col2:
             if st.button("💾 Save Volume Snapshot NOW", help="Manually save today's volume data for historical tracking"):
+                print("\n" + "="*80)
+                print("🔔 BUTTON CLICKED - Starting volume snapshot save...")
+                print("="*80)
+
                 try:
                     # Get kite and token_meta instances
                     kite_instance = engine.kite if hasattr(engine, 'kite') else None
                     token_meta_df = engine.token_meta if hasattr(engine, 'token_meta') else None
 
+                    print(f"📊 Stocks data available: {len(stocks_data_unusual)} stocks")
+                    print(f"🔧 Kite available: {kite_instance is not None}")
+                    print(f"🔧 Token_meta available: {token_meta_df is not None}")
+
+                    st.info("🔄 Saving volume snapshot... Please wait (may take 2-3 minutes if fetching from API)")
+
                     # Save current volume snapshot (with Kite API fallback for after-hours)
                     save_daily_volume_snapshot(stocks_data_unusual, kite=kite_instance, token_meta=token_meta_df)
-                    st.success("✅ Volume snapshot saved successfully!")
-                    st.caption(f"📅 Saved for {datetime.now().strftime('%Y-%m-%d')}")
+
+                    # Check if file was created
+                    import os
+                    from pathlib import Path
+                    data_dir = Path("data/volume_history")
+                    history_file = data_dir / "volume_history.json"
+
+                    if history_file.exists():
+                        file_size = os.path.getsize(history_file)
+                        abs_path = history_file.absolute()
+                        print(f"✅ File created: {abs_path}")
+                        print(f"📦 File size: {file_size:,} bytes")
+                        st.success(f"✅ Volume snapshot saved successfully!")
+                        st.success(f"📁 Location: {abs_path}")
+                        st.caption(f"📦 Size: {file_size:,} bytes | 📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                    else:
+                        print(f"❌ File NOT found at: {history_file.absolute()}")
+                        st.error(f"❌ File was not created at expected location: {history_file.absolute()}")
 
                     # Show info about building history
                     volume_history_check = load_volume_history()
@@ -11722,12 +11748,20 @@ if cached_data and "stocks_data" in cached_data:
                         for stock, dates in volume_history_check.items():
                             days_count[stock] = len(dates)
                         max_days = max(days_count.values()) if days_count else 0
-                        st.info(f"📊 Local history: {max_days} days saved. Need 5+ days for feature to work without API.")
+                        num_stocks = len(volume_history_check)
+                        st.info(f"📊 History: {num_stocks} stocks tracked, {max_days} days saved. Need 5+ days for feature.")
                     else:
-                        st.info("📊 First snapshot created! Repeat daily to build 5-day history.")
+                        st.warning("⚠️ Volume history is empty after save!")
 
                 except Exception as e:
+                    print(f"❌ ERROR during save: {e}")
+                    import traceback
+                    traceback.print_exc()
                     st.error(f"❌ Error saving snapshot: {e}")
+
+                print("="*80)
+                print("🔔 SAVE OPERATION COMPLETED")
+                print("="*80 + "\n")
 
         st.markdown("")
 
