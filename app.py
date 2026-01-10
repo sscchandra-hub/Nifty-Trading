@@ -11495,6 +11495,32 @@ if cached_data and "stocks_data" in cached_data:
         st.markdown(create_enhanced_section_header("⚡ UNUSUAL VOLUME ACTIVITY (vs 10-Day Avg)", "📊"), unsafe_allow_html=True)
         st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
+        # Manual Save Volume Snapshot Button
+        col1, col2, col3 = st.columns([2, 1, 2])
+        with col2:
+            if st.button("💾 Save Volume Snapshot NOW", help="Manually save today's volume data for historical tracking"):
+                try:
+                    # Save current volume snapshot
+                    save_daily_volume_snapshot(stocks_data_unusual)
+                    st.success("✅ Volume snapshot saved successfully!")
+                    st.caption(f"📅 Saved for {datetime.now().strftime('%Y-%m-%d')}")
+
+                    # Show info about building history
+                    volume_history_check = load_volume_history()
+                    if volume_history_check:
+                        days_count = {}
+                        for stock, dates in volume_history_check.items():
+                            days_count[stock] = len(dates)
+                        max_days = max(days_count.values()) if days_count else 0
+                        st.info(f"📊 Local history: {max_days} days saved. Need 5+ days for feature to work without API.")
+                    else:
+                        st.info("📊 First snapshot created! Repeat daily to build 5-day history.")
+
+                except Exception as e:
+                    st.error(f"❌ Error saving snapshot: {e}")
+
+        st.markdown("")
+
         # Load volume history and calculate spike ratios
         volume_history = load_volume_history()
 
