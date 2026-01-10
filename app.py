@@ -2343,7 +2343,7 @@ def save_historical_data(index_name, data_row):
         file_exists = csv_file.exists()
         
         # Write data
-        with open(csv_file, 'a', newline='') as f:
+        with open(csv_file, 'a', newline='', encoding='utf-8') as f:
             fieldnames = [
                 'timestamp', 'index_name', 'spot_price', 'price_change_pct',
                 'ce_flow', 'pe_flow', 'net_flow',
@@ -2382,7 +2382,7 @@ def save_volume_spike_data(spike: 'VolumeSpike'):
         file_exists = csv_file.exists()
         
         # Write data
-        with open(csv_file, 'a', newline='') as f:
+        with open(csv_file, 'a', newline='', encoding='utf-8') as f:
             fieldnames = [
                 'timestamp', 'strike', 'option_type', 'volume', 'avg_volume',
                 'spike_ratio', 'is_atm', 'distance_from_atm', 'alert_level',
@@ -2429,7 +2429,7 @@ def save_volume_intensity_data(intensity_ratio: float, ce_volume: int, pe_volume
         file_exists = csv_file.exists()
         
         # Write data
-        with open(csv_file, 'a', newline='') as f:
+        with open(csv_file, 'a', newline='', encoding='utf-8') as f:
             fieldnames = [
                 'timestamp', 'intensity_ratio', 'ce_volume', 'pe_volume',
                 'total_volume', 'baseline_volume', 'atm_strike'
@@ -5755,7 +5755,7 @@ def save_stock_flow_snapshot(stocks_data: dict, sector_mapping: dict, data_dir: 
         if rows_to_save:
             import csv
 
-            with open(csv_file, 'a', newline='') as f:
+            with open(csv_file, 'a', newline='', encoding='utf-8') as f:
                 fieldnames = ['timestamp', 'date', 'time', 'stock', 'price', 'change_pct',
                              'ce_flow', 'pe_flow', 'net_flow', 'sector', 'rank',
                              'in_top_10', 'alerted', 'alert_type', 'ce_pe_ratio']
@@ -11746,16 +11746,16 @@ if cached_data and "stocks_data" in cached_data:
 if cached_data and "stocks_data" in cached_data:
     stocks_data_unusual = cached_data.get("stocks_data", {})
 
-    if stocks_data_unusual and len(stocks_data_unusual) > 0:
-        st.markdown("")
-        st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        st.markdown(create_enhanced_section_header("⚡ UNUSUAL VOLUME ACTIVITY (vs 10-Day Avg)", "📊"), unsafe_allow_html=True)
-        st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    # Always show section header and button (even if no data yet)
+    st.markdown("")
+    st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    st.markdown(create_enhanced_section_header("⚡ UNUSUAL VOLUME ACTIVITY (vs 10-Day Avg)", "📊"), unsafe_allow_html=True)
+    st.markdown("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
-        # Manual Save Volume Snapshot Button
-        col1, col2, col3 = st.columns([2, 1, 2])
-        with col2:
-            if st.button("💾 Save Volume Snapshot NOW", help="Manually save today's volume data for historical tracking"):
+    # Manual Save Volume Snapshot Button (ALWAYS VISIBLE)
+    col1, col2, col3 = st.columns([2, 1, 2])
+    with col2:
+        if st.button("💾 Save Volume Snapshot NOW", help="Manually save today's volume data for historical tracking"):
                 print("\n" + "="*80)
                 print("🔔 BUTTON CLICKED - Starting volume snapshot save...")
                 print("="*80)
@@ -11814,8 +11814,10 @@ if cached_data and "stocks_data" in cached_data:
                 print("🔔 SAVE OPERATION COMPLETED")
                 print("="*80 + "\n")
 
-        st.markdown("")
+    st.markdown("")
 
+    # Only show unusual volume calculations if we have stock data
+    if stocks_data_unusual and len(stocks_data_unusual) > 0:
         # Load volume history and calculate spike ratios
         volume_history = load_volume_history()
 
