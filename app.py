@@ -5934,7 +5934,18 @@ def calculate_volume_spike_ratio(stocks_data: dict, volume_history: dict, kite=N
         unusual_stocks = []
         today_date = datetime.now().strftime('%Y-%m-%d')
 
+        print(f"\n🔍 DEBUG: Calculating volume spikes for {len(stocks_data)} stocks...")
+        print(f"📊 DEBUG: volume_history contains {len(volume_history)} stocks")
+        print(f"🔧 DEBUG: kite available: {kite is not None}, token_meta available: {token_meta is not None if token_meta is not None else False}")
+
+        stocks_checked = 0
+        stocks_with_volume = 0
+        api_fetches = 0
+        local_history_used = 0
+
         for stock_name, data in stocks_data.items():
+            stocks_checked += 1
+
             # Today's volume
             ce_vol_today = abs(data.get('ce_flow', 0))
             pe_vol_today = abs(data.get('pe_flow', 0))
@@ -5943,6 +5954,8 @@ def calculate_volume_spike_ratio(stocks_data: dict, volume_history: dict, kite=N
             # Skip if no volume today
             if total_vol_today == 0:
                 continue
+
+            stocks_with_volume += 1
 
             # Get historical data from local storage
             stock_history = volume_history.get(stock_name, {})
@@ -5957,12 +5970,19 @@ def calculate_volume_spike_ratio(stocks_data: dict, volume_history: dict, kite=N
             avg_volume = 0
             if len(historical_volumes) >= 5:
                 # Use local history (fast path)
+                local_history_used += 1
                 recent_volumes = historical_volumes[-10:] if len(historical_volumes) >= 10 else historical_volumes
                 avg_volume = sum(recent_volumes) / len(recent_volumes)
             elif kite and token_meta is not None:
                 # Fetch from Kite API (works from day 1!)
+                api_fetches += 1
                 print(f"📡 Fetching historical volume for {stock_name} from Kite API...")
                 avg_volume = fetch_historical_volume_from_kite(stock_name, kite, token_meta, days=10)
+
+                if avg_volume > 0:
+                    print(f"✅ {stock_name}: Today={total_vol_today:,.0f}, Avg={avg_volume:,.0f}, Ratio={total_vol_today/avg_volume:.2f}x")
+                else:
+                    print(f"❌ {stock_name}: Failed to fetch historical data or avg_volume = 0")
             else:
                 # No data available
                 continue
@@ -5991,10 +6011,24 @@ def calculate_volume_spike_ratio(stocks_data: dict, volume_history: dict, kite=N
         # Sort by spike ratio (highest relative spike first)
         unusual_stocks.sort(key=lambda x: x['spike_ratio'], reverse=True)
 
+        print(f"\n📊 VOLUME SPIKE SUMMARY:")
+        print(f"   Stocks checked: {stocks_checked}")
+        print(f"   Stocks with volume today: {stocks_with_volume}")
+        print(f"   Local history used: {local_history_used}")
+        print(f"   Kite API fetches: {api_fetches}")
+        print(f"   Unusual stocks found (>2.0x): {len(unusual_stocks)}")
+
+        if unusual_stocks:
+            print(f"\n🔥 TOP 5 UNUSUAL VOLUME STOCKS:")
+            for i, stock in enumerate(unusual_stocks[:5], 1):
+                print(f"   {i}. {stock['stock']}: {stock['spike_ratio']:.2f}x (Today: {stock['today_volume']:,.0f}, Avg: {stock['avg_volume']:,.0f})")
+
         return unusual_stocks
 
     except Exception as e:
         print(f"❌ Error calculating volume spike ratios: {e}")
+        import traceback
+        traceback.print_exc()
         return []
 
 # ============================================
