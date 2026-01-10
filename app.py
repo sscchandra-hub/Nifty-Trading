@@ -5880,8 +5880,25 @@ def fetch_eod_volumes_from_kite(kite, token_meta, stocks_list: list = None) -> d
             print(f"🔍 DEBUG: Sample token_meta row:")
             print(token_meta.iloc[0].to_dict())
 
-        # Get today's date
-        today = datetime.now().date()
+        # Get last trading day (handles weekends)
+        current_time = datetime.now()
+        current_day = current_time.strftime('%A')
+
+        if current_day == 'Saturday':
+            # Fetch Friday's data
+            last_trading_day = (current_time - timedelta(days=1)).date()
+            print(f"📅 Saturday - fetching Friday's data")
+        elif current_day == 'Sunday':
+            # Fetch Friday's data
+            last_trading_day = (current_time - timedelta(days=2)).date()
+            print(f"📅 Sunday - fetching Friday's data")
+        else:
+            # Fetch today's data
+            last_trading_day = current_time.date()
+            print(f"📅 Weekday - fetching today's data")
+
+        print(f"📅 Target date: {last_trading_day}")
+        today = last_trading_day
 
         # If stocks_list not provided, get all unique stock names from token_meta with CE/PE options
         if stocks_list is None:
@@ -5891,17 +5908,31 @@ def fetch_eod_volumes_from_kite(kite, token_meta, stocks_list: list = None) -> d
             ]['name'].unique().tolist()
             print(f"📊 Auto-detected {len(stocks_list)} stocks with options from token_meta")
 
+        # Limit to 100 stocks maximum for faster completion
+        if len(stocks_list) > 100:
+            stocks_list = stocks_list[:100]
+            print(f"⚠️ Limited to 100 stocks for faster completion")
+
         # DEBUG: Show stocks_list sample
         print(f"\n🔍 DEBUG: stocks_list sample (first 5): {stocks_list[:5]}")
         print(f"🔍 DEBUG: Total stocks in list: {len(stocks_list)}")
         print(f"\n🚀 Starting to fetch volumes for {len(stocks_list)} stocks (4 strikes each)...")
         print(f"⏱️  Estimated time: ~{len(stocks_list) * 0.5:.0f} seconds (may vary with API speed)")
 
+        import time
+        start_time = time.time()
+        timeout_seconds = 120  # 2 minutes
+
         stocks_data = {}
         stocks_processed = 0
         stocks_with_data = 0
 
         for stock_name in stocks_list:
+            # Check timeout
+            if time.time() - start_time > timeout_seconds:
+                print(f"⏱️ Timeout reached ({timeout_seconds}s) - returning data collected so far")
+                break
+
             try:
                 # Get all options for this stock
                 stock_options = token_meta[
