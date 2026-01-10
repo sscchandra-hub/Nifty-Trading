@@ -3336,22 +3336,22 @@ def generate_session_summary():
     return "\n".join(summary)
 
 
-def send_stock_alert(stock_name, alert_type, price, change_pct, net_flow, ce_flow=None, pe_flow=None, ce_pe_ratio=None, volume_ratio=None):
+def send_stock_alert(stock_name, alert_type, price, change_pct, net_flow, ce_flow=None, pe_flow=None, ce_pe_ratio=None, sector_breadth=None, volume_ratio=None):
     """
     Send stock alerts via Telegram with cooldown and momentum validation
 
     Alert Conditions:
-    🟢 STRONGEST BULLISH:
+    🟢 STRONGEST BULLISH (All 4 must be TRUE):
        - Price > +1.0%
        - Net Flow > +100M
        - CE/PE Ratio > 4.0
-       All 3 conditions must be TRUE
+       - At least 6 sectors positive (out of 14)
 
-    🔴 STRONGEST BEARISH:
+    🔴 STRONGEST BEARISH (All 4 must be TRUE):
        - Price < -1.5%
        - Net Flow < 0
        - CE/PE Ratio < 1.0
-       All 3 conditions must be TRUE
+       - At least 6 sectors negative (out of 14)
 
     Momentum Filter:
     - For repeat alerts, BOTH % change AND net flow must be HIGHER than previous alert
@@ -3429,6 +3429,19 @@ def send_stock_alert(stock_name, alert_type, price, change_pct, net_flow, ce_flo
         ce_emoji = "🟢" if ce_flow > 0 else "🔴"
         pe_emoji = "🟢" if pe_flow > 0 else "🔴"
         telegram_message += f"📊 CE: {ce_emoji}{format_number(ce_flow)} | PE: {pe_emoji}{format_number(pe_flow)} | Ratio: {ce_pe_ratio:.2f}\n"
+
+    # Add sector breadth
+    if sector_breadth:
+        pos_count = sector_breadth.get('positive_count', 0)
+        neg_count = sector_breadth.get('negative_count', 0)
+        total = sector_breadth.get('total_count', 0)
+
+        if alert_type == "BULLISH":
+            sector_emoji = "🟢" if pos_count >= 6 else "⚠️"
+            telegram_message += f"{sector_emoji} Sectors: {pos_count}/{total} positive\n"
+        else:  # BEARISH
+            sector_emoji = "🔴" if neg_count >= 6 else "⚠️"
+            telegram_message += f"{sector_emoji} Sectors: {neg_count}/{total} negative\n"
 
     if sector_info:
         telegram_message += f"{sector_info}\n"
@@ -6350,6 +6363,74 @@ def get_sector_performance(stock_name: str, kite=None, sector_map=None) -> str:
 
     return ""
 
+def get_sector_breadth(indices_data: dict) -> dict:
+    """
+    Calculate sector breadth (positive vs negative sectors).
+
+    Args:
+        indices_data: Dictionary of indices with their data
+
+    Returns:
+        dict with:
+        - positive_count: Number of sectors with positive change
+        - negative_count: Number of sectors with negative change
+        - total_count: Total number of sectors tracked
+        - positive_ratio: Ratio of positive sectors (0.0 to 1.0)
+    """
+    positive_count = 0
+    negative_count = 0
+    total_count = 0
+
+    try:
+        # Filter out non-sector indices (only count sectoral indices)
+        sector_indices = [
+            "NIFTY BANK", "NIFTY IT", "NIFTY AUTO", "NIFTY PHARMA",
+            "NIFTY METAL", "NIFTY FMCG", "NIFTY ENERGY", "NIFTY FIN SERVICE",
+            "NIFTY REALTY", "NIFTY MEDIA", "NIFTY HEALTHCARE",
+            "NIFTY CONSUMER DURABLES", "NIFTY OIL AND GAS", "NIFTY PSU BANK"
+        ]
+
+        for idx_name, idx_data in indices_data.items():
+            # Only count sectoral indices
+            if idx_name not in sector_indices:
+                continue
+
+            total_count += 1
+
+            # Get change percentage
+            change_pct = 0
+            if "change_pct" in idx_data:
+                change_pct = idx_data["change_pct"]
+            elif "price" in idx_data and "prev_close" in idx_data:
+                prev_close = idx_data.get("prev_close", 0)
+                price = idx_data.get("price", 0)
+                if prev_close > 0:
+                    change_pct = ((price - prev_close) / prev_close) * 100
+
+            # Count positive/negative
+            if change_pct > 0:
+                positive_count += 1
+            elif change_pct < 0:
+                negative_count += 1
+
+        positive_ratio = positive_count / total_count if total_count > 0 else 0.0
+
+        return {
+            'positive_count': positive_count,
+            'negative_count': negative_count,
+            'total_count': total_count,
+            'positive_ratio': positive_ratio
+        }
+
+    except Exception as e:
+        print(f"⚠️ Error calculating sector breadth: {e}")
+        return {
+            'positive_count': 0,
+            'negative_count': 0,
+            'total_count': 0,
+            'positive_ratio': 0.0
+        }
+
 def get_nifty_daily_change(kite=None) -> float:
     """
     Get NIFTY 50 daily % change.
@@ -7790,6 +7871,9 @@ def polling_loop():
                     # ============================================
                     # BULLISH/BEARISH ALERTS FOR TOP 10 STOCKS
                     # ============================================
+                    # Calculate sector breadth (market-wide strength)
+                    sector_breadth = get_sector_breadth(indices_data)
+
                     # Check each Top 10 stock for BULLISH or BEARISH conditions
                     for stock_name, _ in sorted_stocks[:10]:
                         stock_data = stocks_data.get(stock_name)
@@ -7814,15 +7898,19 @@ def polling_loop():
                         else:
                             ce_pe_ratio = 0  # No activity
 
-                        # 🟢 STRONGEST BULLISH: Price > +1.0% AND Net Flow > +100M AND CE/PE Ratio > 4.0
-                        if change_pct > 1.0 and net_flow > 100 and ce_pe_ratio > 4.0:
+                        # 🟢 STRONGEST BULLISH: Price > +1.0% AND Net Flow > +100M AND CE/PE Ratio > 4.0 AND 6+ sectors positive
+                        if (change_pct > 1.0 and net_flow > 100 and ce_pe_ratio > 4.0 and
+                            sector_breadth['positive_count'] >= 6):
                             send_stock_alert(stock_name, "BULLISH", stock_price, change_pct, net_flow,
-                                           ce_flow=ce_flow, pe_flow=pe_flow, ce_pe_ratio=ce_pe_ratio)
+                                           ce_flow=ce_flow, pe_flow=pe_flow, ce_pe_ratio=ce_pe_ratio,
+                                           sector_breadth=sector_breadth)
 
-                        # 🔴 STRONGEST BEARISH: Price < -1.5% AND Net Flow < 0 AND CE/PE Ratio < 1.0
-                        elif change_pct < -1.5 and net_flow < 0 and ce_pe_ratio < 1.0:
+                        # 🔴 STRONGEST BEARISH: Price < -1.5% AND Net Flow < 0 AND CE/PE Ratio < 1.0 AND 6+ sectors negative
+                        elif (change_pct < -1.5 and net_flow < 0 and ce_pe_ratio < 1.0 and
+                              sector_breadth['negative_count'] >= 6):
                             send_stock_alert(stock_name, "BEARISH", stock_price, change_pct, net_flow,
-                                           ce_flow=ce_flow, pe_flow=pe_flow, ce_pe_ratio=ce_pe_ratio)
+                                           ce_flow=ce_flow, pe_flow=pe_flow, ce_pe_ratio=ce_pe_ratio,
+                                           sector_breadth=sector_breadth)
 
 
                 cache_data = {
