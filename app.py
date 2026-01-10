@@ -11813,6 +11813,17 @@ if cached_data and "stocks_data" in cached_data:
                 print("🔔 BUTTON CLICKED - Starting volume snapshot save...")
                 print("="*80)
 
+                # PAUSE POLLING THREAD to prevent interruption
+                import time
+                polling_was_active = False
+                if hasattr(engine, 'polling_active'):
+                    polling_was_active = engine.polling_active
+                    if polling_was_active:
+                        print("⏸️ Pausing polling thread...")
+                        engine.polling_active = False
+                        time.sleep(2)  # Give thread time to stop
+                        print("✅ Polling paused")
+
                 try:
                     # Get kite instance
                     kite_instance = engine.kite if hasattr(engine, 'kite') else None
@@ -11873,6 +11884,13 @@ if cached_data and "stocks_data" in cached_data:
                     import traceback
                     traceback.print_exc()
                     st.error(f"❌ Error saving snapshot: {e}")
+
+                finally:
+                    # RESUME POLLING THREAD (even if error occurred)
+                    if polling_was_active:
+                        print("▶️ Resuming polling thread...")
+                        engine.polling_active = True
+                        print("✅ Polling resumed")
 
                 print("="*80)
                 print("🔔 SAVE OPERATION COMPLETED")
