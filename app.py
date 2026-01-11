@@ -12382,6 +12382,23 @@ if cached_data and "stocks_data" in cached_data:
                             if "segment" in nifty_meta.columns:
                                 nifty_meta = nifty_meta[nifty_meta["segment"] == "NFO-OPT"]
 
+                            # ✅ FILTER TO CURRENT WEEK EXPIRY ONLY (match polling loop behavior)
+                            if not nifty_meta.empty and "expiry" in nifty_meta.columns:
+                                # Convert expiry to datetime
+                                nifty_meta["expiry"] = pd.to_datetime(nifty_meta["expiry"])
+
+                                # Filter to future expiries only
+                                today = pd.Timestamp.today().normalize()
+                                nifty_meta = nifty_meta[nifty_meta["expiry"] >= today]
+
+                                if not nifty_meta.empty:
+                                    # Get nearest expiry (current week)
+                                    current_week_expiry = nifty_meta["expiry"].min()
+                                    nifty_meta = nifty_meta[nifty_meta["expiry"] == current_week_expiry]
+                                    print(f"✅ Filtered to current week expiry: {current_week_expiry.strftime('%d-%b-%Y')}")
+                                else:
+                                    print("⚠️ No future expiries found")
+
                             if not nifty_meta.empty:
                                 # Get all NIFTY option tokens
                                 nifty_tokens = [str(int(token)) for token in nifty_meta["instrument_token"].tolist()]
