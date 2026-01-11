@@ -10616,8 +10616,23 @@ if cached_data and cached_data.get("deltas"):
     # ============================================
     nifty_spike = st.session_state.get('nifty_volume_spike', None)
 
-    if nifty_spike and not nifty_spike.get('error'):
-        if nifty_spike.get('has_spike', False):
+    # ALWAYS show NIFTY volume section
+    if not nifty_spike:
+        # Waiting for first polling data
+        st.markdown("""
+        <div style="padding: 10px; background-color: rgba(255,193,7,0.1); border-left: 4px solid #FFC107; border-radius: 5px; margin-bottom: 15px;">
+            <p style="margin: 0; font-size: 0.9em; color: #666;">⏳ <strong>NIFTY Unusual Volume Tracking:</strong> Waiting for polling data... (requires 5+ days of history)</p>
+        </div>
+        """, unsafe_allow_html=True)
+    elif nifty_spike.get('error'):
+        # Show error/insufficient history message
+        error_msg = nifty_spike['error']
+        st.markdown(f"""
+        <div style="padding: 10px; background-color: rgba(33,150,243,0.1); border-left: 4px solid #2196F3; border-radius: 5px; margin-bottom: 15px;">
+            <p style="margin: 0; font-size: 0.9em; color: #666;">📊 <strong>NIFTY Volume Tracking:</strong> {error_msg}</p>
+        </div>
+        """, unsafe_allow_html=True)
+    elif nifty_spike.get('has_spike', False):
             # Show spike alert in dashboard
             spike_type = nifty_spike['spike_type']
             alert_emoji = nifty_spike['alert_emoji']
@@ -10672,19 +10687,13 @@ if cached_data and cached_data.get("deltas"):
                 )
 
             st.markdown("---")
-
-        else:
-            # No spike detected - show normal volume status
-            st.markdown(f"""
-            <div style="padding: 10px; background-color: rgba(0,0,0,0.05); border-radius: 5px; margin-bottom: 15px;">
-                <p style="margin: 0; font-size: 0.9em; color: #666;">📊 NIFTY Volume: Normal ({nifty_spike['current_total']:.1f}M, {nifty_spike['total_spike_ratio']:.1f}x avg)</p>
-            </div>
-            """, unsafe_allow_html=True)
-
-    elif nifty_spike and nifty_spike.get('error'):
-        # Show error/insufficient history message
-        error_msg = nifty_spike['error']
-        st.info(f"📊 NIFTY Volume Tracking: {error_msg}")
+    else:
+        # No spike detected - show normal volume status
+        st.markdown(f"""
+        <div style="padding: 10px; background-color: rgba(0,0,0,0.05); border-radius: 5px; margin-bottom: 15px;">
+            <p style="margin: 0; font-size: 0.9em; color: #666;">✅ <strong>NIFTY Volume:</strong> Normal ({nifty_spike['current_total']:.1f}M, {nifty_spike['total_spike_ratio']:.1f}x avg)</p>
+        </div>
+        """, unsafe_allow_html=True)
 
     # Enhanced section header
     st.markdown(create_enhanced_section_header("Indices Momentum", "📊"), unsafe_allow_html=True)
@@ -12361,12 +12370,64 @@ if cached_data and "stocks_data" in cached_data:
                         save_daily_volume_snapshot(stocks_data_unusual, kite=kite_instance, token_meta=token_meta_df)
 
                         # Save NIFTY volume snapshot to separate CSV
-                        indices_data_from_cache = cached_data.get("indices_data", {})
-                        if indices_data_from_cache:
-                            print("\n📊 Saving NIFTY volume snapshot...")
-                            save_nifty_volume_snapshot(indices_data_from_cache)
-                        else:
-                            print("⚠️ No indices_data found - skipping NIFTY volume save")
+                        # Fetch NIFTY data directly from Kite API (don't rely on cache)
+                        print("\n📊 Fetching NIFTY 50 data from Kite API...")
+                        try:
+                            # Get NIFTY 50 index metadata
+                            nifty_meta = token_meta_df[
+                                (token_meta_df.get("name") == "NIFTY 50") |
+                                (token_meta_df.get("tradingsymbol") == "NIFTY 50")
+                            ].copy()
+
+                            if "segment" in nifty_meta.columns:
+                                nifty_meta = nifty_meta[nifty_meta["segment"] == "NFO-OPT"]
+
+                            if not nifty_meta.empty:
+                                # Get all NIFTY option tokens
+                                nifty_tokens = [str(int(token)) for token in nifty_meta["instrument_token"].tolist()]
+                                print(f"✅ Found {len(nifty_tokens)} NIFTY 50 option contracts")
+
+                                # Fetch quotes for NIFTY options
+                                nifty_quotes = kite_instance.quote(nifty_tokens)
+                                print(f"✅ Fetched quotes for {len(nifty_quotes)} NIFTY contracts")
+
+                                # Calculate CE and PE flows
+                                ce_flow = 0.0
+                                pe_flow = 0.0
+
+                                for _, row in nifty_meta.iterrows():
+                                    token_str = str(int(row["instrument_token"]))
+                                    if token_str in nifty_quotes:
+                                        quote_data = nifty_quotes[token_str]
+                                        volume = quote_data.get("volume", 0)
+
+                                        # Check instrument type
+                                        inst_type = row.get("instrument_type", "")
+                                        if inst_type == "CE":
+                                            ce_flow += volume
+                                        elif inst_type == "PE":
+                                            pe_flow += volume
+
+                                # Create indices_data dict for NIFTY
+                                indices_data_fresh = {
+                                    "NIFTY 50": {
+                                        "ce_flow": ce_flow,
+                                        "pe_flow": pe_flow,
+                                        "net_flow": ce_flow - pe_flow
+                                    }
+                                }
+
+                                print(f"✅ NIFTY 50 CE Flow: {ce_flow:,.0f}, PE Flow: {pe_flow:,.0f}")
+                                print("📊 Saving NIFTY volume snapshot...")
+                                save_nifty_volume_snapshot(indices_data_fresh)
+                            else:
+                                print("⚠️ No NIFTY 50 metadata found in instruments")
+                                st.warning("⚠️ NIFTY 50 data not found - only stocks saved")
+                        except Exception as e:
+                            print(f"❌ Error fetching NIFTY data: {e}")
+                            import traceback
+                            traceback.print_exc()
+                            st.warning(f"⚠️ Could not fetch NIFTY data: {e}")
 
                     # Check if CSV files were created
                     import os
