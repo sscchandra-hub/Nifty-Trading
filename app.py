@@ -6162,6 +6162,102 @@ def save_daily_volume_snapshot(stocks_data: dict, kite=None, token_meta=None, da
         traceback.print_exc()
         print("❌"*40 + "\n")
 
+def save_nifty_volume_snapshot(indices_data: dict, data_dir: str = "data/volume_history"):
+    """
+    Save NIFTY end-of-day volume snapshot to separate CSV file.
+
+    Tracks 4 metrics:
+    1. Total Volume (CE + PE)
+    2. CE Volume
+    3. PE Volume
+    4. CE/PE Ratio
+
+    File: nifty_volume_history.csv
+    Columns: Date, CE_Volume in M, PE_Volume in M, Total_Volume in M, CE_PE_Ratio
+    """
+    try:
+        print("\n" + "▓"*80)
+        print("▓▓▓ SAVE_NIFTY_VOLUME_SNAPSHOT STARTED")
+        print("▓"*80)
+
+        # Get NIFTY data
+        nifty_data = indices_data.get('NIFTY 50', None)
+        if not nifty_data:
+            print("❌ NIFTY 50 data not found in indices_data")
+            return
+
+        ce_vol = abs(nifty_data.get('ce_flow', 0))
+        pe_vol = abs(nifty_data.get('pe_flow', 0))
+        total_vol = ce_vol + pe_vol
+
+        print(f"📊 NIFTY Volumes: CE={ce_vol:,.0f}, PE={pe_vol:,.0f}, Total={total_vol:,.0f}")
+
+        if total_vol == 0:
+            print("⚠️ NIFTY has zero volume - skipping save")
+            return
+
+        # Convert to millions
+        ce_vol_m = ce_vol / 1_000_000
+        pe_vol_m = pe_vol / 1_000_000
+        total_vol_m = total_vol / 1_000_000
+
+        # Calculate CE/PE Ratio
+        if pe_vol_m > 0:
+            ce_pe_ratio = round(ce_vol_m / pe_vol_m, 2)
+        else:
+            ce_pe_ratio = 0.0
+
+        print(f"📊 NIFTY (in M): CE={ce_vol_m:.1f}M, PE={pe_vol_m:.1f}M, Total={total_vol_m:.1f}M, Ratio={ce_pe_ratio:.2f}")
+
+        # Create directory and file path
+        os.makedirs(data_dir, exist_ok=True)
+        csv_file = Path(data_dir) / "nifty_volume_history.csv"
+        print(f"📁 Target file: {csv_file.absolute()}")
+
+        date_str = datetime.now().strftime('%Y-%m-%d')
+
+        # Prepare CSV row
+        import csv
+        row = {
+            'Date': date_str,
+            'CE_Volume in M': round(ce_vol_m, 1),
+            'PE_Volume in M': round(pe_vol_m, 1),
+            'Total_Volume in M': round(total_vol_m, 1),
+            'CE_PE_Ratio': ce_pe_ratio
+        }
+
+        # Check if file exists
+        file_exists = csv_file.exists()
+
+        # Write to CSV with UTF-8 encoding
+        with open(csv_file, 'a', newline='', encoding='utf-8') as f:
+            fieldnames = ['Date', 'CE_Volume in M', 'PE_Volume in M', 'Total_Volume in M', 'CE_PE_Ratio']
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+
+            # Write header only if file is new
+            if not file_exists:
+                writer.writeheader()
+                print("📝 Added CSV header row")
+
+            # Write data row
+            writer.writerow(row)
+
+        file_size = os.path.getsize(csv_file)
+        print(f"\n✅ NIFTY VOLUME SAVED SUCCESSFULLY!")
+        print(f"📁 Location: {csv_file.absolute()}")
+        print(f"📦 Size: {file_size:,} bytes")
+        print("▓"*80)
+        print("▓▓▓ SAVE_NIFTY_VOLUME_SNAPSHOT COMPLETED")
+        print("▓"*80 + "\n")
+
+    except Exception as e:
+        print("\n" + "❌"*40)
+        print(f"❌ ERROR in save_nifty_volume_snapshot: {e}")
+        print("❌"*40)
+        import traceback
+        traceback.print_exc()
+        print("❌"*40 + "\n")
+
 def fetch_historical_volume_from_kite(stock_name: str, kite, token_meta, days: int = 10) -> float:
     """
     Fetch last N days of volume data from Kite API for a stock's options.
@@ -11894,30 +11990,59 @@ if cached_data and "stocks_data" in cached_data:
                         # Save current volume snapshot (with Kite API fallback for after-hours)
                         save_daily_volume_snapshot(stocks_data_unusual, kite=kite_instance, token_meta=token_meta_df)
 
-                    # Check if CSV file was created
+                        # Save NIFTY volume snapshot to separate CSV
+                        indices_data_from_cache = cached_data.get("indices_data", {})
+                        if indices_data_from_cache:
+                            print("\n📊 Saving NIFTY volume snapshot...")
+                            save_nifty_volume_snapshot(indices_data_from_cache)
+                        else:
+                            print("⚠️ No indices_data found - skipping NIFTY volume save")
+
+                    # Check if CSV files were created
                     import os
                     from pathlib import Path
                     data_dir = Path("data/volume_history")
-                    csv_file = data_dir / "volume_history.csv"
+                    stocks_csv_file = data_dir / "volume_history.csv"
+                    nifty_csv_file = data_dir / "nifty_volume_history.csv"
 
-                    if csv_file.exists():
-                        file_size = os.path.getsize(csv_file)
-                        abs_path = csv_file.absolute()
-                        print(f"✅ CSV File created: {abs_path}")
+                    # Check stocks CSV
+                    if stocks_csv_file.exists():
+                        file_size = os.path.getsize(stocks_csv_file)
+                        abs_path = stocks_csv_file.absolute()
+                        print(f"✅ Stocks CSV File created: {abs_path}")
                         print(f"📦 File size: {file_size:,} bytes")
-                        st.success(f"✅ Volume snapshot saved successfully to CSV!")
+                        st.success(f"✅ Stocks volume snapshot saved successfully!")
                         st.success(f"📁 Location: {abs_path}")
-                        st.caption(f"📦 Size: {file_size:,} bytes | 📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                        st.caption(f"📦 Size: {file_size:,} bytes")
 
                         # Count rows in CSV (excluding header)
                         import csv
-                        with open(csv_file, 'r', encoding='utf-8') as f:
+                        with open(stocks_csv_file, 'r', encoding='utf-8') as f:
                             reader = csv.reader(f)
                             row_count = sum(1 for row in reader) - 1  # Subtract header
-                        st.info(f"📊 Total entries in CSV: {row_count} stock records")
+                        st.info(f"📊 Total stock entries: {row_count} records")
                     else:
-                        print(f"❌ CSV File NOT found at: {csv_file.absolute()}")
-                        st.error(f"❌ File was not created at expected location: {csv_file.absolute()}")
+                        print(f"❌ Stocks CSV File NOT found at: {stocks_csv_file.absolute()}")
+                        st.error(f"❌ Stocks file was not created at expected location")
+
+                    # Check NIFTY CSV
+                    if nifty_csv_file.exists():
+                        file_size = os.path.getsize(nifty_csv_file)
+                        abs_path = nifty_csv_file.absolute()
+                        print(f"✅ NIFTY CSV File created: {abs_path}")
+                        print(f"📦 File size: {file_size:,} bytes")
+                        st.success(f"✅ NIFTY volume snapshot saved successfully!")
+                        st.success(f"📁 Location: {abs_path}")
+                        st.caption(f"📦 Size: {file_size:,} bytes | 📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+                        # Count rows in NIFTY CSV
+                        with open(nifty_csv_file, 'r', encoding='utf-8') as f:
+                            reader = csv.reader(f)
+                            nifty_row_count = sum(1 for row in reader) - 1  # Subtract header
+                        st.info(f"📊 NIFTY history: {nifty_row_count} days tracked")
+                    else:
+                        print(f"⚠️ NIFTY CSV File NOT found at: {nifty_csv_file.absolute()}")
+                        st.warning(f"⚠️ NIFTY volume file was not created")
 
                 except Exception as e:
                     print(f"❌ ERROR during save: {e}")
