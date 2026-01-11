@@ -3340,18 +3340,23 @@ def send_stock_alert(stock_name, alert_type, price, change_pct, net_flow, ce_flo
     """
     Send stock alerts via Telegram with cooldown and momentum validation
 
-    Alert Conditions:
-    🟢 STRONGEST BULLISH (All 4 must be TRUE):
+    Base Alert Conditions (All 4 must be TRUE):
+    🟢 BULLISH:
        - Price > +1.0%
        - Net Flow > +100M
        - CE/PE Ratio > 4.0
        - At least 6 sectors positive (out of 14)
 
-    🔴 STRONGEST BEARISH (All 4 must be TRUE):
+    🔴 BEARISH:
        - Price < -1.5%
        - Net Flow < 0
        - CE/PE Ratio < 1.0
        - At least 6 sectors negative (out of 14)
+
+    Alert Strength Levels (based on NIFTY alignment):
+    🟢🟢 STRONGEST BULLISH: Base conditions + NIFTY > +0.10% (market aligned)
+    🔴🔴 STRONGEST BEARISH: Base conditions + NIFTY < -0.10% (market aligned)
+    💪 STRONG BULLISH/BEARISH: Base conditions met but NIFTY not aligned
 
     Momentum Filter:
     - For repeat alerts, BOTH % change AND net flow must be HIGHER than previous alert
@@ -7171,11 +7176,17 @@ def get_market_context(stock_alert_type: str, nifty_pct: float) -> dict:
 
     Returns:
         dict with:
-        - upgraded_signal: "MORE BULLISH", "MORE BEARISH", or original
+        - upgraded_signal: "STRONGEST BULLISH/BEARISH" (when market aligned),
+                          "STRONG BULLISH/BEARISH" (other cases)
         - emoji: Alert emoji with modifications
-        - tag: Market context tag (e.g., "[Market Tailwind]")
+        - tag: Market context tag (e.g., "[Market Aligned]")
         - nifty_line: Formatted NIFTY info line
         - interpretation_suffix: Additional interpretation text
+
+    Alert Strength Levels:
+        🟢 STRONGEST BULLISH: Stock bullish + NIFTY > +0.10% (market aligned)
+        🔴 STRONGEST BEARISH: Stock bearish + NIFTY < -0.10% (market aligned)
+        💪 STRONG BULLISH/BEARISH: Other cases (against market, relative strength)
     """
     THRESHOLD = 0.10  # 0.10% threshold
 
@@ -7194,11 +7205,11 @@ def get_market_context(stock_alert_type: str, nifty_pct: float) -> dict:
 
     if stock_alert_type == "BULLISH":
         if nifty_pct >= THRESHOLD:
-            # Market confirming bullish move
-            context['upgraded_signal'] = "MORE BULLISH"
+            # Market confirming bullish move - STRONGEST when aligned
+            context['upgraded_signal'] = "STRONGEST BULLISH"
             context['emoji'] = "🟢🟢"
-            context['tag'] = "[Market Tailwind]"
-            context['nifty_line'] += " ✓ Market supporting"
+            context['tag'] = "[Market Aligned]"
+            context['nifty_line'] += " ✓ Market aligned"
             context['interpretation_suffix'] = " + Market momentum"
         elif nifty_pct <= -THRESHOLD:
             # Stock bullish despite bearish market
@@ -7217,11 +7228,11 @@ def get_market_context(stock_alert_type: str, nifty_pct: float) -> dict:
 
     elif stock_alert_type == "BEARISH":
         if nifty_pct <= -THRESHOLD:
-            # Market confirming bearish move
-            context['upgraded_signal'] = "MORE BEARISH"
+            # Market confirming bearish move - STRONGEST when aligned
+            context['upgraded_signal'] = "STRONGEST BEARISH"
             context['emoji'] = "🔴🔴"
-            context['tag'] = "[Market Confirming]"
-            context['nifty_line'] += " ✓ Market confirming downtrend"
+            context['tag'] = "[Market Aligned]"
+            context['nifty_line'] += " ✓ Market aligned"
             context['interpretation_suffix'] = " + Market weakness"
         elif nifty_pct >= THRESHOLD:
             # Stock bearish despite bullish market
@@ -8638,14 +8649,16 @@ def polling_loop():
                         else:
                             ce_pe_ratio = 0  # No activity
 
-                        # 🟢 STRONGEST BULLISH: Price > +1.0% AND Net Flow > +100M AND CE/PE Ratio > 4.0 AND 6+ sectors positive
+                        # 🟢 BULLISH ALERT: Price > +1.0% AND Net Flow > +100M AND CE/PE Ratio > 4.0 AND 6+ sectors positive
+                        # (Upgraded to "STRONGEST BULLISH" if NIFTY > +0.10%)
                         if (change_pct > 1.0 and net_flow > 100 and ce_pe_ratio > 4.0 and
                             sector_breadth['positive_count'] >= 6):
                             send_stock_alert(stock_name, "BULLISH", stock_price, change_pct, net_flow,
                                            ce_flow=ce_flow, pe_flow=pe_flow, ce_pe_ratio=ce_pe_ratio,
                                            sector_breadth=sector_breadth)
 
-                        # 🔴 STRONGEST BEARISH: Price < -1.5% AND Net Flow < 0 AND CE/PE Ratio < 1.0 AND 6+ sectors negative
+                        # 🔴 BEARISH ALERT: Price < -1.5% AND Net Flow < 0 AND CE/PE Ratio < 1.0 AND 6+ sectors negative
+                        # (Upgraded to "STRONGEST BEARISH" if NIFTY < -0.10%)
                         elif (change_pct < -1.5 and net_flow < 0 and ce_pe_ratio < 1.0 and
                               sector_breadth['negative_count'] >= 6):
                             send_stock_alert(stock_name, "BEARISH", stock_price, change_pct, net_flow,
