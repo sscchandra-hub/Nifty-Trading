@@ -6018,19 +6018,13 @@ def fetch_eod_volumes_from_kite(kite, token_meta, stocks_list: list = None) -> d
 
 def save_daily_volume_snapshot(stocks_data: dict, kite=None, token_meta=None, data_dir: str = "data/volume_history"):
     """
-    Save end-of-day volume snapshot for each stock to calculate rolling averages.
+    Save end-of-day volume snapshot for each stock to CSV file.
 
     NEW: If market is closed and stocks_data is empty/zeros, fetches end-of-day
     volumes directly from Kite API.
 
-    File: volume_history.json
-    Structure: {
-        "RELIANCE": {
-            "2026-01-07": {"ce_vol": 150000, "pe_vol": 50000, "total_vol": 200000},
-            "2026-01-06": {"ce_vol": 180000, "pe_vol": 60000, "total_vol": 240000},
-            ...
-        }
-    }
+    File: volume_history.csv
+    Columns: Symbol, Date, CE_Volume in M, PE_Volume in M, Total_Volume in M, CE_PE_Ratio
 
     Called at end of market day to snapshot today's final volumes.
     """
@@ -6087,66 +6081,73 @@ def save_daily_volume_snapshot(stocks_data: dict, kite=None, token_meta=None, da
 
         print(f"\n📁 Creating directory: {data_dir}")
         os.makedirs(data_dir, exist_ok=True)
-        history_file = Path(data_dir) / "volume_history.json"
-        print(f"📁 Target file: {history_file.absolute()}")
-
-        # Load existing history
-        if history_file.exists():
-            print(f"📖 Loading existing history file...")
-            with open(history_file, 'r') as f:
-                history = json.load(f)
-            print(f"📖 Loaded {len(history)} existing stocks")
-        else:
-            print(f"📝 No existing history file - creating new")
-            history = {}
+        csv_file = Path(data_dir) / "volume_history.csv"
+        print(f"📁 Target file: {csv_file.absolute()}")
 
         date_str = datetime.now().strftime('%Y-%m-%d')
         print(f"📅 Date string: {date_str}")
+
+        # Prepare CSV data
+        import csv
+        rows_to_save = []
         saved_count = 0
 
-        # Update history for each stock
+        # Process each stock
         print(f"\n🔄 Processing {len(stocks_data)} stocks...")
         for stock_name, data in stocks_data.items():
-            ce_vol = abs(data.get('ce_flow', 0))
-            pe_vol = abs(data.get('pe_flow', 0))
-            total_vol = ce_vol + pe_vol
+            # Convert to millions
+            ce_vol_m = abs(data.get('ce_flow', 0)) / 1_000_000
+            pe_vol_m = abs(data.get('pe_flow', 0)) / 1_000_000
+            total_vol_m = ce_vol_m + pe_vol_m
 
             # Skip stocks with no volume
-            if total_vol == 0:
+            if total_vol_m == 0:
                 continue
 
-            # Initialize stock if not exists
-            if stock_name not in history:
-                history[stock_name] = {}
+            # Calculate CE/PE Ratio with 1 decimal place
+            if pe_vol_m > 0:
+                ce_pe_ratio = round(ce_vol_m / pe_vol_m, 1)
+            else:
+                ce_pe_ratio = 0.0
 
-            # Save today's volume
-            history[stock_name][date_str] = {
-                'ce_vol': ce_vol,
-                'pe_vol': pe_vol,
-                'total_vol': total_vol
+            row = {
+                'Symbol': stock_name,
+                'Date': date_str,
+                'CE_Volume in M': round(ce_vol_m, 1),
+                'PE_Volume in M': round(pe_vol_m, 1),
+                'Total_Volume in M': round(total_vol_m, 1),
+                'CE_PE_Ratio': ce_pe_ratio
             }
+            rows_to_save.append(row)
             saved_count += 1
 
             # Show first few saves
             if saved_count <= 3:
-                print(f"  ✓ Saved {stock_name}: CE={ce_vol:,.0f}, PE={pe_vol:,.0f}, Total={total_vol:,.0f}")
+                print(f"  ✓ {stock_name}: CE={ce_vol_m:.1f}M, PE={pe_vol_m:.1f}M, Total={total_vol_m:.1f}M, Ratio={ce_pe_ratio:.1f}")
 
-            # Keep only last 15 days (for 10-day rolling avg with buffer)
-            dates = sorted(history[stock_name].keys(), reverse=True)
-            if len(dates) > 15:
-                for old_date in dates[15:]:
-                    del history[stock_name][old_date]
-
-        print(f"\n💾 Writing to file: {history_file}")
+        print(f"\n💾 Writing to CSV file: {csv_file}")
         print(f"💾 Stocks to save: {saved_count}")
 
-        # Save updated history
-        with open(history_file, 'w') as f:
-            json.dump(history, f, indent=2)
+        # Check if file exists to determine if we need headers
+        file_exists = csv_file.exists()
 
-        file_size = os.path.getsize(history_file)
+        # Write to CSV with UTF-8 encoding
+        with open(csv_file, 'a', newline='', encoding='utf-8') as f:
+            fieldnames = ['Symbol', 'Date', 'CE_Volume in M', 'PE_Volume in M', 'Total_Volume in M', 'CE_PE_Ratio']
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+
+            # Write header only if file is new
+            if not file_exists:
+                writer.writeheader()
+                print("📝 Added CSV header row")
+
+            # Write data rows
+            for row in rows_to_save:
+                writer.writerow(row)
+
+        file_size = os.path.getsize(csv_file)
         print(f"\n✅ FILE WRITTEN SUCCESSFULLY!")
-        print(f"📁 Location: {history_file.absolute()}")
+        print(f"📁 Location: {csv_file.absolute()}")
         print(f"📦 Size: {file_size:,} bytes")
         print(f"📊 Stocks saved: {saved_count}")
         print("▓"*80)
@@ -11893,35 +11894,30 @@ if cached_data and "stocks_data" in cached_data:
                         # Save current volume snapshot (with Kite API fallback for after-hours)
                         save_daily_volume_snapshot(stocks_data_unusual, kite=kite_instance, token_meta=token_meta_df)
 
-                    # Check if file was created
+                    # Check if CSV file was created
                     import os
                     from pathlib import Path
                     data_dir = Path("data/volume_history")
-                    history_file = data_dir / "volume_history.json"
+                    csv_file = data_dir / "volume_history.csv"
 
-                    if history_file.exists():
-                        file_size = os.path.getsize(history_file)
-                        abs_path = history_file.absolute()
-                        print(f"✅ File created: {abs_path}")
+                    if csv_file.exists():
+                        file_size = os.path.getsize(csv_file)
+                        abs_path = csv_file.absolute()
+                        print(f"✅ CSV File created: {abs_path}")
                         print(f"📦 File size: {file_size:,} bytes")
-                        st.success(f"✅ Volume snapshot saved successfully!")
+                        st.success(f"✅ Volume snapshot saved successfully to CSV!")
                         st.success(f"📁 Location: {abs_path}")
                         st.caption(f"📦 Size: {file_size:,} bytes | 📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-                    else:
-                        print(f"❌ File NOT found at: {history_file.absolute()}")
-                        st.error(f"❌ File was not created at expected location: {history_file.absolute()}")
 
-                    # Show info about building history
-                    volume_history_check = load_volume_history()
-                    if volume_history_check:
-                        days_count = {}
-                        for stock, dates in volume_history_check.items():
-                            days_count[stock] = len(dates)
-                        max_days = max(days_count.values()) if days_count else 0
-                        num_stocks = len(volume_history_check)
-                        st.info(f"📊 History: {num_stocks} stocks tracked, {max_days} days saved. Need 5+ days for feature.")
+                        # Count rows in CSV (excluding header)
+                        import csv
+                        with open(csv_file, 'r', encoding='utf-8') as f:
+                            reader = csv.reader(f)
+                            row_count = sum(1 for row in reader) - 1  # Subtract header
+                        st.info(f"📊 Total entries in CSV: {row_count} stock records")
                     else:
-                        st.warning("⚠️ Volume history is empty after save!")
+                        print(f"❌ CSV File NOT found at: {csv_file.absolute()}")
+                        st.error(f"❌ File was not created at expected location: {csv_file.absolute()}")
 
                 except Exception as e:
                     print(f"❌ ERROR during save: {e}")
