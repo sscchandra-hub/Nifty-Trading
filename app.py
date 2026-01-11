@@ -6258,6 +6258,267 @@ def save_nifty_volume_snapshot(indices_data: dict, data_dir: str = "data/volume_
         traceback.print_exc()
         print("❌"*40 + "\n")
 
+def load_nifty_volume_history(data_dir: str = "data/volume_history") -> dict:
+    """
+    Load NIFTY volume history from CSV file.
+
+    Returns: {
+        'history': [
+            {'date': '2026-01-10', 'ce_vol': 25.3, 'pe_vol': 15.2, 'total_vol': 40.5, 'ratio': 1.66},
+            ...
+        ],
+        'avg_ce': 23.5,
+        'avg_pe': 14.1,
+        'avg_total': 37.6,
+        'avg_ratio': 1.67
+    }
+    """
+    try:
+        csv_file = Path(data_dir) / "nifty_volume_history.csv"
+
+        if not csv_file.exists():
+            return None
+
+        import csv
+        history = []
+
+        with open(csv_file, 'r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                history.append({
+                    'date': row['Date'],
+                    'ce_vol': float(row['CE_Volume in M']),
+                    'pe_vol': float(row['PE_Volume in M']),
+                    'total_vol': float(row['Total_Volume in M']),
+                    'ratio': float(row['CE_PE_Ratio'])
+                })
+
+        if len(history) == 0:
+            return None
+
+        # Sort by date (newest first) and take last 10 days for average
+        history.sort(key=lambda x: x['date'], reverse=True)
+        last_10 = history[:10]
+
+        # Calculate averages
+        avg_ce = sum(d['ce_vol'] for d in last_10) / len(last_10)
+        avg_pe = sum(d['pe_vol'] for d in last_10) / len(last_10)
+        avg_total = sum(d['total_vol'] for d in last_10) / len(last_10)
+        avg_ratio = sum(d['ratio'] for d in last_10) / len(last_10)
+
+        return {
+            'history': history,
+            'avg_ce': avg_ce,
+            'avg_pe': avg_pe,
+            'avg_total': avg_total,
+            'avg_ratio': avg_ratio,
+            'days_tracked': len(history)
+        }
+
+    except Exception as e:
+        print(f"❌ Error loading NIFTY volume history: {e}")
+        return None
+
+def calculate_nifty_volume_spike(indices_data: dict, nifty_history: dict) -> dict:
+    """
+    Calculate NIFTY volume spike ratios vs 10-day average.
+
+    Returns: {
+        'has_spike': True/False,
+        'spike_type': 'TOTAL_SPIKE' | 'CE_SPIKE' | 'PE_SPIKE' | 'RATIO_SPIKE' | None,
+        'current_ce': 32.1,
+        'current_pe': 13.5,
+        'current_total': 45.6,
+        'current_ratio': 2.38,
+        'avg_ce': 25.3,
+        'avg_pe': 14.2,
+        'avg_total': 39.5,
+        'avg_ratio': 1.78,
+        'ce_spike_ratio': 1.27,
+        'pe_spike_ratio': 0.95,
+        'total_spike_ratio': 1.15,
+        'ratio_deviation': 1.34,
+        'interpretation': '...',
+        'alert_emoji': '🟢' | '🔴' | '⚡'
+    }
+    """
+    try:
+        if not nifty_history or nifty_history['days_tracked'] < 5:
+            return {'has_spike': False, 'error': 'Insufficient history (need 5+ days)'}
+
+        # Get current NIFTY data
+        nifty_data = indices_data.get('NIFTY 50', None)
+        if not nifty_data:
+            return {'has_spike': False, 'error': 'NIFTY 50 data not found'}
+
+        # Current volumes (in millions)
+        current_ce = abs(nifty_data.get('ce_flow', 0)) / 1_000_000
+        current_pe = abs(nifty_data.get('pe_flow', 0)) / 1_000_000
+        current_total = current_ce + current_pe
+
+        if current_total == 0:
+            return {'has_spike': False, 'error': 'No current volume'}
+
+        # Current ratio
+        current_ratio = round(current_ce / current_pe, 2) if current_pe > 0 else 0.0
+
+        # Get averages from history
+        avg_ce = nifty_history['avg_ce']
+        avg_pe = nifty_history['avg_pe']
+        avg_total = nifty_history['avg_total']
+        avg_ratio = nifty_history['avg_ratio']
+
+        # Calculate spike ratios
+        ce_spike_ratio = round(current_ce / avg_ce, 2) if avg_ce > 0 else 0
+        pe_spike_ratio = round(current_pe / avg_pe, 2) if avg_pe > 0 else 0
+        total_spike_ratio = round(current_total / avg_total, 2) if avg_total > 0 else 0
+        ratio_deviation = round(current_ratio / avg_ratio, 2) if avg_ratio > 0 else 0
+
+        # Determine spike type and interpretation
+        has_spike = False
+        spike_type = None
+        interpretation = ""
+        alert_emoji = "📊"
+
+        # Priority 1: Extreme total volume (>3.0x)
+        if total_spike_ratio >= 3.0:
+            has_spike = True
+            spike_type = 'EXTREME_ACTIVITY'
+            alert_emoji = "⚡"
+
+            if ce_spike_ratio > pe_spike_ratio * 1.5:
+                interpretation = "🟢 EXTREME bullish positioning - Heavy call buying ahead of major move"
+            elif pe_spike_ratio > ce_spike_ratio * 1.5:
+                interpretation = "🔴 EXTREME bearish positioning - Heavy put buying expecting sharp fall"
+            else:
+                interpretation = "⚡ MASSIVE options activity - High volatility expected, direction uncertain"
+
+        # Priority 2: CE spike (>2.5x with total >2.0x)
+        elif ce_spike_ratio >= 2.5 and total_spike_ratio >= 2.0:
+            has_spike = True
+            spike_type = 'CE_SPIKE'
+            alert_emoji = "🟢"
+            interpretation = f"🟢 Aggressive call buying ({ce_spike_ratio:.1f}x avg) - Traders positioning for rally"
+
+        # Priority 3: PE spike (>2.5x with total >2.0x)
+        elif pe_spike_ratio >= 2.5 and total_spike_ratio >= 2.0:
+            has_spike = True
+            spike_type = 'PE_SPIKE'
+            alert_emoji = "🔴"
+            interpretation = f"🔴 Heavy put buying ({pe_spike_ratio:.1f}x avg) - Traders hedging for downside"
+
+        # Priority 4: Total spike (>2.5x)
+        elif total_spike_ratio >= 2.5:
+            has_spike = True
+            spike_type = 'TOTAL_SPIKE'
+            alert_emoji = "📊"
+
+            if ratio_deviation >= 1.5:
+                interpretation = f"📊 High activity with ratio spike ({current_ratio:.2f} vs {avg_ratio:.2f}) - Sentiment shifting"
+            else:
+                interpretation = f"📊 Elevated options activity ({total_spike_ratio:.1f}x avg) - Increased market interest"
+
+        # Priority 5: Ratio deviation (>2.0x)
+        elif ratio_deviation >= 2.0:
+            has_spike = True
+            spike_type = 'RATIO_SPIKE'
+            alert_emoji = "🔄"
+
+            if current_ratio > avg_ratio:
+                interpretation = f"🔄 CE/PE ratio surge ({current_ratio:.2f} vs {avg_ratio:.2f}) - Sentiment turned bullish"
+            else:
+                interpretation = f"🔄 CE/PE ratio drop ({current_ratio:.2f} vs {avg_ratio:.2f}) - Sentiment turned bearish"
+
+        return {
+            'has_spike': has_spike,
+            'spike_type': spike_type,
+            'current_ce': round(current_ce, 1),
+            'current_pe': round(current_pe, 1),
+            'current_total': round(current_total, 1),
+            'current_ratio': current_ratio,
+            'avg_ce': round(avg_ce, 1),
+            'avg_pe': round(avg_pe, 1),
+            'avg_total': round(avg_total, 1),
+            'avg_ratio': round(avg_ratio, 2),
+            'ce_spike_ratio': ce_spike_ratio,
+            'pe_spike_ratio': pe_spike_ratio,
+            'total_spike_ratio': total_spike_ratio,
+            'ratio_deviation': ratio_deviation,
+            'interpretation': interpretation,
+            'alert_emoji': alert_emoji,
+            'days_tracked': nifty_history['days_tracked']
+        }
+
+    except Exception as e:
+        print(f"❌ Error calculating NIFTY volume spike: {e}")
+        import traceback
+        traceback.print_exc()
+        return {'has_spike': False, 'error': str(e)}
+
+def send_nifty_volume_alert(spike_data: dict):
+    """
+    Send Telegram alert for NIFTY unusual volume activity.
+
+    Only sends if:
+    - has_spike = True
+    - spike_type is not None
+    - 15-minute cooldown since last alert
+    """
+    try:
+        if not spike_data.get('has_spike', False):
+            return False
+
+        now = datetime.now()
+
+        # Check cooldown (15 minutes)
+        cooldown_key = 'nifty_volume_alert'
+        if hasattr(engine, 'alert_cooldowns') and cooldown_key in engine.alert_cooldowns:
+            last_alert_time = engine.alert_cooldowns[cooldown_key]
+            time_diff = (now - last_alert_time).total_seconds() / 60
+
+            if time_diff < 15:
+                print(f"⏱️ NIFTY volume alert on cooldown: {15 - time_diff:.1f} minutes remaining")
+                return False
+
+        # Build alert message
+        emoji = spike_data['alert_emoji']
+        spike_type = spike_data['spike_type']
+
+        message = f"{emoji} *NIFTY UNUSUAL VOLUME ACTIVITY*\n\n"
+        message += f"📊 *Type:* {spike_type.replace('_', ' ')}\n\n"
+
+        # Current vs Average
+        message += f"*Current Volume (in M):*\n"
+        message += f"🟢 CE: {spike_data['current_ce']:.1f}M ({spike_data['ce_spike_ratio']:.1f}x avg)\n"
+        message += f"🔴 PE: {spike_data['current_pe']:.1f}M ({spike_data['pe_spike_ratio']:.1f}x avg)\n"
+        message += f"📊 Total: {spike_data['current_total']:.1f}M ({spike_data['total_spike_ratio']:.1f}x avg)\n\n"
+
+        message += f"*10-Day Average (in M):*\n"
+        message += f"CE: {spike_data['avg_ce']:.1f}M | PE: {spike_data['avg_pe']:.1f}M | Total: {spike_data['avg_total']:.1f}M\n\n"
+
+        message += f"*CE/PE Ratio:*\n"
+        message += f"Current: {spike_data['current_ratio']:.2f} | Avg: {spike_data['avg_ratio']:.2f}\n\n"
+
+        message += f"💡 *Interpretation:*\n{spike_data['interpretation']}\n\n"
+        message += f"📅 Based on {spike_data['days_tracked']} days of history"
+
+        # Send alert
+        send_telegram_alert(message, parse_mode='Markdown')
+        print(f"📱 NIFTY Volume Alert: {spike_type} ({spike_data['total_spike_ratio']:.1f}x avg)")
+
+        # Update cooldown
+        if not hasattr(engine, 'alert_cooldowns'):
+            engine.alert_cooldowns = {}
+        engine.alert_cooldowns[cooldown_key] = now
+
+        return True
+
+    except Exception as e:
+        print(f"❌ Error sending NIFTY volume alert: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
 def fetch_historical_volume_from_kite(stock_name: str, kite, token_meta, days: int = 10) -> float:
     """
     Fetch last N days of volume data from Kite API for a stock's options.
@@ -7968,6 +8229,40 @@ def polling_loop():
 
                 except Exception as e:
                     print(f"❌ Error in NIFTY momentum calculation: {e}")
+                    import traceback
+                    traceback.print_exc()
+
+                # ====================
+                # NIFTY UNUSUAL VOLUME ALERT SYSTEM
+                # ====================
+                # Check for unusual NIFTY volume activity and send alerts
+                try:
+                    # Load NIFTY volume history
+                    nifty_history = load_nifty_volume_history()
+
+                    if nifty_history and nifty_history['days_tracked'] >= 5:
+                        # Calculate spike ratios
+                        nifty_spike = calculate_nifty_volume_spike(indices_data, nifty_history)
+
+                        if nifty_spike.get('has_spike', False):
+                            # Send alert (with cooldown checking inside)
+                            alert_sent = send_nifty_volume_alert(nifty_spike)
+
+                            # Store in session state for UI display
+                            st.session_state.nifty_volume_spike = nifty_spike
+                        else:
+                            # No spike, but store data for UI
+                            st.session_state.nifty_volume_spike = nifty_spike
+                    else:
+                        # Insufficient history
+                        days = nifty_history['days_tracked'] if nifty_history else 0
+                        st.session_state.nifty_volume_spike = {
+                            'has_spike': False,
+                            'error': f'Need 5+ days of history (have {days} days)'
+                        }
+
+                except Exception as e:
+                    print(f"❌ Error in NIFTY volume spike detection: {e}")
                     import traceback
                     traceback.print_exc()
 
@@ -10315,6 +10610,81 @@ if cached_data and cached_data.get("deltas"):
     if indices_data:
         st.markdown(create_market_overview_panel(indices_data, deltas), unsafe_allow_html=True)
         st.markdown("---")
+
+    # ============================================
+    # NIFTY UNUSUAL VOLUME ACTIVITY DISPLAY
+    # ============================================
+    nifty_spike = st.session_state.get('nifty_volume_spike', None)
+
+    if nifty_spike and not nifty_spike.get('error'):
+        if nifty_spike.get('has_spike', False):
+            # Show spike alert in dashboard
+            spike_type = nifty_spike['spike_type']
+            alert_emoji = nifty_spike['alert_emoji']
+            interpretation = nifty_spike['interpretation']
+
+            # Color coding based on spike type
+            if spike_type in ['CE_SPIKE', 'EXTREME_ACTIVITY'] and nifty_spike['ce_spike_ratio'] > nifty_spike['pe_spike_ratio']:
+                border_color = "#4CAF50"  # Green for bullish
+            elif spike_type in ['PE_SPIKE', 'EXTREME_ACTIVITY'] and nifty_spike['pe_spike_ratio'] > nifty_spike['ce_spike_ratio']:
+                border_color = "#f44336"  # Red for bearish
+            else:
+                border_color = "#2196F3"  # Blue for neutral
+
+            st.markdown(f"""
+            <div style="border: 3px solid {border_color}; border-radius: 10px; padding: 15px; background: linear-gradient(135deg, rgba(33,150,243,0.1), rgba(33,150,243,0.05)); margin-bottom: 20px;">
+                <h3 style="margin: 0 0 10px 0;">{alert_emoji} NIFTY UNUSUAL VOLUME ACTIVITY</h3>
+                <p style="font-size: 0.9em; margin: 5px 0;"><strong>Type:</strong> {spike_type.replace('_', ' ')}</p>
+                <p style="font-size: 0.9em; margin: 5px 0; color: #666;">{interpretation}</p>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # Show detailed metrics
+            col1, col2, col3, col4 = st.columns(4)
+
+            with col1:
+                st.metric(
+                    "📊 Total Volume",
+                    f"{nifty_spike['current_total']:.1f}M",
+                    f"{nifty_spike['total_spike_ratio']:.1f}x avg"
+                )
+
+            with col2:
+                st.metric(
+                    "🟢 CE Volume",
+                    f"{nifty_spike['current_ce']:.1f}M",
+                    f"{nifty_spike['ce_spike_ratio']:.1f}x avg"
+                )
+
+            with col3:
+                st.metric(
+                    "🔴 PE Volume",
+                    f"{nifty_spike['current_pe']:.1f}M",
+                    f"{nifty_spike['pe_spike_ratio']:.1f}x avg"
+                )
+
+            with col4:
+                ratio_change = nifty_spike['current_ratio'] - nifty_spike['avg_ratio']
+                st.metric(
+                    "📈 CE/PE Ratio",
+                    f"{nifty_spike['current_ratio']:.2f}",
+                    f"{ratio_change:+.2f} vs avg"
+                )
+
+            st.markdown("---")
+
+        else:
+            # No spike detected - show normal volume status
+            st.markdown(f"""
+            <div style="padding: 10px; background-color: rgba(0,0,0,0.05); border-radius: 5px; margin-bottom: 15px;">
+                <p style="margin: 0; font-size: 0.9em; color: #666;">📊 NIFTY Volume: Normal ({nifty_spike['current_total']:.1f}M, {nifty_spike['total_spike_ratio']:.1f}x avg)</p>
+            </div>
+            """, unsafe_allow_html=True)
+
+    elif nifty_spike and nifty_spike.get('error'):
+        # Show error/insufficient history message
+        error_msg = nifty_spike['error']
+        st.info(f"📊 NIFTY Volume Tracking: {error_msg}")
 
     # Enhanced section header
     st.markdown(create_enhanced_section_header("Indices Momentum", "📊"), unsafe_allow_html=True)
