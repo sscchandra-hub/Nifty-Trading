@@ -905,6 +905,7 @@ class EngineState:
     nifty_momentum_state: str = None  # Track NIFTY momentum class for reversal detection
     nifty_momentum_last_alert: datetime = None  # Track last NIFTY momentum alert time
     sector_mapping: dict = field(default_factory=dict)  # Stock to sector mapping
+    alerted_stocks: dict = field(default_factory=dict)  # Track stocks that received alerts for SL monitoring: {stock: {'alert_type': 'BULLISH/BEARISH', 'initial_ce_pe': float, 'sl_sent': bool}}
 
     # Enhanced Alert System - 3-minute confirmation tracking
     nifty_score_buffer: list = field(default_factory=list)  # Last 3 scores for confirmation
@@ -3498,9 +3499,73 @@ def send_stock_alert(stock_name, alert_type, price, change_pct, net_flow, ce_flo
             'priority': 'NORMAL'
         })
 
+        # Track this stock for SL monitoring
+        engine.alerted_stocks[stock_name] = {
+            'alert_type': alert_type,
+            'initial_ce_pe': ce_pe_ratio,
+            'time': now,
+            'sl_sent': False
+        }
+
         return True
     except Exception as e:
         print(f"Error sending stock alert: {e}")
+        return False
+
+def send_sl_alert(stock_name, alert_type, initial_ce_pe, current_ce_pe, price, change_pct):
+    """
+    Send Stop Loss alert when trend reverses
+
+    BULLISH SL: CE/PE drops below 1.0 (full reversal to bearish)
+    BEARISH SL: CE/PE rises above 2.0 (full reversal to bullish)
+
+    Only sent ONCE per stock per original alert
+    """
+    # CHECK MARKET HOURS
+    if not is_market_hours():
+        return False
+
+    now = datetime.now()
+
+    # Get NIFTY market context
+    nifty_pct = get_nifty_daily_change(kite=engine.kite)
+
+    # Build alert message
+    if alert_type == "BULLISH":
+        emoji = "🚨🔴"
+        signal = "BULLISH STOP LOSS"
+        reason = f"Full reversal detected! CE/PE dropped from {initial_ce_pe:.2f} to {current_ce_pe:.2f} (< 1.0)"
+        action = "⚠️ EXIT BULLISH POSITION IMMEDIATELY!"
+    else:  # BEARISH
+        emoji = "🚨🟢"
+        signal = "BEARISH STOP LOSS"
+        reason = f"Full reversal detected! CE/PE rose from {initial_ce_pe:.2f} to {current_ce_pe:.2f} (> 2.0)"
+        action = "⚠️ EXIT BEARISH POSITION IMMEDIATELY!"
+
+    # Format price info
+    price_str = f"₹{price:,.2f}" if price else "N/A"
+    change_str = f"{change_pct:+.2f}%" if change_pct is not None else "N/A"
+
+    telegram_message = f"{emoji} <b>{signal}</b>\n\n"
+    telegram_message += f"<b>{stock_name}</b>\n"
+    telegram_message += f"Price: {price_str} ({change_str})\n\n"
+    telegram_message += f"<b>Reversal Signal:</b>\n{reason}\n\n"
+    telegram_message += f"{action}\n\n"
+    telegram_message += f"NIFTY: {nifty_pct:+.2f}%\n"
+    telegram_message += f"⏰ {now.strftime('%I:%M:%S %p')}"
+
+    # Send to Telegram
+    try:
+        send_telegram_alert(telegram_message)
+        print(f"🚨 SL Alert: {stock_name} - {signal}")
+
+        # Mark SL as sent
+        if stock_name in engine.alerted_stocks:
+            engine.alerted_stocks[stock_name]['sl_sent'] = True
+
+        return True
+    except Exception as e:
+        print(f"Error sending SL alert: {e}")
         return False
 
 def send_nifty_enhanced_alert(score_result):
@@ -8668,6 +8733,52 @@ def polling_loop():
                                            ce_flow=ce_flow, pe_flow=pe_flow, ce_pe_ratio=ce_pe_ratio,
                                            sector_breadth=sector_breadth)
 
+                    # ============================================
+                    # STOP LOSS (SL) ALERTS FOR ALERTED STOCKS
+                    # ============================================
+                    # Check previously alerted stocks for SL triggers
+                    for stock_name, alert_data in list(engine.alerted_stocks.items()):
+                        # Skip if SL already sent
+                        if alert_data.get('sl_sent', False):
+                            continue
+
+                        # Get current stock data
+                        stock_data = stocks_data.get(stock_name)
+                        if not stock_data:
+                            continue
+
+                        stock_price = stock_data.get("price")
+                        change_pct = stock_data.get("change_pct")
+                        ce_flow = stock_data.get("ce_flow", 0)
+                        pe_flow = stock_data.get("pe_flow", 0)
+
+                        # Skip if missing data
+                        if stock_price is None:
+                            continue
+
+                        # Calculate current CE/PE ratio
+                        if pe_flow > 0:
+                            current_ce_pe = ce_flow / pe_flow
+                        elif ce_flow > 0:
+                            current_ce_pe = 999
+                        else:
+                            current_ce_pe = 0
+
+                        alert_type = alert_data['alert_type']
+                        initial_ce_pe = alert_data['initial_ce_pe']
+
+                        # Check SL conditions
+                        sl_triggered = False
+                        if alert_type == "BULLISH" and current_ce_pe < 1.0:
+                            # BULLISH SL: CE/PE dropped below 1.0 (full reversal)
+                            sl_triggered = True
+                        elif alert_type == "BEARISH" and current_ce_pe > 2.0:
+                            # BEARISH SL: CE/PE rose above 2.0 (full reversal)
+                            sl_triggered = True
+
+                        if sl_triggered:
+                            send_sl_alert(stock_name, alert_type, initial_ce_pe, current_ce_pe,
+                                        stock_price, change_pct)
 
                 cache_data = {
                     "composite_score": composite_score,
