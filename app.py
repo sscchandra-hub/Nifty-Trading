@@ -2988,9 +2988,9 @@ def fetch_chartink_alerts(mode='LIVE'):
 # =========================
 
 def is_market_hours() -> bool:
-    """Check if current time is within market hours (09:15 AM - 3:30 PM)"""
+    """Check if current time is within market hours (09:16 AM - 3:30 PM)"""
     now = datetime.now()
-    market_open = now.replace(hour=9, minute=15, second=0, microsecond=0)
+    market_open = now.replace(hour=9, minute=16, second=0, microsecond=0)
     market_close = now.replace(hour=15, minute=30, second=0, microsecond=0)
     return market_open <= now <= market_close
 
@@ -3343,13 +3343,13 @@ def send_stock_alert(stock_name, alert_type, price, change_pct, net_flow, ce_flo
     Base Alert Conditions (All 4 must be TRUE):
     🟢 BULLISH:
        - Price > +1.0%
-       - Net Flow > +100M
-       - CE/PE Ratio > 4.0
+       - Net Flow > 0 (CE flow > PE flow)
+       - CE/PE Ratio > 2.0
        - At least 6 sectors positive (out of 14)
 
     🔴 BEARISH:
-       - Price < -1.5%
-       - Net Flow < 0
+       - Price < -1.0%
+       - Net Flow < 0 (PE flow > CE flow)
        - CE/PE Ratio < 1.0
        - At least 6 sectors negative (out of 14)
 
@@ -3361,8 +3361,11 @@ def send_stock_alert(stock_name, alert_type, price, change_pct, net_flow, ce_flo
     Momentum Filter:
     - For repeat alerts, BOTH % change AND net flow must be HIGHER than previous alert
     - This ensures we only alert on ACCELERATING momentum, not weakening moves
+
+    Cooldown: 5 minutes per stock per alert type
+    Market Hours: 9:16 AM - 3:30 PM
     """
-    # CHECK MARKET HOURS: Only send alerts between 09:15 AM - 3:30 PM
+    # CHECK MARKET HOURS: Only send alerts between 09:16 AM - 3:30 PM
     if not is_market_hours():
         return False  # Silently skip alerts outside market hours
 
@@ -5718,17 +5721,6 @@ def save_stock_flow_snapshot(stocks_data: dict, sector_mapping: dict, data_dir: 
             rank = stock_ranks.get(stock_name, 999)
             in_top_10 = stock_name in top_10_stocks
 
-            # Check if alert was sent (would have been sent if conditions met)
-            alerted = False
-            alert_type = ''
-
-            if change_pct > 1.0 and net_flow > 100:
-                alerted = True
-                alert_type = 'BULLISH'
-            elif change_pct < -1.0 and net_flow < -50:
-                alerted = True
-                alert_type = 'BEARISH'
-
             # Calculate CE/PE ratio: IF(pe_flow>0, ce_flow/pe_flow, IF(ce_flow>0, 999, 0))
             if pe_flow > 0:
                 ce_pe_ratio = ce_flow / pe_flow
@@ -5736,6 +5728,18 @@ def save_stock_flow_snapshot(stocks_data: dict, sector_mapping: dict, data_dir: 
                 ce_pe_ratio = 999
             else:
                 ce_pe_ratio = 0
+
+            # Check if alert WOULD be sent (if sector breadth conditions are also met)
+            # Note: CSV tracks individual stock conditions, actual alert also requires sector breadth
+            alerted = False
+            alert_type = ''
+
+            if change_pct > 1.0 and net_flow > 0 and ce_pe_ratio > 2.0:
+                alerted = True
+                alert_type = 'BULLISH'
+            elif change_pct < -1.0 and net_flow < 0 and ce_pe_ratio < 1.0:
+                alerted = True
+                alert_type = 'BEARISH'
 
             row = {
                 'timestamp': timestamp_str,
@@ -8620,14 +8624,13 @@ def polling_loop():
                     engine.top_10_stocks = current_top_10
 
                     # ============================================
-                    # BULLISH/BEARISH ALERTS FOR TOP 10 STOCKS
+                    # BULLISH/BEARISH ALERTS FOR ALL STOCKS
                     # ============================================
                     # Calculate sector breadth (market-wide strength)
                     sector_breadth = get_sector_breadth(indices_data)
 
-                    # Check each Top 10 stock for BULLISH or BEARISH conditions
-                    for stock_name, _ in sorted_stocks[:10]:
-                        stock_data = stocks_data.get(stock_name)
+                    # Check ALL stocks for BULLISH or BEARISH conditions
+                    for stock_name, stock_data in stocks_data.items():
                         if not stock_data:
                             continue
 
@@ -8649,17 +8652,17 @@ def polling_loop():
                         else:
                             ce_pe_ratio = 0  # No activity
 
-                        # 🟢 BULLISH ALERT: Price > +1.0% AND Net Flow > +100M AND CE/PE Ratio > 4.0 AND 6+ sectors positive
+                        # 🟢 BULLISH ALERT: Price > +1.0% AND Net Flow > 0 AND CE/PE Ratio > 2.0 AND 6+ sectors positive
                         # (Upgraded to "STRONGEST BULLISH" if NIFTY > +0.10%)
-                        if (change_pct > 1.0 and net_flow > 100 and ce_pe_ratio > 4.0 and
+                        if (change_pct > 1.0 and net_flow > 0 and ce_pe_ratio > 2.0 and
                             sector_breadth['positive_count'] >= 6):
                             send_stock_alert(stock_name, "BULLISH", stock_price, change_pct, net_flow,
                                            ce_flow=ce_flow, pe_flow=pe_flow, ce_pe_ratio=ce_pe_ratio,
                                            sector_breadth=sector_breadth)
 
-                        # 🔴 BEARISH ALERT: Price < -1.5% AND Net Flow < 0 AND CE/PE Ratio < 1.0 AND 6+ sectors negative
+                        # 🔴 BEARISH ALERT: Price < -1.0% AND Net Flow < 0 AND CE/PE Ratio < 1.0 AND 6+ sectors negative
                         # (Upgraded to "STRONGEST BEARISH" if NIFTY < -0.10%)
-                        elif (change_pct < -1.5 and net_flow < 0 and ce_pe_ratio < 1.0 and
+                        elif (change_pct < -1.0 and net_flow < 0 and ce_pe_ratio < 1.0 and
                               sector_breadth['negative_count'] >= 6):
                             send_stock_alert(stock_name, "BEARISH", stock_price, change_pct, net_flow,
                                            ce_flow=ce_flow, pe_flow=pe_flow, ce_pe_ratio=ce_pe_ratio,
