@@ -47,7 +47,7 @@ Score: +82/100 🔴 VERY HIGH
 ✅ Key Signals:
 • CE Flow dominance ✓
 • CE Spikes ahead ✓
-• VWAP/ST: BULLISH ✓
+• Nifty Net Flow: +ve ✓
 
 ⏰ 10:30:15 AM
 ```
@@ -123,7 +123,7 @@ Score: -82/100 🔴 VERY HIGH
 ✅ Key Signals:
 • PE Flow dominance ✓
 • PE Spikes ahead ✓
-• VWAP/ST: BEARISH ✓
+• Nifty Net Flow: -ve ✓
 
 ⏰ 02:45:20 PM
 ```
@@ -299,19 +299,20 @@ Current: -45/100
 
 ## 🎯 WHAT NIFTY SCORE MEANS
 
-The score is calculated from **9 parameters** (see `calculate_nifty_momentum_score()` at app.py:1996-2235):
+The score is calculated from **8 parameters** (see `calculate_nifty_momentum_score()` at app.py:1992-2235):
 
 1. **CE/PE Flow** (±10 points)
-2. **Session Spikes** (±10 points)
+2. **Session Spikes** (±15 points)
 3. **CE vs PE Race** (±10 points)
 4. **Live Momentum Sentiment** (±10 points)
 5. **NIFTY Net Flow** (±10 points)
-6. **Indices Performance** (±10 points)
-7. **PCR Ratio** (±10 points)
-8. **VWAP & SuperTrend Strategy** (±15 points)
-9. **Market-Wide Stock Performance** (±10 points)
+6. **Indices Net Flow** (±10 points)
+7. **Indices Performance** (±10 points)
+8. **Market-Wide Stock Performance** (±10 points)
 
-**Total Score Range:** -100 to +100
+**⚠️ REMOVED:** ~~VWAP & SuperTrend Strategy~~ (was ±15 points - NOW DISABLED)
+
+**Total Score Range:** -85 to +85 (previously -100 to +100)
 
 ---
 
