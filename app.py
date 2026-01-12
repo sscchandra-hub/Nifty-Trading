@@ -1991,11 +1991,14 @@ def generate_daily_summary(all_scores, stocks_data):
 
 def calculate_nifty_momentum_score(indices_data, stocks_data, volume_state, vwap_st_strategy):
     """
-    Calculate comprehensive NIFTY momentum score (0-100 scale, can be negative)
+    Calculate comprehensive NIFTY momentum score
     Combines multiple parameters for precise market momentum classification
 
+    NOTE: VWAP/SuperTrend scoring has been DISABLED (was ±15 points)
+    New score range: -85 to +85 (instead of -100 to +100)
+
     Returns: {
-        'total_score': int (-100 to +100),
+        'total_score': int (-85 to +85),
         'breakdown': dict of individual scores,
         'momentum_class': str (STRONG BULLISH, BULLISH, SIDEWAYS, BEARISH, STRONG BEARISH),
         'confidence': str (HIGH, MEDIUM, LOW)
@@ -2009,7 +2012,7 @@ def calculate_nifty_momentum_score(indices_data, stocks_data, volume_state, vwap
         'nifty_net_flow': 0,      # 10 points
         'indices_net_flow': 0,    # 10 points
         'indices_performance': 0, # 10 points
-        'vwap_supertrend': 0,     # 15 points
+        'vwap_supertrend': 0,     # 0 points (DISABLED)
         'stocks_performance': 0   # 10 points
     }
 
@@ -2168,13 +2171,15 @@ def calculate_nifty_momentum_score(indices_data, stocks_data, volume_state, vwap
         elif up_pct < 50:
             score_breakdown['indices_performance'] = -5
 
-    # 8. VWAP & SuperTrend Strategy (15 points)
-    if vwap_st_strategy:
-        signal = vwap_st_strategy.get('signal', 'NEUTRAL')
-        if signal == 'BULLISH':
-            score_breakdown['vwap_supertrend'] = 15
-        elif signal == 'BEARISH':
-            score_breakdown['vwap_supertrend'] = -15
+    # 8. VWAP & SuperTrend Strategy (DISABLED - 0 points)
+    # REMOVED: VWAP/ST no longer contributes to scoring
+    # if vwap_st_strategy:
+    #     signal = vwap_st_strategy.get('signal', 'NEUTRAL')
+    #     if signal == 'BULLISH':
+    #         score_breakdown['vwap_supertrend'] = 15
+    #     elif signal == 'BEARISH':
+    #         score_breakdown['vwap_supertrend'] = -15
+    score_breakdown['vwap_supertrend'] = 0  # Disabled
 
     # 9. Market-Wide Stock Performance (10 points)
     stocks_up = 0
@@ -2289,7 +2294,8 @@ def create_nifty_momentum_alert(score_result, is_reversal=False, previous_class=
     message += f"• NIFTY Net Flow: {breakdown['nifty_net_flow']:+d}/10\n"
     message += f"• Indices Net Flow: {breakdown['indices_net_flow']:+d}/10\n"
     message += f"• Indices Performance: {breakdown['indices_performance']:+d}/10\n"
-    message += f"• VWAP+SuperTrend: {breakdown['vwap_supertrend']:+d}/15\n"
+    # REMOVED: VWAP+SuperTrend no longer shown in breakdown
+    # message += f"• VWAP+SuperTrend: {breakdown['vwap_supertrend']:+d}/15\n"
     message += f"• Stocks Performance: {breakdown['stocks_performance']:+d}/10\n\n"
 
     # Market statistics
@@ -3816,9 +3822,10 @@ def send_nifty_enhanced_alert(score_result):
     if abs(breakdown.get('session_spikes', 0)) >= 8:
         spike_type = "CE" if breakdown['session_spikes'] > 0 else "PE"
         message += f"• {spike_type} Spikes ahead ✓\n"
-    if abs(breakdown.get('vwap_supertrend', 0)) >= 15:
-        tech_signal = "BULLISH" if breakdown['vwap_supertrend'] > 0 else "BEARISH"
-        message += f"• VWAP/ST: {tech_signal} ✓\n"
+    # REMOVED: VWAP/ST no longer shown in alerts
+    # if abs(breakdown.get('vwap_supertrend', 0)) >= 15:
+    #     tech_signal = "BULLISH" if breakdown['vwap_supertrend'] > 0 else "BEARISH"
+    #     message += f"• VWAP/ST: {tech_signal} ✓\n"
     if abs(breakdown.get('nifty_net_flow', 0)) >= 7:
         flow_sign = "+ve" if breakdown['nifty_net_flow'] > 0 else "-ve"
         message += f"• Nifty Net Flow: {flow_sign} ✓\n"
